@@ -103,6 +103,16 @@ pub(crate) enum MediaNotice {
     Reconnected,
     /// The SFU connection is gone for good.
     Disconnected,
+    /// Our membership is gone from the room state; the call is trying to
+    /// join again.
+    MembershipGone,
+    /// Our membership is back.
+    MembershipBack,
+    /// Our membership is gone and cannot come back: the homeserver
+    /// `refused` us (token, permission), or it could not be reached in time.
+    MembershipLost {
+        refused: bool,
+    },
     /// The hardware encoder of our track of this kind stopped, or LiveKit
     /// replaced it (`video`).
     EncoderLost(VideoKind),
@@ -282,8 +292,24 @@ enum Frames {
     },
 }
 
+/// What to do with one of our tracks when the hold on our sending (our call
+/// membership is gone) is `held`, given whether the track `muted` now and
+/// whether the hold muted it (`ours`): `Some(true)` mutes it (and it is then
+/// ours), `Some(false)` unmutes it (ours no more), `None` leaves it. A track
+/// the user turned off is never turned on again, and one we muted is only
+/// restored by us.
+fn hold_step(held: bool, muted: bool, ours: bool) -> Option<bool> {
+    match (held, muted, ours) {
+        (true, false, _) => Some(true),
+        (false, _, true) => Some(false),
+        _ => None,
+    }
+}
+
 /// One of our video tracks, on the connection that publishes.
 struct SentVideo {
+    /// Muted by the hold, see [`hold_step`].
+    held: bool,
     id: VideoTrackId,
     track: LocalVideoTrack,
     quality: VideoQuality,
@@ -366,6 +392,8 @@ pub(crate) struct SfuConnection {
     videos_sent: HashMap<VideoKind, SentVideo>,
     /// The sound of our screen share, while it sends one.
     share_sound: Option<SentShareSound>,
+    /// Our call membership is gone: nothing of ours is sent.
+    held: bool,
     voice: Option<Voice>,
     players: Arc<StdMutex<Players>>,
     flags: SharedFlags,
@@ -496,6 +524,7 @@ impl SfuConnection {
             track,
             videos_sent: HashMap::new(),
             share_sound: None,
+            held: false,
             voice: shared.voice.clone(),
             players,
             flags: shared.flags.clone(),
@@ -600,6 +629,7 @@ impl SfuConnection {
         self.videos_sent.insert(
             kind,
             SentVideo {
+                held: false,
                 id: id.clone(),
                 track,
                 quality,
@@ -607,6 +637,7 @@ impl SfuConnection {
                 frames,
             },
         );
+        self.apply_hold();
         Ok(id)
     }
 
@@ -668,10 +699,12 @@ impl SfuConnection {
         }
         let task = spawn_audio_task(send_share_sound(rx, source));
         self.share_sound = Some(SentShareSound {
+            held: false,
             track,
             capture,
             task,
         });
+        self.apply_hold();
         Ok(())
     }
 
@@ -797,6 +830,45 @@ impl SfuConnection {
         }
     }
 
+    /// Holds (or releases) our camera, screen share and its sound while our
+    /// call membership is gone, as the microphone is (`set_muted`). Only what
+    /// the hold muted is restored; a track the user turned off stays off, and
+    /// one started during the hold is held at once.
+    pub(crate) fn set_held(&mut self, held: bool) {
+        self.held = held;
+        self.apply_hold();
+    }
+
+    fn apply_hold(&mut self) {
+        let held = self.held;
+        for sent in self.videos_sent.values_mut() {
+            match hold_step(held, sent.track.is_muted(), sent.held) {
+                Some(true) => {
+                    sent.track.mute();
+                    sent.held = true;
+                }
+                Some(false) => {
+                    sent.track.unmute();
+                    sent.held = false;
+                }
+                None => {}
+            }
+        }
+        if let Some(sent) = self.share_sound.as_mut() {
+            match hold_step(held, sent.track.is_muted(), sent.held) {
+                Some(true) => {
+                    sent.track.mute();
+                    sent.held = true;
+                }
+                Some(false) => {
+                    sent.track.unmute();
+                    sent.held = false;
+                }
+                None => {}
+            }
+        }
+    }
+
     /// Applies a user's new playback volume to their devices' sources of
     /// that sound.
     pub(crate) fn set_user_volume(&self, user: &UserId, source: SoundSource, percent: u16) {
@@ -889,6 +961,8 @@ const SHARE_SOUND_BITRATE: u64 = 128_000;
 
 /// The sound of our screen share, on the connection that publishes.
 struct SentShareSound {
+    /// Muted by the hold, see [`hold_step`].
+    held: bool,
     track: LocalAudioTrack,
     #[cfg(target_os = "linux")]
     capture: twicecat_video::audio_share::ShareAudio,
@@ -1237,6 +1311,24 @@ async fn handle_events(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hold_mutes_what_is_sending_and_restores_only_that() {
+        // Held, sending: mute it and remember it was us.
+        assert_eq!(hold_step(true, false, false), Some(true));
+        // Held, already muted by the user: leave it alone.
+        assert_eq!(hold_step(true, true, false), None);
+        // Held, already muted by us: nothing more to do.
+        assert_eq!(hold_step(true, true, true), None);
+        // Back: restore what we muted.
+        assert_eq!(hold_step(false, true, true), Some(false));
+        // Back: a track the user muted during the hold stays off.
+        assert_eq!(hold_step(false, true, false), None);
+        // Back: sending and not ours, nothing to do.
+        assert_eq!(hold_step(false, false, false), None);
+        // Back: we marked it but something else unmuted it already.
+        assert_eq!(hold_step(false, false, true), Some(false));
+    }
 
     #[test]
     fn identity_maps_to_its_user() {
