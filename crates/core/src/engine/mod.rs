@@ -153,6 +153,7 @@ impl Core {
             mic_muted: false,
             deafened: false,
             call_reconnects: 0,
+            call_held: false,
             ring_gate: watch::channel(RingGate::default()).0,
             captures: video::Captures::default(),
             update_checks: None,
@@ -558,6 +559,9 @@ struct Engine {
     deafened: bool,
     /// Consecutive SFU reconnects of the current call.
     call_reconnects: u32,
+    /// Our call membership is gone from the room state: the microphone is
+    /// held (not sent) until it is back or the call ends.
+    call_held: bool,
     /// Whether the ringtone may play, and where; each session's ringer
     /// follows it.
     ring_gate: watch::Sender<RingGate>,
@@ -1863,6 +1867,7 @@ impl Engine {
         }
         self.mic_muted = false;
         self.deafened = false;
+        self.call_held = false;
         // No ringtone while joining or in a call.
         self.update_ring_gate(true);
         self.emit(CoreEvent::CallState(CallState::Joining {
@@ -1972,13 +1977,22 @@ impl Engine {
 
     /// Applies mute and deafen (deafen also mutes, as in Discord).
     fn apply_mute(&self) {
-        let muted = self.mic_muted || self.deafened;
+        let muted = effective_mute(self.mic_muted, self.deafened, self.call_held);
         if let Some(session) = &self.audio_session {
             session.set_muted(muted);
             session.set_deafened(self.deafened);
         }
         if let Some(call) = &self.call {
             call.set_muted(muted);
+        }
+    }
+
+    /// Holds or releases our camera, screen share and its sound with the
+    /// call membership (the microphone is held by `apply_mute`).
+    fn apply_hold(&mut self) {
+        let held = self.call_held;
+        if let Some(call) = &mut self.call {
+            call.set_held(held);
         }
     }
 
@@ -1999,32 +2013,67 @@ impl Engine {
             }
             MediaNotice::Reconnected => {
                 self.call_reconnects = 0;
-                let encrypted = self.call.as_ref().is_some_and(|c| c.encrypted);
-                self.emit(CoreEvent::CallState(CallState::Connected {
+                if !self.call_held {
+                    self.emit_connected(room_id).await;
+                }
+            }
+            MediaNotice::MembershipGone => {
+                self.call_held = true;
+                self.apply_mute();
+                self.apply_hold();
+                self.emit(CoreEvent::CallState(CallState::Reconnecting {
                     room_id,
-                    encrypted,
+                    attempt: self.call_reconnects.max(1),
                 }))
                 .await;
             }
-            MediaNotice::Disconnected => {
-                if let Some(call) = self.call.take() {
-                    if let Some(calls) = self.calls() {
-                        calls.set_sent(&call.room_id, None);
-                    }
-                    let video = (call.has_video(), call.local_video());
-                    call.leave().await;
-                    self.video_ended(room_id.clone(), video).await;
+            MediaNotice::MembershipBack => {
+                self.call_held = false;
+                self.apply_mute();
+                self.apply_hold();
+                if self.call_reconnects == 0 {
+                    self.emit_connected(room_id).await;
                 }
-                self.stop_call_audio().await;
-                self.update_ring_gate(false);
-                self.emit(CoreEvent::CallState(CallState::Left {
-                    room_id,
-                    reason: CallEndReason::Failed("the call server connection was lost".into()),
-                }))
-                .await;
+            }
+            MediaNotice::Disconnected | MediaNotice::MembershipLost { .. } => {
+                if let Some(reason) = failure_reason(&notice) {
+                    self.fail_call(room_id, reason).await;
+                }
             }
             MediaNotice::EncoderLost(kind) => self.video_encoder_lost(kind).await,
         }
+    }
+
+    /// Reports the call as connected again.
+    async fn emit_connected(&mut self, room_id: RoomId) {
+        let encrypted = self.call.as_ref().is_some_and(|c| c.encrypted);
+        self.emit(CoreEvent::CallState(CallState::Connected {
+            room_id,
+            encrypted,
+        }))
+        .await;
+    }
+
+    /// Ends the call because its connection or membership is lost for good:
+    /// closes the SFU connection and the audio devices, so nothing more is
+    /// sent, and reports why.
+    async fn fail_call(&mut self, room_id: RoomId, reason: &'static str) {
+        self.call_held = false;
+        if let Some(call) = self.call.take() {
+            if let Some(calls) = self.calls() {
+                calls.set_sent(&call.room_id, None);
+            }
+            let video = (call.has_video(), call.local_video());
+            call.leave().await;
+            self.video_ended(room_id.clone(), video).await;
+        }
+        self.stop_call_audio().await;
+        self.update_ring_gate(false);
+        self.emit(CoreEvent::CallState(CallState::Left {
+            room_id,
+            reason: CallEndReason::Failed(reason.into()),
+        }))
+        .await;
     }
 
     /// Tells the ringtone whether it may play (not `in_call`, the setting)
@@ -2091,6 +2140,7 @@ impl Engine {
     /// Leaves the current call, if any; `joining_next` keeps the ringtone's
     /// gate closed for the call joined right after.
     async fn end_call(&mut self, joining_next: bool) {
+        self.call_held = false;
         if let Some(call) = self.call.take() {
             let room_id = call.room_id.clone();
             if let Some(calls) = self.calls() {
@@ -3236,9 +3286,61 @@ impl Engine {
     }
 }
 
+/// The microphone is not sent while muted, deafened, or while our call
+/// membership is gone (`held`).
+fn effective_mute(mic_muted: bool, deafened: bool, held: bool) -> bool {
+    mic_muted || deafened || held
+}
+
+/// Why a notice ends the call (`None`: it does not).
+fn failure_reason(notice: &MediaNotice) -> Option<&'static str> {
+    match notice {
+        MediaNotice::Disconnected => Some("the call server connection was lost"),
+        MediaNotice::MembershipLost { refused: true } => {
+            Some("could not stay in the call: the homeserver refused our call membership")
+        }
+        MediaNotice::MembershipLost { refused: false } => {
+            Some("could not stay in the call: the homeserver could not be reached")
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_mute_is_true_when_any_input_is() {
+        assert!(!effective_mute(false, false, false));
+        assert!(effective_mute(true, false, false));
+        assert!(effective_mute(false, true, false));
+        assert!(effective_mute(false, false, true));
+    }
+
+    #[test]
+    fn only_losing_the_call_gives_a_failure_reason() {
+        assert_eq!(
+            failure_reason(&MediaNotice::MembershipLost { refused: true }),
+            Some("could not stay in the call: the homeserver refused our call membership")
+        );
+        assert_eq!(
+            failure_reason(&MediaNotice::MembershipLost { refused: false }),
+            Some("could not stay in the call: the homeserver could not be reached")
+        );
+        assert_eq!(
+            failure_reason(&MediaNotice::Disconnected),
+            Some("the call server connection was lost")
+        );
+        for other in [
+            MediaNotice::Reconnecting,
+            MediaNotice::Reconnected,
+            MediaNotice::MembershipGone,
+            MediaNotice::MembershipBack,
+        ] {
+            assert_eq!(failure_reason(&other), None, "{other:?}");
+        }
+    }
     use crate::api::{AvatarId, RoomListQuery, RoomListTab};
     use crate::secrets::InMemorySecretStore;
 
@@ -3269,6 +3371,7 @@ mod tests {
             mic_muted: false,
             deafened: false,
             call_reconnects: 0,
+            call_held: false,
             ring_gate: watch::channel(RingGate::default()).0,
             captures: video::Captures::default(),
             update_checks: None,
@@ -3462,6 +3565,7 @@ mod tests {
             mic_muted: false,
             deafened: false,
             call_reconnects: 0,
+            call_held: false,
             ring_gate: watch::channel(RingGate::default()).0,
             captures: video::Captures::default(),
             update_checks: None,

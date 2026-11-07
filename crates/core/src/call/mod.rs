@@ -61,7 +61,7 @@ use self::media::{ConnectionShared, Publish, SfuConnection, SharedFlags};
 pub(crate) use self::media::{MediaNotice, VideoSource};
 use self::membership::MEMBERSHIP_EXPIRES;
 use self::own_membership::{
-    OwnMembership, keep_membership, schedule_delayed_leave, send_membership,
+    OwnMembership, REJOIN_GIVE_UP, keep_membership, schedule_delayed_leave, send_membership,
 };
 pub(crate) use self::participants::active_memberships;
 use self::participants::{Ours, watch_participants};
@@ -278,6 +278,8 @@ impl CallSession {
                 intent,
                 delay_id,
                 gone: own_gone.clone(),
+                notices: to_engine.clone(),
+                give_up_after: REJOIN_GIVE_UP,
             },
             joined_ms,
         )));
@@ -405,6 +407,14 @@ impl CallSession {
             to_engine,
         )));
         Ok(session)
+    }
+
+    /// Holds (or releases) our camera, screen share and its sound while our
+    /// call membership is gone.
+    pub(crate) fn set_held(&mut self, held: bool) {
+        if let Some(own) = self.own.as_mut() {
+            own.set_held(held);
+        }
     }
 
     /// Mutes or unmutes our published microphone; others see the change.
