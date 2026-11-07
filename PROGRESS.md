@@ -3486,3 +3486,10 @@ See the plan's "Human checkpoint"; items move here as tasks finish. Already open
   - Q1: pin `ubuntu:24.04` by digest so Dependabot refreshes it? (default: no.)
   - Q2: add the `rust-toolchain` ecosystem? (default: no.)
   - Q3: turn on "Dependabot alerts" and "Dependabot security updates" in Settings → Code security? (not changed here.)
+
+## Call membership 401 steps (issue #46)
+- **cm401.1 (done):** every delayed-leave update (restart, cancel, send) now carries the access token. ruma declares `update_delayed_event::unstable_v2` as `NoAccessToken`, so the SDK sent no `Authorization` header and newer Synapse answers `401 M_MISSING_TOKEN`, letting the delayed leave fire after 18 s. `update_delayed_leave` in `crates/core/src/call/own_membership.rs` sends it with `force_auth()` and falls back to `unstable_v1` for servers without the `{action}` path.
+- **Tests:** three unit tests against an in-process fake homeserver (header on all three actions; v1 fallback with its body; `M_NOT_FOUND` not retried). Dropping `force_auth()` fails the header test (mutation, reverted).
+- **Checks run:** `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`.
+- **Open:** the ignored `call_signalling` end-to-end tests were not run: the local stack would not start because host port 8080 is held by another container on this machine. Run `cargo test -p twicecat-core --test call_signalling -- --ignored` with the stack up.
+- **Left for the human:** check against a newer Synapse with Element (see the checkpoint added in cm401.2). Issue #46 closes with cm401.2.
