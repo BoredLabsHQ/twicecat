@@ -42,6 +42,7 @@ Still experimental: calls, video, and voice cleaning on the GPU. Rendering, audi
 | `crates/video` | Video frames, colour conversion on the CPU or the GPU, screen capture and the quality ladder |
 | `crates/ptt` | Push-to-talk: global keys and gamepad buttons |
 | `crates/perf` | Recording performance indicators in tests |
+| `design/` | The design system: tokens, brand assets (logo, icons, banners, emoji), fonts and component guidelines |
 | `packaging/` | Icons, the desktop entry, AppStream data, the Flatpak and the package configs |
 | `dev/` | Configuration for the local stack and the build images |
 | `scripts/` | Fetching pinned downloads, the local stack, checks, packaging |
