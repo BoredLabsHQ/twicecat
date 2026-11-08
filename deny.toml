@@ -18,6 +18,11 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained (merged into zbus 6), transitive via zbus 5 from pinned iced/ashpd/keyring" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6), transitive via zbus 5 from pinned iced/ashpd/keyring" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6), transitive via zbus 5 from pinned iced/ashpd/keyring" },
+    # libsqlite3-sys 0.38.2 bundles SQLite < 3.54.0. The fix (0.39) needs rusqlite
+    # 0.41, and matrix-sdk-sqlite 0.19.1 (the newest matrix-sdk) requires rusqlite
+    # 0.40; only one libsqlite3-sys can link. The attack needs a crafted database
+    # and -wal pair in our own store directory. Drop this when matrix-sdk moves on.
+    { id = "RUSTSEC-2026-0459", reason = "libsqlite3-sys 0.38.2 (SQLite < 3.54.0) via pinned matrix-sdk 0.19.1 -> rusqlite 0.40; no compatible fix; needs crafted local db+wal files" },
 ]
 
 [bans]
