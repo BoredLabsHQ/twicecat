@@ -19,12 +19,12 @@
 //! never waits and skips the run instead.
 
 use std::cell::Cell;
+use std::ffi::CString;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
-use ort::ep::ExecutionProviderLibrary;
 use ort::session::builder::SessionBuilder;
 
 /// The WebGPU plugin provider release `scripts/fetch-webgpu-ep.sh` pins
@@ -33,6 +33,9 @@ pub const WEBGPU_EP_VERSION: &str = "0.4.0";
 
 /// The provider's name, as the plugin registers it.
 const EP_NAME: &str = "WebGpuExecutionProvider";
+
+/// The name we register the plugin library under (and unregister it by).
+const REGISTRATION: &str = "webgpu";
 
 fn library_name() -> &'static str {
     match std::env::consts::OS {
@@ -54,8 +57,8 @@ pub fn default_webgpu_dir() -> Option<PathBuf> {
 /// The plugin's directory, found when the runtime loaded.
 static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-/// The plugin, while registered (see the module docs).
-static PLUGIN: Mutex<Option<ExecutionProviderLibrary>> = Mutex::new(None);
+/// Whether the plugin is registered (see the module docs).
+static PLUGIN: Mutex<bool> = Mutex::new(false);
 
 /// Notes where the plugin is (once, when the runtime loads).
 pub(super) fn set_dir(dir: Option<PathBuf>) {
@@ -66,7 +69,7 @@ pub(super) fn set_dir(dir: Option<PathBuf>) {
 /// GPU it can use. Returns whether it is registered.
 pub(super) fn register() -> bool {
     let mut plugin = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
-    if plugin.is_some() {
+    if *plugin {
         return true;
     }
     let Some(library) = DIR
@@ -77,11 +80,12 @@ pub(super) fn register() -> bool {
     else {
         return false;
     };
-    match ort::environment::Environment::current()
-        .and_then(|env| env.register_ep_library("webgpu", &library))
-    {
-        Ok(registered) => {
-            *plugin = Some(registered);
+    match super::environment().and_then(|env| {
+        env.register_ep_library(REGISTRATION, &library)
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(()) => {
+            *plugin = true;
             true
         }
         Err(e) => {
@@ -94,8 +98,27 @@ pub(super) fn register() -> bool {
 /// Unregisters the plugin, which releases its GPU device. No WebGPU session
 /// may be alive.
 pub(super) fn unregister() {
-    let plugin = PLUGIN.lock().unwrap_or_else(|e| e.into_inner()).take();
-    if let Some(Err(e)) = plugin.map(ExecutionProviderLibrary::unregister) {
+    let mut plugin = PLUGIN.lock().unwrap_or_else(|e| e.into_inner());
+    if !std::mem::take(&mut *plugin) {
+        return;
+    }
+    let Ok(env) = super::environment() else {
+        return;
+    };
+    // ort 2.0.0-rc.15 has no call for this (rc.13's
+    // `ExecutionProviderLibrary::unregister` made this same one).
+    let name = CString::new(REGISTRATION).expect("no NUL in the name");
+    // SAFETY: a live environment (kept for the process) and the name the
+    // library was registered under; no WebGPU session is alive (callers'
+    // contract), so nothing uses the plugin's device.
+    let status = unsafe {
+        (ort::api().UnregisterExecutionProviderLibrary)(
+            ort::AsPointer::ptr(env).cast_mut(),
+            name.as_ptr(),
+        )
+    };
+    // SAFETY: a status from the API, owned from here on.
+    if let Err(e) = unsafe { ort::Error::result_from_status(status) } {
         tracing::warn!("WebGPU provider not unregistered: {e}");
     }
 }
@@ -103,8 +126,7 @@ pub(super) fn unregister() {
 /// Whether the environment lists a WebGPU device (the plugin registered and
 /// found an adapter).
 pub(super) fn device_listed() -> bool {
-    ort::environment::Environment::current()
-        .is_ok_and(|env| env.devices().any(|d| d.ep().is_ok_and(|n| n == EP_NAME)))
+    super::environment().is_ok_and(|env| env.devices().any(|d| d.ep().is_ok_and(|n| n == EP_NAME)))
 }
 
 /// Adds the plugin's device to a session, with graph capture or not. The
@@ -113,7 +135,7 @@ pub(super) fn add_to_session(
     builder: SessionBuilder,
     graph_capture: bool,
 ) -> Result<SessionBuilder, String> {
-    let env = ort::environment::Environment::current().map_err(|e| e.to_string())?;
+    let env = super::environment()?;
     let device = env
         .devices()
         .find(|d| d.ep().is_ok_and(|n| n == EP_NAME))

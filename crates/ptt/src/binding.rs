@@ -134,7 +134,9 @@ impl fmt::Display for KeyBinding {
 /// The xkb keysym name of a key, for the portal.
 /// Modifier keys, and keys the system keeps to itself (`Fn`). global-hotkey
 /// 0.9 names them, but alone they are no binding: Shift pressed on the way
-/// to Shift+T must not become the push-to-talk key.
+/// to Shift+T must not become the push-to-talk key. `Super` and `Hyper` are
+/// legacy names, but `SUPER` and `HYPER` still parse to them.
+#[allow(deprecated)]
 fn is_modifier_key(code: Code) -> bool {
     matches!(
         code,
