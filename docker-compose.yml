@@ -154,7 +154,7 @@ services:
   # Not started by default (CI does not need it): `docker compose --profile element up -d`,
   # then open http://localhost:8082.
   element:
-    image: vectorim/element-web:v1.12.30
+    image: vectorim/element-web:v1.12.33
     profiles: ["element"]
     ports:
       - "127.0.0.1:8082:80"
