@@ -49,7 +49,7 @@ services:
   # same for the host (published above) and for lk-jwt-service.
   # dev/livekit/livekit.yaml is a template; the entrypoint fills it in.
   livekit:
-    image: livekit/livekit-server:v1.13.7
+    image: livekit/livekit-server:v1.13.11
     network_mode: "service:synapse"
     depends_on:
       synapse:
@@ -106,7 +106,7 @@ services:
   # publishes to their own, and the others subscribe there. Same dev key as
   # the first pair (test-only), different ports.
   livekit-b:
-    image: livekit/livekit-server:v1.13.7
+    image: livekit/livekit-server:v1.13.11
     network_mode: "service:synapse"
     depends_on:
       synapse:
