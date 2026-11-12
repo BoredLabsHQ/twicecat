@@ -3526,3 +3526,7 @@ See the plan's "Human checkpoint"; items move here as tasks finish. Already open
   - [ ] Two Twicecat clients in a call on an SFU with lk-jwt-service 0.10 defaults: a voice cleaned at its source shows "already clean" on the other side within about 10 s.
   - [ ] Change the default notification mode on a current Synapse: it saves without an error.
   - Follow-up: drop the attribute fallback once no pre-2026-11 build is in use.
+
+## Alpha issues (#47, #48, #49; branch fix/alpha-issues; 2026-11-12)
+- **#47 (crash on Windows: `Surface::configure` with 6899 x 9036, maximum 8192):** iced_wgpu 0.14 requests `wgpu::Limits::default()` (largest texture side 8192) and iced resizes the surface to the window, so a window larger than that panicked. The app never resizes its window; Windows gave it that size. The app now sets a maximum window size of 8192 pixels per side (`App::cap_window_size`, logical size from the display's and the text scale's factors, as iced converts) when the window opens, when the display scale changes and when the text scale changes. Test: `the_window_never_outgrows_the_gpu_surface`.
+  - [ ] Human (Windows): with two monitors or a high-DPI display, drag the window larger than 8192 px (or restore it across monitors): it stops at the limit and does not crash.

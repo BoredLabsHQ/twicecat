@@ -778,6 +778,18 @@ impl App {
         }
     }
 
+    /// Keeps the window within what the GPU surface can take: iced 0.14
+    /// asks wgpu for its default limits, whose largest texture side is
+    /// [`MAX_SURFACE_SIDE`] pixels, and a bigger window panicked in
+    /// `Surface::configure` (issue #47: 6899 x 9036 on Windows). Again on
+    /// every change of the display's scale and of the text scale, as iced
+    /// turns the logical size into pixels with both.
+    pub(crate) fn cap_window_size(&self) -> Task<Message> {
+        let side = max_window_side(self.window_scale, self.scale_factor());
+        window::oldest()
+            .and_then(move |id| window::set_max_size(id, Some(iced::Size::new(side, side))))
+    }
+
     /// Replaces the local settings (read from the settings file at boot).
     pub fn set_ui_settings(&mut self, settings: UiSettings) {
         self.ui_settings = settings;
@@ -1195,7 +1207,7 @@ impl App {
                 if scale.is_finite() && (0.25..=16.0).contains(&scale) {
                     self.window_scale = scale;
                 }
-                Task::none()
+                self.cap_window_size()
             }
             Message::NotificationShown { room_id, id } => {
                 self.folding.shown(&room_id, id);
@@ -2975,6 +2987,23 @@ fn visible_images(view: &TimelineView) -> Vec<String> {
         .collect()
 }
 
+/// The largest side, in pixels, of a texture under `wgpu::Limits::default()`,
+/// which iced_wgpu 0.14 requests: the window surface may not be larger.
+pub(crate) const MAX_SURFACE_SIDE: f32 = 8192.0;
+
+/// The largest window side in logical units for the display's scale
+/// (`display`) and the app's text scale (`text`), so that iced's conversion
+/// (logical times both) stays within [`MAX_SURFACE_SIDE`] pixels.
+pub(crate) fn max_window_side(display: f32, text: f32) -> f32 {
+    let factor = display * text;
+    let factor = if factor.is_finite() && factor > 0.0 {
+        factor
+    } else {
+        1.0
+    };
+    (MAX_SURFACE_SIDE / factor).floor()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -2983,6 +3012,28 @@ mod tests {
     use twicecat_core::api::{DeviceId, ListDiff, RoomId};
 
     use super::*;
+
+    #[test]
+    fn the_window_never_outgrows_the_gpu_surface() {
+        assert_eq!(max_window_side(1.0, 1.0), 8192.0);
+        assert_eq!(max_window_side(1.5, 1.0), 5461.0);
+        assert_eq!(max_window_side(2.0, 1.5), 2730.0);
+        for display in [1.0_f32, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0] {
+            for text in [0.8_f32, 1.0, 1.1, 1.25, 1.5, 2.0] {
+                let side = max_window_side(display, text);
+                assert!(
+                    side * display * text <= MAX_SURFACE_SIDE,
+                    "{display} {text}"
+                );
+            }
+        }
+        assert_eq!(
+            max_window_side(f32::NAN, 1.0),
+            8192.0,
+            "a bad factor counts as 1"
+        );
+        assert_eq!(max_window_side(0.0, 1.0), 8192.0);
+    }
 
     fn app_with(capacity: usize) -> (App, mpsc::Receiver<Command>) {
         let (tx, rx) = mpsc::channel(capacity);
