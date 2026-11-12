@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-26.04-arm
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Install Linux build dependencies
@@ -80,7 +80,7 @@ jobs:
     # with the dist profile); the arm runner is slower.
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Install Linux build dependencies
