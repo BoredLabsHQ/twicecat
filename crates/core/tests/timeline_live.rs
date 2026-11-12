@@ -286,6 +286,63 @@ async fn a_read_receipt_reaches_the_sender() {
     p.finish().await;
 }
 
+/// The event alice's fully-read marker of `room` points to, as the server
+/// has it (`None` before she has one).
+async fn fully_read(
+    client: &matrix_sdk::Client,
+    room: &matrix_sdk::ruma::RoomId,
+) -> Option<String> {
+    use matrix_sdk::ruma::api::client::config::get_room_account_data::v3::Request;
+    let request = Request::new(
+        client.user_id().unwrap().to_owned(),
+        room.to_owned(),
+        "m.fully_read".into(),
+    );
+    let response = client.send(request).await.ok()?;
+    let content: serde_json::Value =
+        serde_json::from_str(response.account_data.json().get()).ok()?;
+    content["event_id"].as_str().map(str::to_owned)
+}
+
+/// The read marker the app sends when the user moves to another room must
+/// reach the server: opening the next room used to abort it with the old
+/// room's tasks.
+#[tokio::test]
+#[ignore = "needs local homeserver: docker compose up -d --wait"]
+async fn the_read_marker_moves_although_another_room_opens_at_once() {
+    let mut p = pair().await;
+    let room = p.room.clone();
+    let last = send_text(&p.alice_raw, &p.room_id, "read up to here").await;
+    let seen = |items: &[TimelineItem]| {
+        items.iter().any(|i| {
+            i.event_id
+                .as_ref()
+                .is_some_and(|e| e.as_str() == last.as_str())
+        })
+    };
+    apply_until(&mut p.alice, &room, &mut p.alice_items, seen).await;
+    // As the app does on a room switch: the marker, then the next room (the
+    // same one here, which also replaces the selection).
+    for command in [
+        Command::MoveReadMarker {
+            room_id: RoomId::from(room.as_str()),
+        },
+        Command::SelectRoom(RoomId::from(room.as_str())),
+    ] {
+        p.alice.commands.send(command).await.unwrap();
+    }
+    let moved = async {
+        while fully_read(&p.alice_raw, &p.room_id).await.as_deref() != Some(last.as_str()) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    tokio::time::timeout(common::DEFAULT_TIMEOUT, moved)
+        .await
+        .expect("the fully-read marker never reached the last message");
+    let _ = &p.carol_items;
+    p.finish().await;
+}
+
 #[tokio::test]
 #[ignore = "needs local homeserver: docker compose up -d --wait"]
 async fn typing_notices_reach_the_other_user() {
