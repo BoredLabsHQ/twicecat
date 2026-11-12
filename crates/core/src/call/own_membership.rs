@@ -143,13 +143,27 @@ async fn send_membership_raw(
 /// Leaves: fires the delayed leave at once, or (without delayed events, or
 /// if that failed) sends the empty membership.
 pub(super) async fn remove(room: &Room, state_key: &str, delay_id: Option<String>) {
+    // Each request is bounded (`CALL_STEP_LIMIT`): the core waits for the
+    // leave, and a stuck one would hold every other command. The delayed
+    // leave, if any, still removes the membership when it fires.
+    let limit = super::CALL_STEP_LIMIT;
     let fired = match delay_id {
-        Some(id) => update_delayed_leave(&room.client(), id, UpdateAction::Send)
-            .await
-            .is_ok(),
+        Some(id) => matches!(
+            tokio::time::timeout(
+                limit,
+                update_delayed_leave(&room.client(), id, UpdateAction::Send)
+            )
+            .await,
+            Ok(Ok(_))
+        ),
         None => false,
     };
-    if !fired && send_membership(room, state_key, json!({})).await.is_err() {
+    if !fired
+        && !matches!(
+            tokio::time::timeout(limit, send_membership(room, state_key, json!({}))).await,
+            Ok(Ok(_))
+        )
+    {
         tracing::warn!("could not remove the call membership; it expires by itself");
     }
 }
