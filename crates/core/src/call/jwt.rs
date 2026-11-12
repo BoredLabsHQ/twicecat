@@ -109,7 +109,13 @@ async fn request(service_url: &str, path: &str, body: Value) -> Result<SfuAccess
     }
     let body = Zeroizing::new(body.to_string());
     let endpoint = format!("{}{path}", service_url.trim_end_matches('/'));
-    let response = matrix_sdk::reqwest::Client::new()
+    // Bounded like the other steps of a join (`CALL_STEP_LIMIT`): a service
+    // that accepts the connection and never answers must not hold the core.
+    let client = matrix_sdk::reqwest::Client::builder()
+        .timeout(super::CALL_STEP_LIMIT)
+        .build()
+        .map_err(|_| CoreError::Call("the call service is unreachable".into()))?;
+    let response = client
         .post(endpoint)
         .header("content-type", "application/json")
         .body(body.as_str().to_owned())
