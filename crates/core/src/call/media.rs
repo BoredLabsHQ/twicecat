@@ -471,7 +471,8 @@ impl SfuConnection {
                 "microphone",
                 RtcAudioSource::Native(source.clone()),
             );
-            room.local_participant()
+            let published = room
+                .local_participant()
                 .publish_track(
                     LocalTrack::Audio(local.clone()),
                     TrackPublishOptions {
@@ -486,8 +487,14 @@ impl SfuConnection {
                         ..TrackPublishOptions::default()
                     },
                 )
-                .await
-                .map_err(|_| CoreError::Call("could not publish the microphone".into()))?;
+                .await;
+            if published.is_err() {
+                // The room keeps its connection (and its subscriptions to
+                // everyone's media) until it is closed: dropping it is not
+                // enough in livekit 0.9.5.
+                let _ = room.close().await;
+                return Err(CoreError::Call("could not publish the microphone".into()));
+            }
             if let Some(outgoing) = publish.outgoing {
                 tasks.push(spawn_audio_task(send_microphone(outgoing, source)));
             }
