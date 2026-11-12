@@ -215,6 +215,22 @@ impl Selected {
         self.tasks.shutdown().await;
     }
 
+    /// Like [`Self::stop`] for a room the user moved away from: its action
+    /// tasks are not aborted but moved to `finishing`, so what the app sent
+    /// just before the switch (the read marker, "stopped typing", a reaction
+    /// clicked) still reaches the server. The session's end aborts them.
+    async fn close(mut self, finishing: &mut JoinSet<()>) {
+        if let Some(thread) = self.thread.take() {
+            thread.stop().await;
+        }
+        self.task.abort();
+        let _ = self.task.await;
+        // Forget finished ones, so the set does not grow with every room.
+        while finishing.try_join_next().is_some() {}
+        let mut tasks = std::mem::take(&mut self.tasks);
+        finishing.spawn(async move { while tasks.join_next().await.is_some() {} });
+    }
+
     /// The timeline `target` names, or why there is none.
     fn timeline_for(&self, target: TimelineTarget<'_>) -> Result<Arc<Timeline>, CoreError> {
         match target {
@@ -285,6 +301,9 @@ struct Active {
     changes: broadcast::Receiver<SessionChange>,
     sync: Option<Syncing>,
     selected: Option<Selected>,
+    /// The action tasks of rooms the user moved away from
+    /// ([`Selected::close`]).
+    finishing: JoinSet<()>,
     /// Avatar fetches of this session (in flight and answered).
     avatars: Avatars,
     fetcher: Arc<SdkFetcher>,
@@ -320,6 +339,7 @@ impl Active {
         if let Some(selected) = self.selected.take() {
             selected.stop().await;
         }
+        self.finishing.shutdown().await;
         let Some(sync) = self.sync.take() else {
             return;
         };
@@ -2597,7 +2617,7 @@ impl Engine {
             .get_room(&sdk_id)
             .ok_or_else(|| CoreError::UnknownRoom(room_id.clone()))?;
         if let Some(previous) = active.selected.take() {
-            previous.stop().await;
+            previous.close(&mut active.finishing).await;
         }
         // Threaded replies belong to their thread's timeline (Q16); the
         // builder from `RoomExt` keeps the read receipt tracking.
@@ -2948,6 +2968,7 @@ impl Engine {
                         changes,
                         sync: None,
                         selected: None,
+                        finishing: JoinSet::new(),
                         avatars: Avatars::new(),
                         security: SecurityTasks::new(),
                         media: MediaTasks::new(),
@@ -3129,6 +3150,7 @@ impl Engine {
                 changes,
                 sync: None,
                 selected: None,
+                finishing: JoinSet::new(),
                 avatars: Avatars::new(),
                 security: SecurityTasks::new(),
                 media: MediaTasks::new(),
@@ -3948,6 +3970,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -3995,6 +4018,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4042,6 +4066,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4094,6 +4119,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4150,6 +4176,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security,
             media: MediaTasks::new(),
@@ -4424,6 +4451,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4496,6 +4524,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4570,6 +4599,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4763,6 +4793,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4855,6 +4886,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4941,6 +4973,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
