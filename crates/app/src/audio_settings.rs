@@ -384,7 +384,9 @@ pub fn key_label(binding: &str) -> String {
         ("control", "Ctrl"),
         ("alt", "Alt"),
         ("shift", "Shift"),
-        ("super", logo),
+        // global-hotkey 0.9 writes the logo key as `meta`; bindings saved
+        // before say `super`, and parse to the same key.
+        ("meta", logo),
     ] {
         if parts.iter().any(|p| p.eq_ignore_ascii_case(written)) {
             out.push_str(shown);
@@ -2571,8 +2573,11 @@ mod tests {
                 app.audio_ui.capturing && drain(&mut rx).is_empty(),
                 "modifiers wait"
             );
-            let _ = app.update(key(Code::ContextMenu, Modifiers::empty()));
-            assert_eq!(app.audio_ui.capture_note, Some(UNBINDABLE_KEY));
+            // Fn waits like a modifier. Since global-hotkey 0.9 names every
+            // other key iced reports (ContextMenu was refused before), so
+            // `Capture::Refused` is only a guard now.
+            let _ = app.update(key(Code::Fn, Modifiers::empty()));
+            assert_eq!(app.audio_ui.capture_note, None);
             assert!(app.audio_ui.capturing && drain(&mut rx).is_empty());
             let _ = app.update(key(Code::KeyY, Modifiers::CTRL | Modifiers::ALT));
             assert!(!app.audio_ui.capturing && app.audio_ui.capture_note.is_none());
@@ -2780,6 +2785,7 @@ mod tests {
                 "Super"
             };
             assert_eq!(key_label("super+Space"), format!("{logo}+Space"));
+            assert_eq!(key_label("meta+Space"), format!("{logo}+Space"));
             assert_eq!(key_label("Banana"), "Banana", "shown as stored");
         }
 

@@ -44,7 +44,7 @@ impl Held {
             (self.ctrl, Modifiers::CONTROL),
             (self.alt, Modifiers::ALT),
             (self.shift, Modifiers::SHIFT),
-            (self.logo, Modifiers::SUPER),
+            (self.logo, Modifiers::META),
         ] {
             if held {
                 mods |= modifier;
@@ -86,7 +86,10 @@ impl KeyBinding {
         if code.is_empty() || code.contains('+') {
             return None;
         }
-        HotKey::from_str(code).ok().map(|hotkey| hotkey.key)
+        HotKey::from_str(code)
+            .ok()
+            .map(|hotkey| hotkey.key)
+            .filter(|key| !is_modifier_key(*key))
     }
 
     /// The trigger suggested to the GlobalShortcuts portal, in the XDG
@@ -100,7 +103,7 @@ impl KeyBinding {
             (Modifiers::CONTROL, "CTRL"),
             (Modifiers::ALT, "ALT"),
             (Modifiers::SHIFT, "SHIFT"),
-            (Modifiers::SUPER, "LOGO"),
+            (Modifiers::META, "LOGO"),
         ] {
             if self.0.mods.contains(modifier) {
                 out.push_str(name);
@@ -129,6 +132,27 @@ impl fmt::Display for KeyBinding {
 }
 
 /// The xkb keysym name of a key, for the portal.
+/// Modifier keys, and keys the system keeps to itself (`Fn`). global-hotkey
+/// 0.9 names them, but alone they are no binding: Shift pressed on the way
+/// to Shift+T must not become the push-to-talk key.
+fn is_modifier_key(code: Code) -> bool {
+    matches!(
+        code,
+        Code::ShiftLeft
+            | Code::ShiftRight
+            | Code::ControlLeft
+            | Code::ControlRight
+            | Code::AltLeft
+            | Code::AltRight
+            | Code::MetaLeft
+            | Code::MetaRight
+            | Code::Super
+            | Code::Hyper
+            | Code::Fn
+            | Code::FnLock
+    )
+}
+
 fn keysym_name(code: Code) -> Option<String> {
     let name = code.to_string();
     if let Some(letter) = name.strip_prefix("Key") {
@@ -353,6 +377,10 @@ mod tests {
         assert_eq!(key(" alt+Space ").to_string(), "alt+Space");
         let again = key(&key("super+alt+Digit5").to_string());
         assert_eq!(again, key("super+alt+Digit5"));
+        // Bindings saved with global-hotkey 0.8 wrote the logo key as
+        // `super`; 0.9 writes `meta` and reads both as the same key.
+        assert_eq!(key("super+KeyM"), key("meta+KeyM"));
+        assert_eq!(key("super+KeyM").to_string(), "meta+KeyM");
         for bad in ["", "ctrl+", "KeyT+ctrl", "ctrl+KeyT+KeyU", "Banana"] {
             assert!(bad.parse::<KeyBinding>().is_err(), "{bad:?}");
         }
@@ -387,7 +415,7 @@ mod tests {
                     logo: true,
                     ..Held::default()
                 },
-                "super+KeyM",
+                "meta+KeyM",
             ),
         ] {
             assert_eq!(
@@ -401,6 +429,8 @@ mod tests {
             "ControlRight",
             "SuperLeft",
             "AltLeft",
+            "MetaRight",
+            "Super",
             "Fn",
             "",
             "ctrl+KeyT",
