@@ -11,7 +11,7 @@ x-stack: &stack
 
 services:
   synapse:
-    image: matrixdotorg/synapse:v1.151.0
+    image: matrixdotorg/synapse:v1.164.2
     entrypoint: ["/bin/sh", "/start-dev.sh"]
     environment:
       SYNAPSE_SERVER_NAME: localhost
