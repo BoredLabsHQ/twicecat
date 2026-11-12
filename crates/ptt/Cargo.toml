@@ -26,7 +26,7 @@ x11rb = { version = "=0.13.2", features = ["xinput"] }
 # Windows: the mouse button through a low-level mouse hook (#34; the version
 # global-hotkey already locks).
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "=0.59.0", features = [
+windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
