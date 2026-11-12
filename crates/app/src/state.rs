@@ -2566,10 +2566,18 @@ impl App {
         self.notification_settings = None;
         self.spaces.clear();
         self.forget_threads();
+        // Nothing of the old account outlives it: the switcher (its rooms),
+        // a room still to open, the search, tab and space (the core keeps
+        // its query across sessions, so it is told), and the tray's count.
+        self.switcher = crate::switcher::SwitcherModel::default();
+        self.pending_open = None;
+        self.search_input.clear();
+        let query = self.set_query(RoomListQuery::default());
+        self.tray.set_unread(0, self.ui_settings.tray_badge);
         self.notice = Some(notice.to_owned());
         self.end_login_attempt();
         self.screen = Screen::Login;
-        flush
+        Task::batch([flush, query])
     }
 
     pub(crate) fn deselect(&mut self) {
@@ -9070,6 +9078,43 @@ mod tests {
             let _ = rig.app.update(Message::WindowOpened(id));
             let _ = rig.app.update(Message::WindowOpened(id));
             assert_eq!(rig.tray.created.lock().expect("test mutex").len(), 1);
+        }
+
+        #[test]
+        fn logging_out_leaves_nothing_of_the_account_behind() {
+            let mut rig = rig();
+            let _ = rig
+                .app
+                .update(Message::WindowOpened(iced::window::Id::unique()));
+            let _ = rig.app.update(core(CoreEvent::UnreadTotals {
+                notifications: 3,
+                highlights: 0,
+            }));
+            rig.app.switcher.open = true;
+            rig.app.switcher.query = "old room".into();
+            rig.app.switcher.seed = vec![RoomSummary::new(RoomId::from("!a:x"), "a".into())];
+            rig.app.pending_open = Some(RoomId::from("!b:x"));
+            rig.app.search_input = "old".into();
+            rig.app.query = RoomListQuery {
+                search: "old".into(),
+                ..RoomListQuery::default()
+            };
+            while rig.rx.try_recv().is_ok() {}
+
+            let _ = rig.app.update(core(CoreEvent::LoggedOut));
+            assert!(!rig.app.switcher.open && rig.app.switcher.seed.is_empty());
+            assert!(rig.app.switcher.query.is_empty());
+            assert_eq!(rig.app.pending_open, None);
+            assert!(rig.app.search_input.is_empty());
+            assert_eq!(rig.app.query, RoomListQuery::default());
+            let sent: Vec<Command> = std::iter::from_fn(|| rig.rx.try_recv().ok()).collect();
+            assert!(
+                sent.iter().any(
+                    |c| matches!(c, Command::SetRoomListQuery(q) if *q == RoomListQuery::default())
+                ),
+                "the core's query is reset too: {sent:?}"
+            );
+            assert_eq!(*rig.tray.badges.lock().expect("test mutex"), [true, false]);
         }
 
         #[test]
