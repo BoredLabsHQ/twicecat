@@ -7,7 +7,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
-# X11, Windows and macOS hotkeys (the key is grabbed: other apps do not see it).
+# Key names and parsing for bindings; the macOS global shortcut (the key is
+# grabbed there: other apps do not see it), and the fallback elsewhere.
 global-hotkey = "=0.9.0"
 # Gamepads (Steam Input's virtual pads included).
 gilrs = "=0.11.2"
@@ -16,20 +17,25 @@ tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 tracing = "0.1"
 
 # Wayland: the xdg-desktop-portal GlobalShortcuts portal (KDE, GNOME).
-# X11: the mouse button through XInput 2 raw events (#34; the version
-# global-hotkey already locks).
+# X11: the key and the mouse button through XInput 2 raw events (#34, #49;
+# the version global-hotkey already locks), keys named by winit (the version
+# and features Iced already lock).
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { version = "=0.13.13", default-features = false, features = ["tokio", "global_shortcuts"] }
 futures-util = "0.3"
+winit = { version = "=0.30.13", default-features = false, features = ["x11"] }
 x11rb = { version = "=0.14.0", features = ["xinput"] }
 
-# Windows: the mouse button through a low-level mouse hook (#34; the version
-# global-hotkey already locks).
+# Windows: the key and the mouse button through low-level hooks (#34, #49;
+# the version global-hotkey already locks), keys named by winit (the version
+# Iced already locks).
 [target.'cfg(target_os = "windows")'.dependencies]
+winit = { version = "=0.30.13", default-features = false }
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

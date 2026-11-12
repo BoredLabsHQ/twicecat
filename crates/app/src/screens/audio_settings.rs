@@ -398,6 +398,15 @@ pub fn source_line(source: Source, state: &SourceState) -> String {
 /// What the session's keyboard mechanism means for the key.
 pub fn keyboard_note(keyboard: KeyboardBackend) -> &'static str {
     match keyboard {
+        // X11 and Windows watch the key without taking it (#49); macOS
+        // grabs it.
+        #[cfg(not(target_os = "macos"))]
+        KeyboardBackend::Hotkey => {
+            "During a call, the mic test, or while this card is open, the key works in every \
+             app, and they still receive it: a letter still types while you talk. It also \
+             works in Twicecat's window."
+        }
+        #[cfg(target_os = "macos")]
         KeyboardBackend::Hotkey => {
             "During a call, the mic test, or while this card is open, the key works in every \
              app, and other apps do not receive it. It also works in Twicecat's window."

@@ -1,8 +1,9 @@
 //! Twicecat push-to-talk: turns a held key or button into "transmit on/off".
 //!
 //! Sources, merged so that any one held means transmit:
-//! - a global keyboard shortcut: global-hotkey on X11, Windows and macOS,
-//!   the GlobalShortcuts portal on Wayland;
+//! - a global key: watched without being taken on X11 and Windows (other
+//!   applications still get it, #49), grabbed through global-hotkey on
+//!   macOS, the GlobalShortcuts portal on Wayland;
 //! - a global mouse button (not the left or right one) on X11, Windows and
 //!   macOS; other applications still get its clicks;
 //! - a gamepad button (gilrs);
@@ -19,6 +20,8 @@ use std::sync::{Arc, Mutex};
 mod binding;
 mod gamepad;
 mod hotkey;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod keys;
 mod merge;
 mod mouse;
 #[cfg(target_os = "linux")]
@@ -152,6 +155,8 @@ pub struct PttService {
     shared: Arc<Shared>,
     // Dropped in this order before the final release.
     hotkeys: Option<hotkey::Hotkeys>,
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    keys: Option<keys::Listener>,
     #[cfg(target_os = "linux")]
     portal: Option<portal::Portal>,
     mouse: Option<mouse::Hook>,
@@ -169,6 +174,8 @@ impl PttService {
         let mut service = Self {
             shared: shared.clone(),
             hotkeys: None,
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            keys: None,
             #[cfg(target_os = "linux")]
             portal: None,
             mouse: None,
@@ -176,6 +183,15 @@ impl PttService {
         };
         if let Some(key) = config.key {
             match config.keyboard {
+                #[cfg(any(target_os = "windows", target_os = "linux"))]
+                KeyboardBackend::Hotkey => match keys::Listener::start(key, shared.clone()) {
+                    Ok(listener) => service.keys = Some(listener),
+                    Err(reason) => {
+                        tracing::warn!(%reason, "cannot watch keys; grabbing the key instead");
+                        service.hotkeys = hotkey::Hotkeys::start(key, shared.clone());
+                    }
+                },
+                #[cfg(not(any(target_os = "windows", target_os = "linux")))]
                 KeyboardBackend::Hotkey => {
                     service.hotkeys = hotkey::Hotkeys::start(key, shared.clone());
                 }
@@ -221,7 +237,14 @@ impl PttService {
     }
 
     /// The bound key was pressed or released in Twicecat's own window.
+    /// Ignored while the key is watched globally (X11, Windows): that
+    /// source sees the window's keys too, and a second report of one tap,
+    /// late behind a busy window, would flip toggle-to-talk twice.
     pub fn window_key(&self, pressed: bool) {
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        if self.keys.is_some() {
+            return;
+        }
         self.shared.report(Source::Window, pressed);
     }
 
@@ -244,6 +267,10 @@ impl PttService {
 impl Drop for PttService {
     fn drop(&mut self) {
         self.hotkeys = None;
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        {
+            self.keys = None;
+        }
         #[cfg(target_os = "linux")]
         {
             self.portal = None;
