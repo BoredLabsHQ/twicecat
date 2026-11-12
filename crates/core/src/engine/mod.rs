@@ -3302,8 +3302,9 @@ impl Engine {
     }
 
     async fn logout(&mut self) {
-        // The call needs the session to remove its membership.
-        self.leave_call().await;
+        // The call needs the session to remove its membership; the mic test
+        // must not keep the microphone open behind the login screen either.
+        self.end_session_audio().await;
         let Some(mut active) = self.active.take() else {
             self.emit(CoreEvent::Error(CoreError::NotLoggedIn)).await;
             return;
