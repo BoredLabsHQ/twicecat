@@ -226,7 +226,7 @@ impl Selected {
                 Route::Thread => self
                     .thread
                     .as_ref()
-                    .filter(|t| threads::item_in_thread(item_id, &t.root))
+                    .filter(|t| threads::item_in_thread(item_id, &t.prefix))
                     .map(|t| t.timeline.clone())
                     .ok_or(CoreError::ItemNotFound),
             },
@@ -2606,6 +2606,8 @@ impl Engine {
             .with_focus(TimelineFocus::Live {
                 hide_threaded_events: true,
             })
+            // New item IDs for every opening (`threads::main_prefix`).
+            .with_internal_id_prefix(threads::main_prefix())
             .event_filter(crate::timeline::event_filter)
             .build()
             .await
