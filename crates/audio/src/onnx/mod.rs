@@ -132,11 +132,11 @@ impl Accelerator {
 
     fn compiled_in(self) -> bool {
         let available = match self {
-            Self::Cuda => ep::CUDA::default().is_available(),
-            Self::TensorRt => ep::TensorRT::default().is_available(),
+            Self::Cuda => ep::CUDA::is_available(),
+            Self::TensorRt => ep::TensorRT::is_available(),
             Self::WebGpu => return webgpu::device_listed(),
-            Self::DirectMl => ep::DirectML::default().is_available(),
-            Self::CoreMl => ep::CoreML::default().is_available(),
+            Self::DirectMl => ep::DirectML::is_available(),
+            Self::CoreMl => ep::CoreML::is_available(),
         };
         available.unwrap_or(false)
     }
@@ -195,14 +195,30 @@ pub struct OnnxRuntime {
 
 static RUNTIME: OnceLock<Result<Vec<Accelerator>, String>> = OnceLock::new();
 
+/// The process's ONNX Runtime environment, built by [`OnnxRuntime::load`].
+/// Since ort 2.0.0-rc.15 the caller owns it (ort releases it with the last
+/// handle); kept here for the life of the process, as ort's global was.
+static ENVIRONMENT: OnceLock<ort::environment::Environment> = OnceLock::new();
+
+/// The environment, once the runtime is loaded.
+pub(crate) fn environment() -> Result<&'static ort::environment::Environment, String> {
+    ENVIRONMENT
+        .get()
+        .ok_or_else(|| "ONNX Runtime is not loaded".to_owned())
+}
+
 impl OnnxRuntime {
     /// Loads the runtime library from `dir`. Only the first call loads;
     /// later calls get the same result whatever `dir` they pass.
     pub fn load(dir: &Path) -> Result<Self, AudioError> {
         let loaded = RUNTIME.get_or_init(|| {
             nvidia::preload(dir);
-            let builder = ort::init_from(dir.join(library_name())).map_err(|e| e.to_string())?;
-            if !builder.with_name("twicecat").commit() {
+            let environment = ort::init_from(dir.join(library_name()))
+                .map_err(|e| e.to_string())?
+                .with_name("twicecat")
+                .build()
+                .map_err(|e| e.to_string())?;
+            if ENVIRONMENT.set(environment).is_err() {
                 tracing::debug!("ONNX Runtime environment was already set up");
             }
             // Registered to see whether WebGPU finds a GPU, then released
@@ -298,7 +314,7 @@ pub(crate) fn open_session(
     // thread per core spinning after each run, which burned most of the
     // process's CPU time while the GPU did the work.
     let text = |e: ort::Error<_>| e.to_string();
-    let mut builder = Session::builder().map_err(|e| e.to_string())?;
+    let mut builder = Session::builder(environment()?).map_err(|e| e.to_string())?;
     builder = builder.with_intra_threads(1).map_err(text)?;
     builder = builder.with_inter_threads(1).map_err(text)?;
     builder = builder.with_intra_op_spinning(false).map_err(text)?;
