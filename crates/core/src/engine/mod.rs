@@ -1888,6 +1888,9 @@ impl Engine {
         self.mic_muted = false;
         self.deafened = false;
         self.call_held = false;
+        // A reconnection count left by the last call would keep this one
+        // on "Reconnecting" after a short membership loss.
+        self.call_reconnects = 0;
         // No ringtone while joining or in a call.
         self.update_ring_gate(true);
         self.emit(CoreEvent::CallState(CallState::Joining {
