@@ -857,7 +857,7 @@ impl App {
                     return Task::none();
                 }
                 self.ui_settings.text_scale_percent = percent;
-                self.save_local()
+                Task::batch([self.save_local(), self.cap_window_size()])
             }
             M::Saved(ok) => {
                 if !ok {
