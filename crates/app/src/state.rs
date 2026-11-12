@@ -2565,7 +2565,7 @@ impl App {
         self.settings_ui = SettingsModel::default();
         self.notification_settings = None;
         self.spaces.clear();
-        self.reset_threads();
+        self.forget_threads();
         self.notice = Some(notice.to_owned());
         self.end_login_attempt();
         self.screen = Screen::Login;
@@ -10525,6 +10525,40 @@ mod tests {
             // A second close has nothing to close.
             let _ = app.update(Message::Threads(ThreadsMessage::Close));
             assert!(drain(&mut rx).is_empty());
+        }
+
+        #[test]
+        fn an_unsent_thread_reply_comes_back_when_its_thread_opens_again() {
+            let (mut app, mut rx) = thread_app();
+            let typed = |app: &mut App, text: &str| {
+                let _ = app.update(Message::Threads(ThreadsMessage::Draft(MessageText::from(
+                    text,
+                ))));
+            };
+            typed(&mut app, "half a reply");
+            // Esc, then the same thread again.
+            let _ = app.update(Message::Threads(ThreadsMessage::Close));
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("r"))));
+            assert_eq!(open_panel(&app).draft, "half a reply");
+            // Another thread starts empty and keeps its own.
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("s"))));
+            assert!(open_panel(&app).draft.is_empty());
+            typed(&mut app, "other");
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("r"))));
+            assert_eq!(open_panel(&app).draft, "half a reply");
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("s"))));
+            assert_eq!(open_panel(&app).draft, "other");
+            // Sent text is not kept.
+            let _ = app.update(Message::Threads(ThreadsMessage::Submit));
+            let _ = app.update(Message::Threads(ThreadsMessage::Close));
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("s"))));
+            assert!(open_panel(&app).draft.is_empty());
+            assert!(!format!("{:?}", app.threads).contains("half a reply"));
+            // The session's end forgets them.
+            let _ = app.back_to_login("bye");
+            assert!(!format!("{:?}", app.threads).contains("drafts: 1"));
+            assert!(format!("{:?}", app.threads).contains("drafts: 0"));
+            drain(&mut rx);
         }
 
         #[test]
