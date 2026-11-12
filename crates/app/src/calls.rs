@@ -228,6 +228,9 @@ pub struct CurrentCall {
     /// Participants not in the member list when it was last asked for, so
     /// one newcomer asks once.
     pub members_asked: Vec<UserId>,
+    /// The room's name when the call started, for the dock while a search or
+    /// tab hides the room from the list (issue #48 showed "Call").
+    pub room_name: Option<String>,
 }
 
 impl CurrentCall {
@@ -241,6 +244,7 @@ impl CurrentCall {
             deafened: false,
             members: None,
             members_asked: Vec::new(),
+            room_name: None,
         }
     }
 
@@ -935,11 +939,7 @@ impl App {
                     return Task::none();
                 };
                 self.calls.panel_open = true;
-                if self.selected.as_ref() == Some(&room) {
-                    Task::none()
-                } else {
-                    self.update(Message::SelectRoom(room))
-                }
+                self.open_room(room)
             }
             CallMessage::DismissNotice => {
                 self.calls.notice = None;
@@ -1131,6 +1131,12 @@ impl App {
         };
         let handled = self.calls.on_event(event);
         debug_assert!(handled, "on_call_event got another kind of event");
+        if let (Some(room), Some(call)) = (&joining, self.calls.call.as_mut())
+            && call.room_id == *room
+            && let Some(listed) = self.rooms.iter().find(|r| r.id == *room)
+        {
+            call.room_name = Some(listed.name.clone());
+        }
         if connected.is_some() {
             // Joined with **Video**: the camera comes on, once.
             self.calls.camera_on_connect = None;
@@ -2915,6 +2921,88 @@ mod tests {
         assert!(!app.calls.panel_open);
         call(&mut app, CallMessage::TogglePanel);
         assert!(!app.calls.panel_open, "no call, no panel");
+    }
+
+    /// The room list as the core sends it after a query or page change.
+    fn list(app: &mut App, names: &[&str]) {
+        let _ = app.update(core(CoreEvent::RoomListChanged(vec![ListDiff::Reset {
+            values: names
+                .iter()
+                .map(|n| RoomSummary::new(room(n), (*n).to_owned()))
+                .collect(),
+        }])));
+    }
+
+    #[test]
+    fn call_reopens_a_call_room_a_search_hides() {
+        // Issue #48: the card's Call did nothing when the list did not show
+        // the call's room.
+        let (mut app, mut rx) = in_call();
+        let _ = app.update(Message::SearchChanged("b".to_owned()));
+        list(&mut app, &["b"]);
+        drain(&mut rx);
+        assert_eq!(
+            crate::screens::call::dock_call(&app).map(|d| d.room_name),
+            Some("a".to_owned()),
+            "the dock keeps the name, not \"Call\""
+        );
+        call(&mut app, CallMessage::ShowCall);
+        assert_eq!(app.selected, Some(room("b")), "not listed yet");
+        assert_eq!(app.pending_open, Some(room("a")));
+        assert!(app.search_input.is_empty(), "the search is cleared");
+        assert!(drain(&mut rx).iter().any(|c| matches!(
+            c,
+            Command::SetRoomListQuery(q) if *q == twicecat_core::api::RoomListQuery::default()
+        )));
+        list(&mut app, &["a", "b"]);
+        assert_eq!(app.selected, Some(room("a")));
+        assert_eq!(app.pending_open, None);
+        assert!(app.calls.panel_shown(app.selected.as_ref()));
+        assert!(
+            drain(&mut rx)
+                .iter()
+                .any(|c| matches!(c, Command::SelectRoom(id) if *id == room("a")))
+        );
+    }
+
+    #[test]
+    fn call_pages_until_the_call_room_is_loaded() {
+        let (mut app, mut rx) = in_call();
+        list(&mut app, &["b"]);
+        let _ = app.update(core(CoreEvent::RoomListLoaded {
+            total_rooms: Some(5),
+        }));
+        call(&mut app, CallMessage::ShowCall);
+        assert_eq!(app.pending_open, Some(room("a")));
+        // The next page: asked for once, by the list's own paging or here.
+        assert_eq!(
+            drain(&mut rx)
+                .iter()
+                .filter(|c| matches!(c, Command::LoadMoreRooms))
+                .count(),
+            1
+        );
+        list(&mut app, &["b", "c"]);
+        assert!(
+            drain(&mut rx)
+                .iter()
+                .any(|c| matches!(c, Command::LoadMoreRooms)),
+            "still missing: one more page"
+        );
+        list(&mut app, &["b", "c", "a"]);
+        assert_eq!(app.selected, Some(room("a")));
+        // A room picked meanwhile wins over the one asked for.
+        let (mut app, mut rx) = in_call();
+        list(&mut app, &["b"]);
+        let _ = app.update(core(CoreEvent::RoomListLoaded {
+            total_rooms: Some(5),
+        }));
+        call(&mut app, CallMessage::ShowCall);
+        list(&mut app, &["b", "c"]);
+        let _ = app.update(Message::SelectRoom(room("c")));
+        list(&mut app, &["b", "c", "a"]);
+        assert_eq!(app.selected, Some(room("c")));
+        drain(&mut rx);
     }
 
     #[test]

@@ -505,6 +505,9 @@ pub struct App {
     pub(crate) shown_row_height: f32,
     /// The loaded length for which `LoadMoreRooms` was last sent.
     pub load_more_at: Option<usize>,
+    /// A room asked for (the call card, a notification) that the list did
+    /// not show yet; opened when it arrives (see [`App::open_room`]).
+    pub pending_open: Option<RoomId>,
     /// Avatar requests and answers of this session (plan Q11).
     pub avatars: Avatars,
     /// The room whose timeline is open.
@@ -680,6 +683,7 @@ impl App {
             newest_panel: crate::layout::SidePanel::default(),
             shown_row_height: 0.0,
             load_more_at: None,
+            pending_open: None,
             avatars: Avatars::default(),
             selected: None,
             timeline: TimelineView::default(),
@@ -932,13 +936,59 @@ impl App {
     }
 
     fn open_room_from_notification(&mut self, room: RoomId) -> Task<Message> {
-        let select =
-            if self.selected.as_ref() != Some(&room) && room_list::contains(&self.rooms, &room) {
-                self.update_inner(Message::SelectRoom(room))
-            } else {
+        Task::batch([self.open_room(room), focus_window()])
+    }
+
+    /// Opens `room`: at once when the list shows it; otherwise brings it in
+    /// (the default query, without search, tab or space, then more pages)
+    /// and opens it when it arrives. `SelectRoom` takes only listed rooms,
+    /// and the call card's room or a notification's may be missing from a
+    /// filtered or partly loaded list: the card's **Call** did nothing
+    /// (issue #48).
+    pub(crate) fn open_room(&mut self, room: RoomId) -> Task<Message> {
+        if room_list::contains(&self.rooms, &room) {
+            self.pending_open = None;
+            return if self.selected.as_ref() == Some(&room) {
                 Task::none()
+            } else {
+                self.update_inner(Message::SelectRoom(room))
             };
-        Task::batch([select, focus_window()])
+        }
+        self.pending_open = Some(room);
+        if self.query != RoomListQuery::default() {
+            self.search_input.clear();
+            return self.set_query(RoomListQuery::default());
+        }
+        self.load_more_for_pending()
+    }
+
+    /// The next page while a room to open is still missing (once per loaded
+    /// length, and only while the server has more).
+    fn load_more_for_pending(&mut self) -> Task<Message> {
+        let len = self.rooms.len();
+        let more = self
+            .total_rooms
+            .is_some_and(|total| usize::try_from(total).unwrap_or(usize::MAX) > len);
+        if !more || self.load_more_at == Some(len) {
+            return Task::none();
+        }
+        self.load_more_at = Some(len);
+        self.send(Command::LoadMoreRooms)
+    }
+
+    /// After a room list change: opens the room asked for if it arrived,
+    /// else pages on (only on the default query, which `open_room` set).
+    fn open_pending_room(&mut self) -> Task<Message> {
+        let Some(room) = self.pending_open.clone() else {
+            return Task::none();
+        };
+        if room_list::contains(&self.rooms, &room) {
+            self.open_room(room)
+        } else if self.query == RoomListQuery::default() {
+            self.load_more_for_pending()
+        } else {
+            Task::none()
+        }
     }
 
     /// Shows a desktop notification built elsewhere (an incoming call), when
@@ -1480,6 +1530,8 @@ impl App {
                 if !room_list::contains(&self.rooms, &id) {
                     return Task::none();
                 }
+                // A room picked now replaces one asked for earlier.
+                self.pending_open = None;
                 let stop_typing = self.stop_typing();
                 let marker = self.move_read_marker();
                 // Before the core opens the next room (commands run in order).
@@ -1648,14 +1700,18 @@ impl App {
                 if self.screen == Screen::Loading && !self.rooms.is_empty() {
                     self.screen = Screen::Main;
                 }
-                task = Task::batch([self.after_list_change(), self.rooms_after_list_change()]);
+                task = Task::batch([
+                    self.after_list_change(),
+                    self.rooms_after_list_change(),
+                    self.open_pending_room(),
+                ]);
             }
             CoreEvent::RoomListLoaded { total_rooms } => {
                 self.total_rooms = total_rooms;
                 if self.screen == Screen::Loading {
                     self.screen = Screen::Main;
                 }
-                task = self.check_paging();
+                task = Task::batch([self.check_paging(), self.open_pending_room()]);
             }
             CoreEvent::TimelineDiff { room_id, diffs } => {
                 task = self.apply_timeline(&room_id, diffs);
