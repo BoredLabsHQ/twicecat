@@ -22,7 +22,7 @@ realfft = "3"
 # Opt-in GPU speech enhancement (Task 13b): ONNX Runtime, loaded at run time
 # from the pinned download of scripts/fetch-onnxruntime.sh; nothing is
 # downloaded or linked at build time (`load-dynamic`).
-ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "api-28", "tracing", "cuda", "tensorrt", "directml", "coreml"], optional = true }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-28", "tracing", "cuda", "tensorrt", "directml", "coreml"], optional = true }
 
 # The CUDA runtime's copy functions for the GPU loop (src/onnx/stateful_loop.rs),
 # from the library ONNX Runtime's CUDA provider loaded; already ort's own
