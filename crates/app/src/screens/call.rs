@@ -389,7 +389,9 @@ pub fn dock_call(app: &App) -> Option<DockCall> {
         .rooms
         .iter()
         .find(|r| r.id == current.room_id)
-        .map_or_else(|| "Call".to_owned(), |r| display_name(&r.name));
+        .map(|r| r.name.as_str())
+        .or(current.room_name.as_deref())
+        .map_or_else(|| "Call".to_owned(), display_name);
     let line = talk_line(app);
     let off = current.muted || current.deafened;
     let gated = match app.calls.settings.as_ref() {
