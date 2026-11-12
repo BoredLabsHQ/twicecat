@@ -356,6 +356,7 @@ async fn call_rooms_are_marked_in_the_room_list() {
 
     let dir = tempfile::tempdir().unwrap();
     let mut alice = logged_in(dir.path(), 1).await;
+    common::resend_room_list(&mut alice).await;
     let mut rooms: Vec<RoomSummary> = Vec::new();
     let wait = async {
         loop {

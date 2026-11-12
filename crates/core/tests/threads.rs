@@ -22,8 +22,8 @@ use matrix_sdk::ruma::{OwnedEventId, OwnedRoomId};
 use twicecat_core::CoreHandle;
 use twicecat_core::api::{
     ActionKind, AttachmentData, Command, CoreError, CoreEvent, EventId, ListDiff, MediaBytes,
-    MediaKind, MessageDetails, OutgoingAttachment, PaginationState, RoomId, RoomSummary,
-    TimelineItem, TimelineItemKind,
+    MediaKind, MessageDetails, OutgoingAttachment, PaginationState, RoomId, TimelineItem,
+    TimelineItemKind,
 };
 use twicecat_core::secrets::InMemorySecretStore;
 
@@ -54,23 +54,7 @@ impl Side {
 
     /// Waits until the room is listed, then selects it.
     async fn open_room(&mut self, room: &str) {
-        let mut rooms: Vec<RoomSummary> = Vec::new();
-        let wait = async {
-            while !rooms.iter().any(|r| r.id.as_str() == room) {
-                match self.core.events.recv().await {
-                    Some(CoreEvent::RoomListChanged(diffs)) => {
-                        for diff in diffs {
-                            ListDiff::apply(&diff, &mut rooms);
-                        }
-                    }
-                    Some(_) => {}
-                    None => panic!("event channel closed"),
-                }
-            }
-        };
-        tokio::time::timeout(DEFAULT_TIMEOUT, wait)
-            .await
-            .expect("timed out waiting for the room to sync");
+        common::wait_for_room(&mut self.core, room).await;
         self.send(Command::SelectRoom(RoomId::from(room))).await;
     }
 
