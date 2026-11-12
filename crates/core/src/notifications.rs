@@ -15,7 +15,7 @@ use matrix_sdk::deserialized_responses::RawAnySyncOrStrippedTimelineEvent;
 use matrix_sdk::notification_settings::{
     IsEncrypted, IsOneToOne, NotificationSettings, RoomNotificationMode,
 };
-use matrix_sdk::ruma::push::Action;
+use matrix_sdk::ruma::push::{Action, PredefinedUnderrideRuleId, SoundTweakValue, Tweak};
 use matrix_sdk::ruma::{OwnedRoomId, UserId as SdkUserId};
 use matrix_sdk::sync::Notification;
 use matrix_sdk::{Client, NotificationSettingsError, Room};
@@ -470,6 +470,65 @@ fn sdk_mode(mode: RoomNotificationModeView) -> RoomNotificationMode {
     }
 }
 
+/// Sets the default mode of one kind of room, as matrix-sdk's
+/// `set_default_room_notification_mode` does, but with the poll-start rule
+/// best effort. The SDK also updates the unstable MSC3930 poll-start rule and
+/// fails when the server has none: Synapse no longer has it (1.164.2 answers
+/// `PUT .../underride/.org.matrix.msc3930.rule.poll_start/actions` with
+/// `404 Unknown rule`), so changing the default mode failed there.
+async fn set_default_mode(
+    settings: &NotificationSettings,
+    encrypted: IsEncrypted,
+    one_to_one: IsOneToOne,
+    mode: RoomNotificationMode,
+) -> Result<(), NotificationSettingsError> {
+    let actions = default_mode_actions(mode);
+    settings
+        .set_underride_push_rule_actions(room_rule(encrypted, one_to_one), actions.clone())
+        .await?;
+    let poll = poll_start_rule(one_to_one);
+    if let Err(e) = settings
+        .set_underride_push_rule_actions(poll.clone(), actions)
+        .await
+    {
+        tracing::debug!(
+            rule = poll.as_str(),
+            "poll start push rule not updated: {e}"
+        );
+    }
+    Ok(())
+}
+
+/// The actions of a default-mode rule: a sound for all messages, nothing
+/// otherwise (mentions and keywords notify through their own rules).
+fn default_mode_actions(mode: RoomNotificationMode) -> Vec<Action> {
+    match mode {
+        RoomNotificationMode::AllMessages => vec![
+            Action::Notify,
+            Action::SetTweak(Tweak::Sound(SoundTweakValue::Default)),
+        ],
+        RoomNotificationMode::MentionsAndKeywordsOnly | RoomNotificationMode::Mute => vec![],
+    }
+}
+
+/// The predefined underride rule for messages in one kind of room.
+fn room_rule(encrypted: IsEncrypted, one_to_one: IsOneToOne) -> PredefinedUnderrideRuleId {
+    match (encrypted, one_to_one) {
+        (IsEncrypted::Yes, IsOneToOne::Yes) => PredefinedUnderrideRuleId::EncryptedRoomOneToOne,
+        (IsEncrypted::No, IsOneToOne::Yes) => PredefinedUnderrideRuleId::RoomOneToOne,
+        (IsEncrypted::Yes, IsOneToOne::No) => PredefinedUnderrideRuleId::Encrypted,
+        (IsEncrypted::No, IsOneToOne::No) => PredefinedUnderrideRuleId::Message,
+    }
+}
+
+/// The predefined underride rule for poll starts in one kind of room.
+fn poll_start_rule(one_to_one: IsOneToOne) -> PredefinedUnderrideRuleId {
+    match one_to_one {
+        IsOneToOne::Yes => PredefinedUnderrideRuleId::PollStartOneToOne,
+        IsOneToOne::No => PredefinedUnderrideRuleId::PollStart,
+    }
+}
+
 /// The account's enabled keywords, shared with the notification handler.
 #[derive(Clone, Default)]
 struct Keywords(Arc<Mutex<Vec<String>>>);
@@ -689,14 +748,14 @@ async fn run_job(settings: &NotificationSettings, job: Job) -> Result<(), CoreEr
         Job::DefaultMode { one_to_one, mode } => {
             // Encrypted and unencrypted rooms alike, as Element X does.
             for encrypted in [IsEncrypted::No, IsEncrypted::Yes] {
-                settings
-                    .set_default_room_notification_mode(
-                        encrypted,
-                        IsOneToOne::from(one_to_one),
-                        sdk_mode(mode),
-                    )
-                    .await
-                    .map_err(fail)?;
+                set_default_mode(
+                    settings,
+                    encrypted,
+                    IsOneToOne::from(one_to_one),
+                    sdk_mode(mode),
+                )
+                .await
+                .map_err(fail)?;
             }
             Ok(())
         }
@@ -906,6 +965,28 @@ mod tests {
 
     const ME: &str = "@carol:x";
     const NOW: u64 = 1_000_000_000;
+
+    #[test]
+    fn default_modes_map_to_the_sdk_rules_and_actions() {
+        use IsEncrypted as E;
+        use IsOneToOne as O;
+        use PredefinedUnderrideRuleId as R;
+        assert_eq!(room_rule(E::Yes, O::Yes), R::EncryptedRoomOneToOne);
+        assert_eq!(room_rule(E::No, O::Yes), R::RoomOneToOne);
+        assert_eq!(room_rule(E::Yes, O::No), R::Encrypted);
+        assert_eq!(room_rule(E::No, O::No), R::Message);
+        assert_eq!(poll_start_rule(O::Yes), R::PollStartOneToOne);
+        assert_eq!(poll_start_rule(O::No), R::PollStart);
+        assert!(matches!(
+            default_mode_actions(RoomNotificationMode::AllMessages).as_slice(),
+            [
+                Action::Notify,
+                Action::SetTweak(Tweak::Sound(SoundTweakValue::Default))
+            ]
+        ));
+        assert!(default_mode_actions(RoomNotificationMode::MentionsAndKeywordsOnly).is_empty());
+        assert!(default_mode_actions(RoomNotificationMode::Mute).is_empty());
+    }
 
     fn incoming(id: &str, sender: &str, content: Content) -> Incoming {
         Incoming {

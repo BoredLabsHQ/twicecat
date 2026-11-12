@@ -9,13 +9,14 @@ mod common;
 
 use std::sync::Arc;
 
+use common::wait_for_room;
 use common::{TestEnv, create_room, expect_event, raw_login, send_text, start_core};
 use common::{set_display_name, unique_room_name};
 use twicecat_core::CoreHandle;
 use twicecat_core::api::{
     ActionKind, Block, Command, CoreError, CoreEvent, Inline, ListDiff, MentionRef, MentionTarget,
-    MessageKind, MessageText, OutgoingMessage, Password, PlaceholderKind, RoomId, RoomSummary,
-    SendStatus, SyncState, TextFormat, TimelineItem, TimelineItemKind, UserId,
+    MessageKind, MessageText, OutgoingMessage, Password, PlaceholderKind, RoomId, SendStatus,
+    SyncState, TextFormat, TimelineItem, TimelineItemKind, UserId,
 };
 use twicecat_core::secrets::InMemorySecretStore;
 
@@ -33,27 +34,6 @@ async fn login_and_run(core: &mut CoreHandle, env: &TestEnv, n: u8) {
         matches!(e, CoreEvent::SyncState(SyncState::Running))
     })
     .await;
-}
-
-/// Waits until the room list contains `room_id`, so `SelectRoom` can find it.
-async fn wait_for_room(core: &mut CoreHandle, room_id: &str) {
-    let mut rooms: Vec<RoomSummary> = Vec::new();
-    let wait = async {
-        while !rooms.iter().any(|r| r.id.as_str() == room_id) {
-            match core.events.recv().await {
-                Some(CoreEvent::RoomListChanged(diffs)) => {
-                    for diff in diffs {
-                        ListDiff::apply(&diff, &mut rooms);
-                    }
-                }
-                Some(_) => {}
-                None => panic!("event channel closed"),
-            }
-        }
-    };
-    tokio::time::timeout(common::DEFAULT_TIMEOUT, wait)
-        .await
-        .expect("timed out waiting for the room to sync");
 }
 
 async fn open_room(core: &mut CoreHandle, room: &str) {

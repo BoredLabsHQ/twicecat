@@ -9,12 +9,13 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::wait_for_room;
 use common::{TestEnv, create_room, expect_event, raw_login, send_text, start_core};
 use common::{set_display_name, unique_room_name};
 use twicecat_core::CoreHandle;
 use twicecat_core::api::{
-    Command, CoreEvent, ListDiff, PaginationState, Password, RoomId, RoomSummary, SyncState,
-    TimelineItem, TimelineItemKind,
+    Command, CoreEvent, ListDiff, PaginationState, Password, RoomId, SyncState, TimelineItem,
+    TimelineItemKind,
 };
 use twicecat_core::secrets::InMemorySecretStore;
 
@@ -32,27 +33,6 @@ async fn login_and_run(core: &mut CoreHandle, env: &TestEnv, n: u8) {
         matches!(e, CoreEvent::SyncState(SyncState::Running))
     })
     .await;
-}
-
-/// Waits until the room list contains `room_id`, so `SelectRoom` can find it.
-async fn wait_for_room(core: &mut CoreHandle, room_id: &str) {
-    let mut rooms: Vec<RoomSummary> = Vec::new();
-    let wait = async {
-        while !rooms.iter().any(|r| r.id.as_str() == room_id) {
-            match core.events.recv().await {
-                Some(CoreEvent::RoomListChanged(diffs)) => {
-                    for diff in diffs {
-                        ListDiff::apply(&diff, &mut rooms);
-                    }
-                }
-                Some(_) => {}
-                None => panic!("event channel closed"),
-            }
-        }
-    };
-    tokio::time::timeout(common::DEFAULT_TIMEOUT, wait)
-        .await
-        .expect("timed out waiting for the room to sync");
 }
 
 async fn open_room(core: &mut CoreHandle, room: &str) {
@@ -422,27 +402,10 @@ async fn a_draft_is_kept_per_room_and_cleared_on_request() {
     let dir = tempfile::tempdir().unwrap();
     let mut alice = start_core(dir.path(), Arc::new(InMemorySecretStore::new()));
     login_and_run(&mut alice, &env, 1).await;
-    // Both rooms, in one pass: they may arrive in the same list update.
-    let mut rooms: Vec<RoomSummary> = Vec::new();
-    let both = async {
-        while ![&first, &second]
-            .iter()
-            .all(|id| rooms.iter().any(|r| r.id.as_str() == id.as_str()))
-        {
-            match alice.events.recv().await {
-                Some(CoreEvent::RoomListChanged(diffs)) => {
-                    for diff in diffs {
-                        ListDiff::apply(&diff, &mut rooms);
-                    }
-                }
-                Some(_) => {}
-                None => panic!("event channel closed"),
-            }
-        }
-    };
-    tokio::time::timeout(common::DEFAULT_TIMEOUT, both)
-        .await
-        .expect("timed out waiting for both rooms to sync");
+    // Each waits on a fresh copy of the list, so both are found even when
+    // they arrived in the same update.
+    wait_for_room(&mut alice, &first).await;
+    wait_for_room(&mut alice, &second).await;
     alice
         .commands
         .send(Command::SelectRoom(RoomId::from(first.as_str())))

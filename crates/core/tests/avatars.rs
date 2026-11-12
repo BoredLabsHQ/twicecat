@@ -69,6 +69,7 @@ async fn avatar_is_fetched_once_through_the_sdk_media_cache() {
         .expect("upload avatar");
 
     // Alice's core list shows the room with an avatar ID.
+    common::resend_room_list(&mut core).await;
     let mut rooms: Vec<RoomSummary> = Vec::new();
     let wait = async {
         loop {
