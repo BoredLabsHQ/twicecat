@@ -7,12 +7,14 @@
 //! thread that was closed or replaced is dropped. A new root starts with a
 //! fresh [`TimelineView`], so nothing of the old thread survives.
 //!
-//! Item IDs of the thread timeline are `thread:{root}:{n}`, unique across
-//! threads, so the media cache and the action messages need no thread root.
+//! Item IDs of the thread timeline are `thread:{opening}:{root}:{n}`, unique
+//! across threads and openings, so the media cache and the action messages
+//! need no thread root.
 //!
 //! Thread text belongs to people: nothing here logs it and `Debug` shows
 //! counts only.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use iced::Task;
@@ -123,11 +125,55 @@ impl fmt::Debug for ThreadPanel {
     }
 }
 
-/// The thread panel's state: the open thread, if any.
-#[derive(Debug, Default)]
+/// Thread replies typed and not sent, kept when their panel closes (Esc,
+/// another thread, another room) until it opens again. At most this many;
+/// the session's end forgets them.
+const MAX_KEPT_DRAFTS: usize = 32;
+
+/// The thread panel's state: the open thread, if any, and the unsent replies
+/// of closed ones.
+#[derive(Default)]
 pub struct ThreadsModel {
     /// The open thread.
     pub panel: Option<ThreadPanel>,
+    /// Unsent replies by room and root. User text: `Debug` shows a count.
+    drafts: HashMap<(RoomId, EventId), String>,
+}
+
+impl fmt::Debug for ThreadsModel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ThreadsModel")
+            .field("panel", &self.panel)
+            .field("drafts", &self.drafts.len())
+            .finish()
+    }
+}
+
+impl ThreadsModel {
+    /// Closes the panel, keeping its unsent reply for when it opens again.
+    fn take_panel(&mut self) -> Option<ThreadPanel> {
+        let mut panel = self.panel.take()?;
+        let key = (panel.room_id.clone(), panel.root.clone());
+        if panel.draft.trim().is_empty() {
+            self.drafts.remove(&key);
+        } else {
+            if self.drafts.len() >= MAX_KEPT_DRAFTS && !self.drafts.contains_key(&key) {
+                // Full: one of the others goes, not the reply just typed.
+                if let Some(old) = self.drafts.keys().next().cloned() {
+                    self.drafts.remove(&old);
+                }
+            }
+            self.drafts.insert(key, std::mem::take(&mut panel.draft));
+        }
+        Some(panel)
+    }
+
+    /// The unsent reply kept for this thread, if any.
+    fn kept_draft(&mut self, room_id: &RoomId, root: &EventId) -> String {
+        self.drafts
+            .remove(&(room_id.clone(), root.clone()))
+            .unwrap_or_default()
+    }
 }
 
 /// A message of the thread summary rows and the panel.
@@ -206,8 +252,10 @@ impl App {
             return operation::focus(THREAD_INPUT_ID);
         }
         self.drop_thread_uploads();
+        self.threads.take_panel();
         let mut panel = ThreadPanel::new(room_id.clone(), root.clone());
         panel.timeline.set_density(self.density());
+        panel.draft = self.threads.kept_draft(&room_id, &root);
         self.threads.panel = Some(panel);
         Task::batch([
             self.send(Command::OpenThread { room_id, root }),
@@ -217,7 +265,7 @@ impl App {
 
     /// Closes the panel and the core's thread, when one is open.
     pub(crate) fn close_thread_panel(&mut self) -> Task<Message> {
-        if self.threads.panel.take().is_none() {
+        if self.threads.take_panel().is_none() {
             return Task::none();
         }
         self.drop_thread_uploads();
@@ -236,7 +284,13 @@ impl App {
     /// Forgets the panel without telling the core: the room was left, or the
     /// session ended, and the core closes its thread by itself.
     pub(crate) fn reset_threads(&mut self) {
-        self.threads.panel = None;
+        self.threads.take_panel();
+        self.drop_thread_uploads();
+    }
+
+    /// Forgets the panel and every kept reply: the session ended.
+    pub(crate) fn forget_threads(&mut self) {
+        self.threads = ThreadsModel::default();
         self.drop_thread_uploads();
     }
 
