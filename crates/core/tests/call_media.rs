@@ -349,7 +349,7 @@ async fn alices_tone_reaches_carols_speakers_and_mute_stops_it() {
 
 /// A mic test asked for during a call is refused, and the call's audio
 /// keeps playing: carol still hears alice's tone afterwards (the core used
-/// to stop the call's audio before refusing).
+/// to stop the call's audio before refusing). So does a `StopMicTest`.
 #[tokio::test]
 #[ignore = "needs local homeserver: scripts/stack.sh up -d --wait"]
 async fn a_mic_test_during_a_call_leaves_the_call_playing() {
@@ -412,6 +412,22 @@ async fn a_mic_test_during_a_call_leaves_the_call_playing() {
     );
     let heard = level_of(&new, TONE_HZ, 1.0);
     assert!(heard > HEARD, "the tone after the refusal: {heard:.4}");
+
+    // Stopping a mic test leaves a call's audio alone: the app can still
+    // ask for it after `JoinCall` (the card closed meanwhile), and the core
+    // used to stop whatever audio ran, the call's too.
+    carol.commands.send(Command::StopMicTest).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let before = recorder.played.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let new = recorder.played.lock().unwrap()[before..].to_vec();
+    assert!(
+        new.len() as f32 > 1.5 * RATE,
+        "the speakers stopped after StopMicTest: {} new samples in 2 s",
+        new.len()
+    );
+    let heard = level_of(&new, TONE_HZ, 1.0);
+    assert!(heard > HEARD, "the tone after StopMicTest: {heard:.4}");
 
     for core in [&alice, &carol] {
         core.commands.send(Command::LeaveCall).await.unwrap();
