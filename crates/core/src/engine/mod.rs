@@ -1525,7 +1525,14 @@ impl Engine {
             | Command::StartCameraPreview { .. }
             | Command::StopCameraPreview) => self.video_command(command).await,
             Command::StopMicTest => {
-                if let Some(session) = self.audio_session.take() {
+                // Only a mic test: the app may still ask after it sent
+                // `JoinCall`, whose audio has replaced the test by then.
+                if self
+                    .audio_session
+                    .as_ref()
+                    .is_some_and(|s| s.mode() != Mode::Call)
+                    && let Some(session) = self.audio_session.take()
+                {
                     session.stop().await;
                 }
             }
