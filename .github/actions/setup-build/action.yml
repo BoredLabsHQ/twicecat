@@ -30,7 +30,7 @@ runs:
     # the SHA-256 and unpacks as before. Only main saves.
     - name: Restore libwebrtc
       id: libwebrtc-cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ~/.cache/twicecat/libwebrtc
         key: libwebrtc-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/checksums/libwebrtc.sha256', 'scripts/fetch-libwebrtc.sh') }}
@@ -44,7 +44,7 @@ runs:
         echo "LK_CUSTOM_WEBRTC=$dir" >> "$GITHUB_ENV"
     - name: Save libwebrtc
       if: github.ref == 'refs/heads/main' && steps.libwebrtc-cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ~/.cache/twicecat/libwebrtc
         key: ${{ steps.libwebrtc-cache.outputs.cache-primary-key }}
