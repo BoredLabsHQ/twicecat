@@ -10,8 +10,9 @@ use crate::api::{
     AudioSettings, NoiseSuppression, RemoteCleaning, SkipCleaned, SkipReason, UserId, VoiceCleaning,
 };
 
-/// The LiveKit participant attribute where Twicecat says which suppressor
-/// cleans its microphone (other clients ignore it).
+/// The topic of the LiveKit data messages where Twicecat says which
+/// suppressor cleans its microphone, and the participant attribute older
+/// builds set instead (other clients ignore both).
 pub(crate) const ANNOUNCE_KEY: &str = "twicecat.voice_cleaning";
 
 // Its values: the wire format other Twicecat clients read (approved with
@@ -25,8 +26,8 @@ const DEEPFILTERNET3: &str = "deepfilternet3";
 /// Cleaned before Twicecat (NVIDIA Broadcast, Krisp), by the user's word.
 const EXTERNAL: &str = "external";
 
-/// What we announce under [`ANNOUNCE_KEY`] (`None`: nothing, the attribute
-/// removed). DeepFilterNet counts whatever its attenuation limit, and falls
+/// What we announce under [`ANNOUNCE_KEY`] (`None`: nothing, sent as an
+/// empty message). DeepFilterNet counts whatever its attenuation limit, and falls
 /// back to RNNoise (also neural) when its model is missing.
 pub(crate) fn announcement(settings: &AudioSettings) -> Option<&'static str> {
     let announce = settings.announce_cleaning;

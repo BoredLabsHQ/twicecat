@@ -82,7 +82,7 @@ services:
   # namespace so that "localhost:8448" (the federation address it derives from
   # the server name "localhost") is Synapse's dev-only TLS listener.
   lk-jwt:
-    image: ghcr.io/element-hq/lk-jwt-service:0.7.0
+    image: ghcr.io/element-hq/lk-jwt-service:0.10.0
     network_mode: "service:synapse"
     depends_on:
       livekit:
@@ -130,7 +130,7 @@ services:
       start_period: 2s
 
   lk-jwt-b:
-    image: ghcr.io/element-hq/lk-jwt-service:0.7.0
+    image: ghcr.io/element-hq/lk-jwt-service:0.10.0
     network_mode: "service:synapse"
     depends_on:
       livekit-b:

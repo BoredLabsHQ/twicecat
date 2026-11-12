@@ -3,8 +3,8 @@
 //! we only subscribe. Each connection plays the remote audio tracks of the
 //! members expected there through the voice engine's mixer, and tracks who
 //! speaks and who is muted. Ours also announces our microphone's cleaning
-//! ([`super::cleaning::ANNOUNCE_KEY`]), and each reads what the others say
-//! about theirs.
+//! in a data message ([`super::cleaning::ANNOUNCE_KEY`]), and each reads
+//! what the others say about theirs.
 //!
 //! A LiveKit identity is the member's `user:device` (session memberships).
 //! A participant may send two audio tracks, its voice and the sound of a
@@ -31,9 +31,9 @@ use livekit::options::{
     VideoEncoding, VideoPreset,
 };
 use livekit::prelude::{
-    LocalAudioTrack, LocalParticipant, LocalTrack, LocalVideoTrack, Participant, RemoteAudioTrack,
-    RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomEvent, RoomOptions,
-    TrackKind, TrackSource,
+    DataPacket, LocalAudioTrack, LocalParticipant, LocalTrack, LocalVideoTrack, Participant,
+    RemoteAudioTrack, RemoteParticipant, RemoteTrack, RemoteTrackPublication, Room, RoomEvent,
+    RoomOptions, TrackKind, TrackSource,
 };
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
@@ -71,6 +71,10 @@ const SOURCE_QUEUE_MS: u32 = 50;
 const CLAIM_RECHECK: Duration = Duration::from_secs(2);
 /// Wait before announcing again after the SFU refused or timed out.
 const ANNOUNCE_RETRY: Duration = Duration::from_secs(5);
+/// Our announcement is sent again this often: a newcomer's first message
+/// can reach no one (sent before the others could take it; seen with
+/// LiveKit 1.13.11), and nothing else would repeat it. A few bytes each.
+const ANNOUNCE_REFRESH: Duration = Duration::from_secs(10);
 
 /// Who speaks, who is muted and whose voice is cleaned, by LiveKit
 /// identity (`user:device`).
@@ -915,26 +919,39 @@ impl SfuConnection {
     }
 }
 
-/// Keeps our cleaning announcement on the SFU: set once we publish, again
-/// when it changes and after a reconnection (a full one starts a new
-/// session, without it), retried while the SFU refuses.
+/// Tells the others how our microphone is cleaned, in a reliable data
+/// message on the [`ANNOUNCE_KEY`] topic (the value, or empty for nothing):
+/// once we publish, again when it changes, after a reconnection and when
+/// someone joins (`again`, both from the room's events), every
+/// [`ANNOUNCE_REFRESH`], and retried while it does not go out.
+///
+/// Not a participant attribute (as until 2026-11): lk-jwt-service 0.10
+/// follows MSC4195 and gives no right to update one's own metadata by
+/// default, so the call server refused it; data messages need only the
+/// right to publish.
 async fn announce(
     local: LocalParticipant,
     mut value: watch::Receiver<Option<&'static str>>,
-    reconnected: Arc<Notify>,
+    again: Arc<Notify>,
 ) {
-    // What the SFU holds, if known: nothing at first.
+    // What everyone has, if known: nothing at first.
     let mut sent = Some(None);
+    let mut refresh = tokio::time::interval(ANNOUNCE_REFRESH);
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    refresh.tick().await;
     loop {
         let now = *value.borrow_and_update();
         if sent != Some(now) {
-            // An empty value removes the attribute.
-            let attributes =
-                HashMap::from([(ANNOUNCE_KEY.to_owned(), now.unwrap_or_default().to_owned())]);
-            sent = match local.set_attributes(attributes).await {
+            let packet = DataPacket {
+                payload: now.unwrap_or_default().as_bytes().to_vec(),
+                topic: Some(ANNOUNCE_KEY.to_owned()),
+                reliable: true,
+                destination_identities: Vec::new(),
+            };
+            sent = match local.publish_data(packet).await {
                 Ok(()) => Some(now),
                 Err(_) => {
-                    tracing::debug!("the call server did not take our cleaning announcement");
+                    tracing::debug!("our cleaning announcement did not go out");
                     None
                 }
             };
@@ -945,7 +962,8 @@ async fn announce(
                     return;
                 }
             }
-            () = reconnected.notified() => sent = None,
+            () = again.notified() => sent = None,
+            _ = refresh.tick() => sent = None,
             () = tokio::time::sleep(ANNOUNCE_RETRY), if sent.is_none() => {}
         }
     }
@@ -1074,17 +1092,25 @@ struct EventContext {
     flags: SharedFlags,
     cleaning: Cleaning,
     videos: Videos,
-    /// On the connection that publishes: announce again.
+    /// On the connection that publishes: announce again (after a
+    /// reconnection, or to someone who joined).
     reannounce: Option<Arc<Notify>>,
     notices: mpsc::Sender<(String, MediaNotice)>,
 }
 
 impl EventContext {
-    /// Passes on what `participant` says about the voice on `publication`.
-    fn read_claim(&self, participant: &RemoteParticipant, publication: &RemoteTrackPublication) {
+    /// Passes on what `participant` says about the voice on `publication`:
+    /// its last announcement (`said`), or the participant attribute older
+    /// Twicecat builds set, and its track's features.
+    fn read_claim(
+        &self,
+        participant: &RemoteParticipant,
+        publication: &RemoteTrackPublication,
+        said: Option<&str>,
+    ) {
         let attributes = participant.attributes();
         let claim = Claim::of(
-            attributes.get(ANNOUNCE_KEY).map(String::as_str),
+            said.or(attributes.get(ANNOUNCE_KEY).map(String::as_str)),
             &publication.audio_features(),
         );
         self.cleaning
@@ -1122,13 +1148,15 @@ async fn handle_events(
     let mut talkers: HashMap<String, Participant> = HashMap::new();
     // The voices we play, to read what their senders say about them.
     let mut heard: HashMap<String, (RemoteParticipant, RemoteTrackPublication)> = HashMap::new();
+    // What each participant last announced about its voice (`announce`).
+    let mut said: HashMap<String, String> = HashMap::new();
     let mut recheck = tokio::time::interval(CLAIM_RECHECK);
     recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let event = tokio::select! {
             _ = recheck.tick() => {
-                for (participant, publication) in heard.values() {
-                    cx.read_claim(participant, publication);
+                for (identity, (participant, publication)) in &heard {
+                    cx.read_claim(participant, publication, said.get(identity).map(String::as_str));
                 }
                 continue;
             }
@@ -1181,7 +1209,11 @@ async fn handle_events(
                     Feed::of(publication.source()),
                 );
                 if key.1 == Feed::Voice {
-                    cx.read_claim(&participant, &publication);
+                    cx.read_claim(
+                        &participant,
+                        &publication,
+                        said.get(&key.0).map(String::as_str),
+                    );
                     heard.insert(key.0.clone(), (participant, publication));
                 }
                 cx.with_players(|p| {
@@ -1228,14 +1260,45 @@ async fn handle_events(
                 participant: Participant::Remote(participant),
                 ..
             } => {
-                if let Some((_, publication)) = heard.get(participant.identity().as_str()) {
-                    cx.read_claim(&participant, publication);
+                let identity = participant.identity().as_str().to_owned();
+                if let Some((_, publication)) = heard.get(&identity) {
+                    cx.read_claim(
+                        &participant,
+                        publication,
+                        said.get(&identity).map(String::as_str),
+                    );
+                }
+            }
+            RoomEvent::DataReceived {
+                payload,
+                topic: Some(topic),
+                participant: Some(participant),
+                ..
+            } if topic == ANNOUNCE_KEY => {
+                let identity = participant.identity().as_str().to_owned();
+                match announced_value(&payload) {
+                    Some(value) => said.insert(identity.clone(), value),
+                    None => said.remove(&identity),
+                };
+                if let Some((_, publication)) = heard.get(&identity) {
+                    cx.read_claim(
+                        &participant,
+                        publication,
+                        said.get(&identity).map(String::as_str),
+                    );
+                }
+            }
+            // A newcomer gets our announcement (it can take data now).
+            RoomEvent::ParticipantActive(_) => {
+                if let Some(reannounce) = &cx.reannounce {
+                    reannounce.notify_one();
                 }
             }
             RoomEvent::ParticipantDisconnected(participant) => {
                 let identity = participant.identity().as_str().to_owned();
                 talkers.remove(&identity);
                 heard.remove(&identity);
+                said.remove(&identity);
                 cx.cleaning.set_claim(&identity, Claim::None);
                 cx.with_players(|p| p.forget(&identity));
                 cx.videos.remove_identity(&cx.key, &identity);
@@ -1308,9 +1371,34 @@ async fn handle_events(
     }
 }
 
+/// The longest announcement kept: the values are short words.
+const ANNOUNCED_MAX: usize = 64;
+
+/// An announcement's value from a data message; `None` for an empty one
+/// (nothing announced) or one that is not short text.
+fn announced_value(payload: &[u8]) -> Option<String> {
+    if payload.is_empty() || payload.len() > ANNOUNCED_MAX {
+        return None;
+    }
+    std::str::from_utf8(payload).ok().map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn announcements_are_short_text_or_nothing() {
+        assert_eq!(announced_value(b"rnnoise").as_deref(), Some("rnnoise"));
+        assert_eq!(announced_value(b""), None, "empty: nothing announced");
+        assert_eq!(announced_value(&[0xff, 0xfe]), None, "not text");
+        assert_eq!(
+            announced_value(&[b'a'; ANNOUNCED_MAX + 1]),
+            None,
+            "too long"
+        );
+        assert!(announced_value(&[b'a'; ANNOUNCED_MAX]).is_some());
+    }
 
     #[test]
     fn a_hold_mutes_what_is_sending_and_restores_only_that() {

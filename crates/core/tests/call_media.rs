@@ -1242,6 +1242,9 @@ async fn voices_cleaned_at_their_source_are_left_alone() {
         .send(Command::UpdateAudioSettings(silent))
         .await
         .unwrap();
+    // Also drains carol's events: a full queue (256) stops her engine, and
+    // the call's participant updates fill it within a minute.
+    expect_event(&mut carol, |e| matches!(e, CoreEvent::AudioSettings(_))).await;
     alice_as_seen_by(&mut alice, &carol_id, |p| {
         p.cleaning == CleaningStatus::Cleaned
     })
@@ -1254,6 +1257,7 @@ async fn voices_cleaned_at_their_source_are_left_alone() {
         .send(Command::UpdateAudioSettings(outside))
         .await
         .unwrap();
+    expect_event(&mut carol, |e| matches!(e, CoreEvent::AudioSettings(_))).await;
     alice_as_seen_by(&mut alice, &carol_id, |p| {
         p.cleaning == CleaningStatus::Skipped(SkipReason::AlreadyClean)
     })
