@@ -2810,6 +2810,11 @@ mod tests {
             assert!(keyboard_note(KeyboardBackend::WindowOnly).contains("has focus"));
             assert!(keyboard_note(KeyboardBackend::Portal).contains("Wayland"));
             assert!(keyboard_note(KeyboardBackend::Hotkey).contains("every app"));
+            // #49: outside macOS the key is not taken from other apps.
+            assert_eq!(
+                keyboard_note(KeyboardBackend::Hotkey).contains("still receive it"),
+                !cfg!(target_os = "macos")
+            );
         }
 
         #[test]
