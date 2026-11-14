@@ -2,6 +2,7 @@
 //!
 //! Only plain API types cross the public boundary. SDK types stay in here.
 
+mod typing;
 mod video;
 
 use std::collections::HashMap;
@@ -65,6 +66,7 @@ use crate::threads::{self, OpenThread, Route, route_item};
 use crate::timeline::{map_item, normalize_reaction_key, parse_room_id, rank_members};
 use crate::upload;
 use crate::verification::Target;
+use typing::TypingWatch;
 
 /// Events loaded by one back-pagination.
 pub(crate) const PAGINATION_BATCH: u16 = 20;
@@ -152,6 +154,7 @@ impl Core {
             mic_muted: false,
             deafened: false,
             call_reconnects: 0,
+            call_held: false,
             ring_gate: watch::channel(RingGate::default()).0,
             closing: None,
             captures: video::Captures::default(),
@@ -181,6 +184,8 @@ struct Syncing {
     calls: CallWatch,
     /// The ringtone of this session's rings.
     ringer: Ringer,
+    /// Who is typing in each room, for the selected room's forwarder.
+    typing: TypingWatch,
 }
 
 /// The room whose timeline is open, the task forwarding its diffs and the
@@ -212,6 +217,22 @@ impl Selected {
         self.tasks.shutdown().await;
     }
 
+    /// Like [`Self::stop`] for a room the user moved away from: its action
+    /// tasks are not aborted but moved to `finishing`, so what the app sent
+    /// just before the switch (the read marker, "stopped typing", a reaction
+    /// clicked) still reaches the server. The session's end aborts them.
+    async fn close(mut self, finishing: &mut JoinSet<()>) {
+        if let Some(thread) = self.thread.take() {
+            thread.stop().await;
+        }
+        self.task.abort();
+        let _ = self.task.await;
+        // Forget finished ones, so the set does not grow with every room.
+        while finishing.try_join_next().is_some() {}
+        let mut tasks = std::mem::take(&mut self.tasks);
+        finishing.spawn(async move { while tasks.join_next().await.is_some() {} });
+    }
+
     /// The timeline `target` names, or why there is none.
     fn timeline_for(&self, target: TimelineTarget<'_>) -> Result<Arc<Timeline>, CoreError> {
         match target {
@@ -223,7 +244,7 @@ impl Selected {
                 Route::Thread => self
                     .thread
                     .as_ref()
-                    .filter(|t| threads::item_in_thread(item_id, &t.root))
+                    .filter(|t| threads::item_in_thread(item_id, &t.prefix))
                     .map(|t| t.timeline.clone())
                     .ok_or(CoreError::ItemNotFound),
             },
@@ -282,6 +303,9 @@ struct Active {
     changes: broadcast::Receiver<SessionChange>,
     sync: Option<Syncing>,
     selected: Option<Selected>,
+    /// The action tasks of rooms the user moved away from
+    /// ([`Selected::close`]).
+    finishing: JoinSet<()>,
     /// Avatar fetches of this session (in flight and answered).
     avatars: Avatars,
     fetcher: Arc<SdkFetcher>,
@@ -317,6 +341,7 @@ impl Active {
         if let Some(selected) = self.selected.take() {
             selected.stop().await;
         }
+        self.finishing.shutdown().await;
         let Some(sync) = self.sync.take() else {
             return;
         };
@@ -563,6 +588,9 @@ struct Engine {
     deafened: bool,
     /// Consecutive SFU reconnects of the current call.
     call_reconnects: u32,
+    /// Our call membership is gone from the room state: the microphone is
+    /// held (not sent) until it is back or the call ends.
+    call_held: bool,
     /// Whether the ringtone may play, and where; each session's ringer
     /// follows it.
     ring_gate: watch::Sender<RingGate>,
@@ -957,17 +985,29 @@ fn typing_users(ids: Vec<OwnedUserId>, names: &HashMap<OwnedUserId, String>) -> 
         .collect()
 }
 
-/// Forwards who else is typing in the room as `Typing` events. Ends with the
-/// selection (it is aborted); the SDK event handler goes with the guard.
-async fn forward_typing(room_id: RoomId, timeline: Arc<Timeline>, events: mpsc::Sender<CoreEvent>) {
+/// Forwards who else is typing in the room as `Typing` events: whoever
+/// already is when the room opens, then each change. Ends with the selection
+/// (it is aborted) or the sync.
+async fn forward_typing(
+    room_id: RoomId,
+    timeline: Arc<Timeline>,
+    mut receiver: watch::Receiver<Vec<OwnedUserId>>,
+    events: mpsc::Sender<CoreEvent>,
+) {
     let room = timeline.room();
-    let (_guard, mut receiver) = room.subscribe_to_typing_notifications();
+    // Nobody typing when the room opens needs no event.
+    let current = receiver.borrow_and_update().clone();
+    let mut next = (!current.is_empty()).then_some(current);
     loop {
-        let ids = match receiver.recv().await {
-            Ok(ids) => ids,
-            // Only the latest list matters; wait for the next one.
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(broadcast::error::RecvError::Closed) => return,
+        let ids = match next.take() {
+            Some(ids) => ids,
+            // Only the latest list matters; one replaced meanwhile is skipped.
+            None => {
+                if receiver.changed().await.is_err() {
+                    return;
+                }
+                receiver.borrow_and_update().clone()
+            }
         };
         let mut names = HashMap::new();
         for id in ids.iter().take(MAX_TYPING_USERS) {
@@ -1501,7 +1541,14 @@ impl Engine {
             | Command::StartCameraPreview { .. }
             | Command::StopCameraPreview) => self.video_command(command).await,
             Command::StopMicTest => {
-                if let Some(session) = self.audio_session.take() {
+                // Only a mic test: the app may still ask after it sent
+                // `JoinCall`, whose audio has replaced the test by then.
+                if self
+                    .audio_session
+                    .as_ref()
+                    .is_some_and(|s| s.mode() != Mode::Call)
+                    && let Some(session) = self.audio_session.take()
+                {
                     session.stop().await;
                 }
             }
@@ -1866,6 +1913,10 @@ impl Engine {
         }
         self.mic_muted = false;
         self.deafened = false;
+        self.call_held = false;
+        // A reconnection count left by the last call would keep this one
+        // on "Reconnecting" after a short membership loss.
+        self.call_reconnects = 0;
         // No ringtone while joining or in a call.
         self.update_ring_gate(true);
         self.emit(CoreEvent::CallState(CallState::Joining {
@@ -1983,13 +2034,22 @@ impl Engine {
 
     /// Applies mute and deafen (deafen also mutes, as in Discord).
     fn apply_mute(&self) {
-        let muted = self.mic_muted || self.deafened;
+        let muted = effective_mute(self.mic_muted, self.deafened, self.call_held);
         if let Some(session) = &self.audio_session {
             session.set_muted(muted);
             session.set_deafened(self.deafened);
         }
         if let Some(call) = &self.call {
             call.set_muted(muted);
+        }
+    }
+
+    /// Holds or releases our camera, screen share and its sound with the
+    /// call membership (the microphone is held by `apply_mute`).
+    fn apply_hold(&mut self) {
+        let held = self.call_held;
+        if let Some(call) = &mut self.call {
+            call.set_held(held);
         }
     }
 
@@ -2011,33 +2071,67 @@ impl Engine {
             MediaNotice::Reconnected => {
                 // Back in the same call: no join cue.
                 self.call_reconnects = 0;
-                let encrypted = self.call.as_ref().is_some_and(|c| c.encrypted);
-                self.emit(CoreEvent::CallState(CallState::Connected {
+                if !self.call_held {
+                    self.emit_connected(room_id).await;
+                }
+            }
+            MediaNotice::MembershipGone => {
+                self.call_held = true;
+                self.apply_mute();
+                self.apply_hold();
+                self.emit(CoreEvent::CallState(CallState::Reconnecting {
                     room_id,
-                    encrypted,
+                    attempt: self.call_reconnects.max(1),
                 }))
                 .await;
             }
-            MediaNotice::Disconnected => {
-                // The call was lost, not left: no leave cue.
-                if let Some(call) = self.call.take() {
-                    if let Some(calls) = self.calls() {
-                        calls.set_sent(&call.room_id, None);
-                    }
-                    let video = (call.has_video(), call.local_video());
-                    call.leave().await;
-                    self.video_ended(room_id.clone(), video).await;
+            MediaNotice::MembershipBack => {
+                self.call_held = false;
+                self.apply_mute();
+                self.apply_hold();
+                if self.call_reconnects == 0 {
+                    self.emit_connected(room_id).await;
                 }
-                self.stop_call_audio().await;
-                self.update_ring_gate(false);
-                self.emit(CoreEvent::CallState(CallState::Left {
-                    room_id,
-                    reason: CallEndReason::Failed("the call server connection was lost".into()),
-                }))
-                .await;
+            }
+            MediaNotice::Disconnected | MediaNotice::MembershipLost { .. } => {
+                if let Some(reason) = failure_reason(&notice) {
+                    self.fail_call(room_id, reason).await;
+                }
             }
             MediaNotice::EncoderLost(kind) => self.video_encoder_lost(kind).await,
         }
+    }
+
+    /// Reports the call as connected again.
+    async fn emit_connected(&mut self, room_id: RoomId) {
+        let encrypted = self.call.as_ref().is_some_and(|c| c.encrypted);
+        self.emit(CoreEvent::CallState(CallState::Connected {
+            room_id,
+            encrypted,
+        }))
+        .await;
+    }
+
+    /// Ends the call because its connection or membership is lost for good:
+    /// closes the SFU connection and the audio devices, so nothing more is
+    /// sent, and reports why.
+    async fn fail_call(&mut self, room_id: RoomId, reason: &'static str) {
+        self.call_held = false;
+        if let Some(call) = self.call.take() {
+            if let Some(calls) = self.calls() {
+                calls.set_sent(&call.room_id, None);
+            }
+            let video = (call.has_video(), call.local_video());
+            call.leave().await;
+            self.video_ended(room_id.clone(), video).await;
+        }
+        self.stop_call_audio().await;
+        self.update_ring_gate(false);
+        self.emit(CoreEvent::CallState(CallState::Left {
+            room_id,
+            reason: CallEndReason::Failed(reason.into()),
+        }))
+        .await;
     }
 
     /// Tells the ringtone whether it may play (not `in_call`, the setting)
@@ -2107,6 +2201,7 @@ impl Engine {
     /// leave cue plays (when the settings allow it) and the devices close
     /// once it has played, without delaying `Left`.
     async fn end_call(&mut self, joining_next: bool, leave_sound: bool) {
+        self.call_held = false;
         if let Some(call) = self.call.take() {
             let room_id = call.room_id.clone();
             if let Some(calls) = self.calls() {
@@ -2619,7 +2714,7 @@ impl Engine {
             .get_room(&sdk_id)
             .ok_or_else(|| CoreError::UnknownRoom(room_id.clone()))?;
         if let Some(previous) = active.selected.take() {
-            previous.stop().await;
+            previous.close(&mut active.finishing).await;
         }
         // Threaded replies belong to their thread's timeline (Q16); the
         // builder from `RoomExt` keeps the read receipt tracking.
@@ -2628,18 +2723,24 @@ impl Engine {
             .with_focus(TimelineFocus::Live {
                 hide_threaded_events: true,
             })
+            // New item IDs for every opening (`threads::main_prefix`).
+            .with_internal_id_prefix(threads::main_prefix())
             .event_filter(crate::timeline::event_filter)
             .build()
             .await
             .map_err(|_| CoreError::Internal("could not open the room timeline".into()))?;
         // Typing and receipts of the open room arrive through sliding sync
         // only when the room is subscribed.
-        if let Some(sync) = active.sync.as_ref() {
-            sync.service
-                .room_list_service()
-                .set_room_subscriptions(&[&sdk_id])
-                .await;
-        }
+        let typing = match active.sync.as_ref() {
+            Some(sync) => {
+                sync.service
+                    .room_list_service()
+                    .set_room_subscriptions(&[&sdk_id])
+                    .await;
+                Some(sync.typing.subscribe(&sdk_id))
+            }
+            None => None,
+        };
         // A store error loses only the draft, never the room.
         let draft = room
             .load_composer_draft(None)
@@ -2677,11 +2778,14 @@ impl Engine {
             timeline.clone(),
             self.events.clone(),
         ));
-        tasks.spawn(forward_typing(
-            room_id.clone(),
-            timeline.clone(),
-            self.events.clone(),
-        ));
+        if let Some(typing) = typing {
+            tasks.spawn(forward_typing(
+                room_id.clone(),
+                timeline.clone(),
+                typing,
+                self.events.clone(),
+            ));
+        }
         active.selected = Some(Selected {
             room_id,
             timeline,
@@ -2961,6 +3065,7 @@ impl Engine {
                         changes,
                         sync: None,
                         selected: None,
+                        finishing: JoinSet::new(),
                         avatars: Avatars::new(),
                         security: SecurityTasks::new(),
                         media: MediaTasks::new(),
@@ -3142,6 +3247,7 @@ impl Engine {
                 changes,
                 sync: None,
                 selected: None,
+                finishing: JoinSet::new(),
                 avatars: Avatars::new(),
                 security: SecurityTasks::new(),
                 media: MediaTasks::new(),
@@ -3199,6 +3305,7 @@ impl Engine {
             self.ring_gate.subscribe(),
             self.config.audio.clone(),
         );
+        let typing = TypingWatch::start(&active.client);
         service.start().await;
         if let Some(active) = self.active.as_mut() {
             active.sync = Some(Syncing {
@@ -3210,6 +3317,7 @@ impl Engine {
                 more_rooms,
                 calls,
                 ringer,
+                typing,
             });
         }
     }
@@ -3282,11 +3390,9 @@ impl Engine {
     }
 
     async fn logout(&mut self) {
-        // The call needs the session to remove its membership.
-        self.leave_call().await;
-        // No leave cue on logout; one still playing from an earlier leave
-        // is waited for (bounded) before the session goes.
-        self.finish_closing().await;
+        // The call needs the session to remove its membership; the mic test
+        // must not keep the microphone open behind the login screen either.
+        self.end_session_audio().await;
         let Some(mut active) = self.active.take() else {
             self.emit(CoreEvent::Error(CoreError::NotLoggedIn)).await;
             return;
@@ -3303,9 +3409,61 @@ impl Engine {
     }
 }
 
+/// The microphone is not sent while muted, deafened, or while our call
+/// membership is gone (`held`).
+fn effective_mute(mic_muted: bool, deafened: bool, held: bool) -> bool {
+    mic_muted || deafened || held
+}
+
+/// Why a notice ends the call (`None`: it does not).
+fn failure_reason(notice: &MediaNotice) -> Option<&'static str> {
+    match notice {
+        MediaNotice::Disconnected => Some("the call server connection was lost"),
+        MediaNotice::MembershipLost { refused: true } => {
+            Some("could not stay in the call: the homeserver refused our call membership")
+        }
+        MediaNotice::MembershipLost { refused: false } => {
+            Some("could not stay in the call: the homeserver could not be reached")
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_mute_is_true_when_any_input_is() {
+        assert!(!effective_mute(false, false, false));
+        assert!(effective_mute(true, false, false));
+        assert!(effective_mute(false, true, false));
+        assert!(effective_mute(false, false, true));
+    }
+
+    #[test]
+    fn only_losing_the_call_gives_a_failure_reason() {
+        assert_eq!(
+            failure_reason(&MediaNotice::MembershipLost { refused: true }),
+            Some("could not stay in the call: the homeserver refused our call membership")
+        );
+        assert_eq!(
+            failure_reason(&MediaNotice::MembershipLost { refused: false }),
+            Some("could not stay in the call: the homeserver could not be reached")
+        );
+        assert_eq!(
+            failure_reason(&MediaNotice::Disconnected),
+            Some("the call server connection was lost")
+        );
+        for other in [
+            MediaNotice::Reconnecting,
+            MediaNotice::Reconnected,
+            MediaNotice::MembershipGone,
+            MediaNotice::MembershipBack,
+        ] {
+            assert_eq!(failure_reason(&other), None, "{other:?}");
+        }
+    }
     use crate::api::{AvatarId, RoomListQuery, RoomListTab};
     use crate::secrets::InMemorySecretStore;
 
@@ -3336,6 +3494,7 @@ mod tests {
             mic_muted: false,
             deafened: false,
             call_reconnects: 0,
+            call_held: false,
             ring_gate: watch::channel(RingGate::default()).0,
             closing: None,
             captures: video::Captures::default(),
@@ -3704,6 +3863,7 @@ mod tests {
             mic_muted: false,
             deafened: false,
             call_reconnects: 0,
+            call_held: false,
             ring_gate: watch::channel(RingGate::default()).0,
             closing: None,
             captures: video::Captures::default(),
@@ -4085,6 +4245,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4132,6 +4293,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4179,6 +4341,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4231,6 +4394,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4287,6 +4451,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security,
             media: MediaTasks::new(),
@@ -4561,6 +4726,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4633,6 +4799,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4707,6 +4874,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4900,6 +5068,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -4992,6 +5161,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),
@@ -5078,6 +5248,7 @@ mod tests {
             changes: broadcast::channel(1).1,
             sync: None,
             selected: None,
+            finishing: JoinSet::new(),
             avatars: Avatars::new(),
             security: SecurityTasks::new(),
             media: MediaTasks::new(),

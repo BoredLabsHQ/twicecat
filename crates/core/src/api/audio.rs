@@ -116,11 +116,11 @@ pub enum SkipCleaned {
 
 /// What others in a call learn about your microphone's cleaning, so their
 /// Twicecat need not clean your voice again ([`SkipCleaned`]). Sent as a
-/// LiveKit participant attribute.
+/// LiveKit data message to the others on your call service.
 ///
-/// Privacy: the attribute (which suppressor runs on your microphone, or
-/// that it is cleaned outside Twicecat) is seen by everyone in the call and
-/// by the operator of the SFU, like any other participant attribute. Turn
+/// Privacy: the message (which suppressor runs on your microphone, or that
+/// it is cleaned outside Twicecat) is seen by everyone in the call and by
+/// the operator of the SFU, as participant attributes are. Turn
 /// [`enabled`](Self::enabled) off to stop sending it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]

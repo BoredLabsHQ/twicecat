@@ -1,5 +1,6 @@
-//! The global-hotkey source (X11, Windows, macOS). The key is grabbed:
-//! while it is bound, other applications do not receive it.
+//! The global-hotkey source: macOS, and X11 or Windows when the key cannot
+//! be watched (see `keys`). The key is grabbed: while it is bound, other
+//! applications do not receive it.
 //!
 //! global-hotkey's own threading rules apply to whoever starts the service:
 //! on macOS the manager must be created on the main thread, and on Windows

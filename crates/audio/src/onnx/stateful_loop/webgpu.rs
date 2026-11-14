@@ -19,8 +19,8 @@ type OrtValuePointer = dyn ort::AsPointer<Sys = ort::sys::OrtValue>;
 /// Copies each of `pairs` (source, target) with the providers' own data
 /// transfer (ONNX Runtime's `CopyTensors`), and returns when they are done.
 fn copy_tensors(pairs: &[(&OrtValuePointer, &OrtValuePointer)]) -> Result<(), String> {
-    let env = ort::environment::Environment::current().map_err(|e| e.to_string())?;
-    let env_ptr = ort::AsPointer::ptr(&*env).cast_mut();
+    let env = crate::onnx::environment()?;
+    let env_ptr = ort::AsPointer::ptr(env).cast_mut();
     let sources: Vec<*const ort::sys::OrtValue> = pairs.iter().map(|(s, _)| s.ptr()).collect();
     let mut targets: Vec<*const ort::sys::OrtValue> = pairs.iter().map(|(_, t)| t.ptr()).collect();
     // SAFETY: live tensors of the same shapes (made from one spec) and type;

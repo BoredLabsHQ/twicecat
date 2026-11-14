@@ -16,7 +16,8 @@ use std::time::Duration;
 
 use twicecat_core::api::{
     Command, CoreEvent, ListDiff, MessageKind, MessageText, OutgoingMessage, Password, RoomId,
-    RoomSummary, SecurityStatus, SyncState, TextFormat, TimelineItem, TimelineItemKind,
+    RoomListQuery, RoomSummary, SecurityStatus, SyncState, TextFormat, TimelineItem,
+    TimelineItemKind,
 };
 use twicecat_core::paths::DataPaths;
 use twicecat_core::secrets::InMemorySecretStore;
@@ -1107,7 +1108,6 @@ pub async fn leave_all_created(n: u8, ids: &[matrix_sdk::ruma::OwnedRoomId]) {
 /// to the Synapse default (all messages) and deletes every user-defined room
 /// rule. Prints the user number and counts.
 pub async fn reset_notification_baseline(n: u8) {
-    use matrix_sdk::notification_settings::{IsEncrypted, IsOneToOne, RoomNotificationMode};
     assert_local_homeserver(TestEnv::load().homeserver_url());
     let client = raw_login(n).await;
     let settings = client.notification_settings().await;
@@ -1121,17 +1121,25 @@ pub async fn reset_notification_baseline(n: u8) {
             keywords += 1;
         }
     }
-    for encrypted in [IsEncrypted::Yes, IsEncrypted::No] {
-        for one_to_one in [IsOneToOne::Yes, IsOneToOne::No] {
-            settings
-                .set_default_room_notification_mode(
-                    encrypted,
-                    one_to_one,
-                    RoomNotificationMode::AllMessages,
-                )
-                .await
-                .expect("reset default notification mode");
-        }
+    // The four room rules back to all messages. Not through the SDK's
+    // `set_default_room_notification_mode`: it also updates the MSC3930
+    // poll-start rules, which Synapse no longer has (404 since 1.164),
+    // and fails on them; the core does the same (notifications.rs).
+    use matrix_sdk::ruma::push::{Action, PredefinedUnderrideRuleId, SoundTweakValue, Tweak};
+    let all = vec![
+        Action::Notify,
+        Action::SetTweak(Tweak::Sound(SoundTweakValue::Default)),
+    ];
+    for rule in [
+        PredefinedUnderrideRuleId::EncryptedRoomOneToOne,
+        PredefinedUnderrideRuleId::RoomOneToOne,
+        PredefinedUnderrideRuleId::Encrypted,
+        PredefinedUnderrideRuleId::Message,
+    ] {
+        settings
+            .set_underride_push_rule_actions(rule, all.clone())
+            .await
+            .expect("reset default notification mode");
     }
     let mut rooms = 0usize;
     for id in settings.get_rooms_with_user_defined_rules(None).await {
@@ -1247,8 +1255,32 @@ pub async fn fetch_raw_event_json(
     serde_json::from_str(event.json().get()).expect("event is JSON")
 }
 
-/// Waits until the room list contains `room_id`, so `SelectRoom` can find it.
+/// Makes the core send the whole room list again (a `Reset`), so a mirror
+/// can start empty here. Callers usually waited for `SyncState::Running`
+/// with `expect_event`, which drops the room list diffs before it, and the
+/// first ones can come first (separate tasks send the two; seen on a loaded
+/// CI runner): from an empty mirror the later diffs (`Set` at an index)
+/// place nothing. A query that matches nothing, then the default one: each
+/// change resets the list. For tests on the default query only.
+pub async fn resend_room_list(core: &mut CoreHandle) {
+    for query in [
+        RoomListQuery {
+            search: "\u{1}twicecat-test-no-room".to_owned(),
+            ..RoomListQuery::default()
+        },
+        RoomListQuery::default(),
+    ] {
+        core.commands
+            .send(Command::SetRoomListQuery(query))
+            .await
+            .expect("core running");
+    }
+}
+
+/// Waits until the room list contains `room_id`, so `SelectRoom` can find it
+/// (after [`resend_room_list`]).
 pub async fn wait_for_room(core: &mut CoreHandle, room_id: &str) {
+    resend_room_list(core).await;
     let mut rooms: Vec<RoomSummary> = Vec::new();
     let wait = async {
         while !rooms.iter().any(|r| r.id.as_str() == room_id) {

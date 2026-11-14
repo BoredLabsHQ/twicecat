@@ -9,12 +9,13 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::wait_for_room;
 use common::{TestEnv, create_room, expect_event, raw_login, send_text, start_core};
 use common::{set_display_name, unique_room_name};
 use twicecat_core::CoreHandle;
 use twicecat_core::api::{
-    Command, CoreEvent, ListDiff, PaginationState, Password, RoomId, RoomSummary, SyncState,
-    TimelineItem, TimelineItemKind,
+    Command, CoreEvent, ListDiff, PaginationState, Password, RoomId, SyncState, TimelineItem,
+    TimelineItemKind,
 };
 use twicecat_core::secrets::InMemorySecretStore;
 
@@ -32,27 +33,6 @@ async fn login_and_run(core: &mut CoreHandle, env: &TestEnv, n: u8) {
         matches!(e, CoreEvent::SyncState(SyncState::Running))
     })
     .await;
-}
-
-/// Waits until the room list contains `room_id`, so `SelectRoom` can find it.
-async fn wait_for_room(core: &mut CoreHandle, room_id: &str) {
-    let mut rooms: Vec<RoomSummary> = Vec::new();
-    let wait = async {
-        while !rooms.iter().any(|r| r.id.as_str() == room_id) {
-            match core.events.recv().await {
-                Some(CoreEvent::RoomListChanged(diffs)) => {
-                    for diff in diffs {
-                        ListDiff::apply(&diff, &mut rooms);
-                    }
-                }
-                Some(_) => {}
-                None => panic!("event channel closed"),
-            }
-        }
-    };
-    tokio::time::timeout(common::DEFAULT_TIMEOUT, wait)
-        .await
-        .expect("timed out waiting for the room to sync");
 }
 
 async fn open_room(core: &mut CoreHandle, room: &str) {
@@ -215,8 +195,8 @@ async fn back_pagination_loads_the_whole_room_in_order() {
     logout(&mut alice).await;
 }
 
-/// Alice and carol in a fresh room, each with a running core that has the
-/// room open.
+/// Alice and carol in a fresh room, each with a running core (that has the
+/// room open, from [`pair`]).
 struct Pair {
     room: String,
     alice_raw: matrix_sdk::Client,
@@ -230,6 +210,14 @@ struct Pair {
 }
 
 async fn pair() -> Pair {
+    let mut p = logged_in_pair().await;
+    open_room(&mut p.alice, &p.room).await;
+    open_room(&mut p.carol, &p.room).await;
+    p
+}
+
+/// Like [`pair`], with the room not open yet.
+async fn logged_in_pair() -> Pair {
     let env = TestEnv::load();
     let alice_raw = raw_login(1).await;
     let carol_raw = raw_login(3).await;
@@ -247,8 +235,6 @@ async fn pair() -> Pair {
     let mut carol = start_core(dirs[1].path(), Arc::new(InMemorySecretStore::new()));
     login_and_run(&mut alice, &env, 1).await;
     login_and_run(&mut carol, &env, 3).await;
-    open_room(&mut alice, &room).await;
-    open_room(&mut carol, &room).await;
     Pair {
         room,
         alice_raw,
@@ -300,6 +286,63 @@ async fn a_read_receipt_reaches_the_sender() {
     p.finish().await;
 }
 
+/// The event alice's fully-read marker of `room` points to, as the server
+/// has it (`None` before she has one).
+async fn fully_read(
+    client: &matrix_sdk::Client,
+    room: &matrix_sdk::ruma::RoomId,
+) -> Option<String> {
+    use matrix_sdk::ruma::api::client::config::get_room_account_data::v3::Request;
+    let request = Request::new(
+        client.user_id().unwrap().to_owned(),
+        room.to_owned(),
+        "m.fully_read".into(),
+    );
+    let response = client.send(request).await.ok()?;
+    let content: serde_json::Value =
+        serde_json::from_str(response.account_data.json().get()).ok()?;
+    content["event_id"].as_str().map(str::to_owned)
+}
+
+/// The read marker the app sends when the user moves to another room must
+/// reach the server: opening the next room used to abort it with the old
+/// room's tasks.
+#[tokio::test]
+#[ignore = "needs local homeserver: docker compose up -d --wait"]
+async fn the_read_marker_moves_although_another_room_opens_at_once() {
+    let mut p = pair().await;
+    let room = p.room.clone();
+    let last = send_text(&p.alice_raw, &p.room_id, "read up to here").await;
+    let seen = |items: &[TimelineItem]| {
+        items.iter().any(|i| {
+            i.event_id
+                .as_ref()
+                .is_some_and(|e| e.as_str() == last.as_str())
+        })
+    };
+    apply_until(&mut p.alice, &room, &mut p.alice_items, seen).await;
+    // As the app does on a room switch: the marker, then the next room (the
+    // same one here, which also replaces the selection).
+    for command in [
+        Command::MoveReadMarker {
+            room_id: RoomId::from(room.as_str()),
+        },
+        Command::SelectRoom(RoomId::from(room.as_str())),
+    ] {
+        p.alice.commands.send(command).await.unwrap();
+    }
+    let moved = async {
+        while fully_read(&p.alice_raw, &p.room_id).await.as_deref() != Some(last.as_str()) {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    };
+    tokio::time::timeout(common::DEFAULT_TIMEOUT, moved)
+        .await
+        .expect("the fully-read marker never reached the last message");
+    let _ = &p.carol_items;
+    p.finish().await;
+}
+
 #[tokio::test]
 #[ignore = "needs local homeserver: docker compose up -d --wait"]
 async fn typing_notices_reach_the_other_user() {
@@ -309,12 +352,14 @@ async fn typing_notices_reach_the_other_user() {
         room_id: RoomId::from(room.as_str()),
         typing,
     };
-    // Carol's room subscription is applied asynchronously, so a notice sent
-    // right after selecting can pass before she listens: send it again (the server
-    // tells a change, so each try ends with a false before the next true). Four
-    // tries of 8 s at the default timeout, more where CI lengthens it.
+    // Carol is told who is typing even before her room opens, so one notice
+    // does it. A notice that misses her anyway (her room list does not show the
+    // room, and its subscription brings only later changes) is sent again: the
+    // server tells a change only, so each try ends with a false before the next
+    // true, and the SDK sends that false only within 4 s of the true
+    // (`TYPING_NOTICE_TIMEOUT`), so a try waits 3 s.
     let mut typing_users = None;
-    let tries = (common::DEFAULT_TIMEOUT.as_secs() / 8).max(4);
+    let tries = (common::DEFAULT_TIMEOUT.as_secs() / 3).max(10);
     for _ in 0..tries {
         p.alice.commands.send(set(true)).await.unwrap();
         let wait = async {
@@ -327,7 +372,7 @@ async fn typing_notices_reach_the_other_user() {
             }
             None
         };
-        if let Ok(Some(users)) = tokio::time::timeout(Duration::from_secs(8), wait).await {
+        if let Ok(Some(users)) = tokio::time::timeout(Duration::from_secs(3), wait).await {
             typing_users = Some(users);
             break;
         }
@@ -348,6 +393,55 @@ async fn typing_notices_reach_the_other_user() {
     p.finish().await;
 }
 
+/// Issue #19: the server tells carol alice is typing once, before carol opens
+/// the room; opening it later must still show alice.
+#[tokio::test]
+#[ignore = "needs local homeserver: docker compose up -d --wait"]
+async fn typing_that_began_before_the_room_opened_is_shown() {
+    let mut p = logged_in_pair().await;
+    open_room(&mut p.alice, &p.room).await;
+    // Synapse sends a room's typing list on a change only, so carol hears of
+    // alice only once the room is in her sliding sync window (her room list
+    // shows it); a room that comes into it later brings no typing.
+    wait_for_room(&mut p.carol, &p.room).await;
+    // Alice keeps typing, as a composer does: the SDK sends a notice of 4 s
+    // again once 3 s have passed, and the server tells no change meanwhile.
+    let commands = p.alice.commands.clone();
+    let room_id = RoomId::from(p.room.as_str());
+    let keep_typing = tokio::spawn(async move {
+        loop {
+            let set = Command::SetTyping {
+                room_id: room_id.clone(),
+                typing: true,
+            };
+            if commands.send(set).await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(3_200)).await;
+        }
+    });
+    // Carol's sync gets the notice while her room is closed (it takes tens of
+    // milliseconds locally); opening the room later must still show alice.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    p.carol
+        .commands
+        .send(Command::SelectRoom(RoomId::from(p.room.as_str())))
+        .await
+        .unwrap();
+    let event = expect_event(
+        &mut p.carol,
+        |e| matches!(e, CoreEvent::Typing { users, .. } if !users.is_empty()),
+    )
+    .await;
+    keep_typing.abort();
+    let CoreEvent::Typing { users, .. } = event else {
+        unreachable!()
+    };
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0].user_id.as_str(), p.alice_id);
+    p.finish().await;
+}
+
 #[tokio::test]
 #[ignore = "needs local homeserver: docker compose up -d --wait"]
 async fn a_draft_is_kept_per_room_and_cleared_on_request() {
@@ -365,27 +459,10 @@ async fn a_draft_is_kept_per_room_and_cleared_on_request() {
     let dir = tempfile::tempdir().unwrap();
     let mut alice = start_core(dir.path(), Arc::new(InMemorySecretStore::new()));
     login_and_run(&mut alice, &env, 1).await;
-    // Both rooms, in one pass: they may arrive in the same list update.
-    let mut rooms: Vec<RoomSummary> = Vec::new();
-    let both = async {
-        while ![&first, &second]
-            .iter()
-            .all(|id| rooms.iter().any(|r| r.id.as_str() == id.as_str()))
-        {
-            match alice.events.recv().await {
-                Some(CoreEvent::RoomListChanged(diffs)) => {
-                    for diff in diffs {
-                        ListDiff::apply(&diff, &mut rooms);
-                    }
-                }
-                Some(_) => {}
-                None => panic!("event channel closed"),
-            }
-        }
-    };
-    tokio::time::timeout(common::DEFAULT_TIMEOUT, both)
-        .await
-        .expect("timed out waiting for both rooms to sync");
+    // Each waits on a fresh copy of the list, so both are found even when
+    // they arrived in the same update.
+    wait_for_room(&mut alice, &first).await;
+    wait_for_room(&mut alice, &second).await;
     alice
         .commands
         .send(Command::SelectRoom(RoomId::from(first.as_str())))

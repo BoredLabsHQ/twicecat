@@ -127,6 +127,15 @@ async fn participants_until(
     core: &mut CoreHandle,
     done: impl Fn(&[Participant]) -> bool,
 ) -> Vec<Participant> {
+    participants_until_seen(core, done, &mut Vec::new()).await
+}
+
+/// [`participants_until`], also keeping the call states it passes.
+async fn participants_until_seen(
+    core: &mut CoreHandle,
+    done: impl Fn(&[Participant]) -> bool,
+    states: &mut Vec<CallState>,
+) -> Vec<Participant> {
     let mut list = Vec::new();
     let wait = async {
         loop {
@@ -139,6 +148,7 @@ async fn participants_until(
                         return list;
                     }
                 }
+                Some(CoreEvent::CallState(state)) => states.push(state),
                 Some(_) => {}
                 None => panic!("event channel closed"),
             }
@@ -246,8 +256,26 @@ async fn a_removed_membership_is_restored_and_stays() {
         ))
         .await
         .expect("remove the membership");
-    participants_until(&mut core, |p| p.is_empty()).await;
-    participants_until(&mut core, |p| p.iter().any(|p| p.is_local)).await;
+    // The microphone is held while the membership is gone: the call shows
+    // Reconnecting, then Connected once it is back.
+    let mut states = Vec::new();
+    participants_until_seen(&mut core, |p| p.is_empty(), &mut states).await;
+    participants_until_seen(&mut core, |p| p.iter().any(|p| p.is_local), &mut states).await;
+    if !states
+        .iter()
+        .any(|s| matches!(s, CallState::Connected { .. }))
+    {
+        expect_event(&mut core, |e| {
+            matches!(e, CoreEvent::CallState(CallState::Connected { .. }))
+        })
+        .await;
+    }
+    assert!(
+        states
+            .iter()
+            .any(|s| matches!(s, CallState::Reconnecting { .. })),
+        "Reconnecting while the membership was gone: {states:?}"
+    );
     let back = membership_content(&alice_raw, &room_id, &key).await;
     assert!(
         back.as_ref().is_some_and(|c| c.get("device_id").is_some()),

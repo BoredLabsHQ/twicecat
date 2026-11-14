@@ -1,0 +1,134 @@
+# Dependabot version updates.
+#
+# Dependabot only proposes changes: it opens pull requests and never merges.
+# Merging one is the human's approval of that bump (AGENTS.md rule 3: never
+# change pinned dependency versions without asking), including bumps of the
+# exact `=` pins, which come as one pull request per crate (see the
+# cargo group's exclude-patterns).
+#
+# Commit prefix: scripts/check-commits.sh (AGENTS.md rule 5) accepts only
+# feat/fix/docs on a pull request, and Dependabot's default subject
+# ("Bump x from a to b") would fail the `checks` job every time. A bump is
+# closest to `fix`, so every entry writes `fix(deps): ...` (`fix(deps-dev): ...`
+# for Cargo dev-dependencies), which the script accepts.
+#
+# Cargo pull requests: packaging/flatpak/cargo-sources.json must match
+# Cargo.lock, and Dependabot does not regenerate it, so `scripts/flatpak.sh
+# check` fails on them until someone runs `scripts/flatpak.sh sources` on the
+# Dependabot branch and pushes it as `fix(deps): regenerate flatpak cargo
+# sources`.
+#
+# Ubuntu stays on 24.04: it sets the glibc 2.39 floor of the Linux builds, and
+# 26.04 would break it. The docker entries ignore ubuntu major and minor
+# bumps. The FROM lines have no digest today, so Dependabot proposes nothing
+# for them until the human pins the images by digest.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    groups:
+      # The exact `=` pins stay out of the group: Dependabot calls 0.x bumps
+      # such as matrix-sdk 0.19 -> 0.20 "minor", so without this they would
+      # land in the grouped pull request. Each pinned crate gets its own pull
+      # request instead. Keep in sync with the pins:
+      #   grep -ohE '^[a-z0-9_-]+ = (\{ version = )?"=' crates/*/Cargo.toml
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+        exclude-patterns:
+          - "arboard"
+          - "ash"
+          - "ashpd"
+          - "audio_thread_priority"
+          - "block2"
+          - "cargo-packager-updater"
+          - "cpal"
+          - "directories"
+          - "gilrs"
+          - "global-hotkey"
+          - "iced"
+          - "keyring"
+          - "libloading"
+          - "livekit"
+          - "matrix-sdk"
+          - "matrix-sdk-crypto"
+          - "matrix-sdk-ui"
+          - "naga"
+          - "nnnoiseless"
+          - "notify-rust"
+          - "objc2"
+          - "objc2-app-kit"
+          - "ort"
+          - "pipewire"
+          - "rfd"
+          - "rtrb"
+          - "rubato"
+          - "sonora"
+          - "tract-onnx"
+          - "tract-pulse"
+          - "tray-icon"
+          - "windows"
+          - "windows-core"
+          - "windows-sys"
+          - "x11rb"
+          - "yuvutils-rs"
+          - "zune-jpeg"
+
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/.github/actions/setup-build"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: docker
+    directories:
+      - "/dev/ubuntu-24.04"
+      - "/dev/ubuntu-24.04-aarch64-cross"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    ignore:
+      - dependency-name: ubuntu
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+
+  - package-ecosystem: docker-compose
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "fix"
+      include: "scope"

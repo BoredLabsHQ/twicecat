@@ -11,7 +11,7 @@ x-stack: &stack
 
 services:
   synapse:
-    image: matrixdotorg/synapse:v1.151.0
+    image: matrixdotorg/synapse:v1.164.2
     entrypoint: ["/bin/sh", "/start-dev.sh"]
     environment:
       SYNAPSE_SERVER_NAME: localhost
@@ -49,7 +49,7 @@ services:
   # same for the host (published above) and for lk-jwt-service.
   # dev/livekit/livekit.yaml is a template; the entrypoint fills it in.
   livekit:
-    image: livekit/livekit-server:v1.13.7
+    image: livekit/livekit-server:v1.13.11
     network_mode: "service:synapse"
     depends_on:
       synapse:
@@ -82,7 +82,7 @@ services:
   # namespace so that "localhost:8448" (the federation address it derives from
   # the server name "localhost") is Synapse's dev-only TLS listener.
   lk-jwt:
-    image: ghcr.io/element-hq/lk-jwt-service:0.7.0
+    image: ghcr.io/element-hq/lk-jwt-service:0.10.0
     network_mode: "service:synapse"
     depends_on:
       livekit:
@@ -106,7 +106,7 @@ services:
   # publishes to their own, and the others subscribe there. Same dev key as
   # the first pair (test-only), different ports.
   livekit-b:
-    image: livekit/livekit-server:v1.13.7
+    image: livekit/livekit-server:v1.13.11
     network_mode: "service:synapse"
     depends_on:
       synapse:
@@ -130,7 +130,7 @@ services:
       start_period: 2s
 
   lk-jwt-b:
-    image: ghcr.io/element-hq/lk-jwt-service:0.7.0
+    image: ghcr.io/element-hq/lk-jwt-service:0.10.0
     network_mode: "service:synapse"
     depends_on:
       livekit-b:
@@ -154,7 +154,7 @@ services:
   # Not started by default (CI does not need it): `docker compose --profile element up -d`,
   # then open http://localhost:8082.
   element:
-    image: vectorim/element-web:v1.12.30
+    image: vectorim/element-web:v1.12.33
     profiles: ["element"]
     ports:
       - "127.0.0.1:8082:80"

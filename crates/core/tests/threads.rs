@@ -22,8 +22,8 @@ use matrix_sdk::ruma::{OwnedEventId, OwnedRoomId};
 use twicecat_core::CoreHandle;
 use twicecat_core::api::{
     ActionKind, AttachmentData, Command, CoreError, CoreEvent, EventId, ListDiff, MediaBytes,
-    MediaKind, MessageDetails, OutgoingAttachment, PaginationState, RoomId, RoomSummary,
-    TimelineItem, TimelineItemKind,
+    MediaKind, MessageDetails, OutgoingAttachment, PaginationState, RoomId, TimelineItem,
+    TimelineItemKind,
 };
 use twicecat_core::secrets::InMemorySecretStore;
 
@@ -54,23 +54,7 @@ impl Side {
 
     /// Waits until the room is listed, then selects it.
     async fn open_room(&mut self, room: &str) {
-        let mut rooms: Vec<RoomSummary> = Vec::new();
-        let wait = async {
-            while !rooms.iter().any(|r| r.id.as_str() == room) {
-                match self.core.events.recv().await {
-                    Some(CoreEvent::RoomListChanged(diffs)) => {
-                        for diff in diffs {
-                            ListDiff::apply(&diff, &mut rooms);
-                        }
-                    }
-                    Some(_) => {}
-                    None => panic!("event channel closed"),
-                }
-            }
-        };
-        tokio::time::timeout(DEFAULT_TIMEOUT, wait)
-            .await
-            .expect("timed out waiting for the room to sync");
+        common::wait_for_room(&mut self.core, room).await;
         self.send(Command::SelectRoom(RoomId::from(room))).await;
     }
 
@@ -280,9 +264,14 @@ async fn thread_timeline_has_prefixed_ids_and_sending_in_it_updates_the_summary(
             message(&s.thread, &root_text).is_some() && message(&s.thread, &reply).is_some()
         })
         .await;
-    let prefix = format!("thread:{}:", root.as_str());
+    // `thread:{opening}:{root}:{n}`.
+    let bound = format!(":{}:", root.as_str());
     for item in &rig.alice.thread {
-        assert!(item.id.starts_with(&prefix), "thread item id {:?}", item.id);
+        assert!(
+            item.id.starts_with("thread:") && item.id.contains(&bound),
+            "thread item id {:?}",
+            item.id
+        );
     }
     for item in &rig.alice.main {
         assert!(!item.id.starts_with("thread:"));
@@ -324,7 +313,7 @@ async fn actions_in_a_thread_use_its_item_ids() {
         })
         .await;
     let item_id = message(&rig.alice.thread, &reply).unwrap().0.id.clone();
-    assert!(item_id.starts_with(&format!("thread:{}:", root.as_str())));
+    assert!(item_id.starts_with("thread:") && item_id.contains(&format!(":{}:", root.as_str())));
     rig.alice
         .send(Command::ToggleReaction {
             room_id: RoomId::from(room.as_str()),
@@ -363,9 +352,17 @@ async fn a_thread_item_id_of_another_thread_is_not_found() {
         .await;
     let item_id = message(&rig.alice.thread, &reply).unwrap().0.id.clone();
     let counter = item_id.rsplit(':').next().unwrap().to_owned();
-    // The same counter in another thread, and the old unbound form.
+    // The same counter in another thread, in an earlier opening of this
+    // one, and the old forms.
+    let opening = item_id.split(':').nth(1).unwrap().parse::<u64>().unwrap();
     for foreign in [
-        format!("thread:$other:{counter}"),
+        item_id.replacen(root.as_str(), "$other", 1),
+        item_id.replacen(
+            &format!("thread:{opening}:"),
+            &format!("thread:{}:", opening + 1),
+            1,
+        ),
+        format!("thread:{}:{counter}", root.as_str()),
         format!("thread:{counter}"),
     ] {
         rig.alice

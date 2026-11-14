@@ -14,9 +14,10 @@
 //! gives up.
 //!
 //! Voices their sender's device already cleans are left alone
-//! ([`SkipCleaned`]): Twicecat announces its microphone's suppressor as a
-//! LiveKit participant attribute ([`ANNOUNCE_KEY`]), and LiveKit's web and
-//! mobile clients flag their tracks (the browser's noise suppression, Krisp).
+//! ([`SkipCleaned`]): Twicecat announces its microphone's suppressor in a
+//! LiveKit data message ([`ANNOUNCE_KEY`]; older builds set a participant
+//! attribute, still read), and LiveKit's web and mobile clients flag their
+//! tracks (the browser's noise suppression, Krisp).
 
 mod policy;
 #[cfg(test)]

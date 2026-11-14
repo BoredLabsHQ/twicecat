@@ -35,8 +35,9 @@ mod video;
 pub(crate) mod watcher;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::sync::{Arc, RwLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use livekit::e2ee::key_provider::KeyProvider;
 use livekit::e2ee::{E2eeOptions, EncryptionType};
@@ -63,7 +64,7 @@ use self::media::{ConnectionShared, Publish, SfuConnection, SharedFlags};
 pub(crate) use self::media::{MediaNotice, VideoSource};
 use self::membership::MEMBERSHIP_EXPIRES;
 use self::own_membership::{
-    OwnMembership, keep_membership, schedule_delayed_leave, send_membership,
+    OwnMembership, REJOIN_GIVE_UP, keep_membership, schedule_delayed_leave, send_membership,
 };
 pub(crate) use self::participants::active_memberships;
 use self::participants::{Ours, watch_participants};
@@ -151,6 +152,22 @@ pub(crate) struct CallAudio {
     pub cleaning_backend: Option<crate::audio_session::CleaningBackend>,
 }
 
+/// The longest one network step of joining or leaving a call may take. The
+/// SDK retries server errors and rate limits for minutes, and the core
+/// handles no other command (a message, push-to-talk, leaving) meanwhile.
+pub(super) const CALL_STEP_LIMIT: Duration = Duration::from_secs(20);
+
+/// Runs one step of a join, failing it as `what` "took too long" after
+/// [`CALL_STEP_LIMIT`].
+async fn bounded<T>(
+    what: &str,
+    step: impl Future<Output = Result<T, CoreError>>,
+) -> Result<T, CoreError> {
+    tokio::time::timeout(CALL_STEP_LIMIT, step)
+        .await
+        .unwrap_or_else(|_| Err(CoreError::Call(format!("{what} took too long"))))
+}
+
 /// Rings the room: `ring` in a DM, a quiet `notification` elsewhere (as
 /// Element Call). Returns the notification's event ID; a failure only
 /// means nobody is rung.
@@ -161,9 +178,14 @@ async fn send_notification(
 ) -> Option<String> {
     let ring = room.is_direct().await.unwrap_or(false);
     let content = ringing::notification_content(membership_event, ring, now_ms(), intent);
-    match room.send_raw(ringing::NOTIFICATION_EVENT, content).await {
-        Ok(sent) => Some(sent.response.event_id.to_string()),
-        Err(_) => {
+    let sent = tokio::time::timeout(
+        CALL_STEP_LIMIT,
+        room.send_raw(ringing::NOTIFICATION_EVENT, content),
+    )
+    .await;
+    match sent {
+        Ok(Ok(sent)) => Some(sent.response.event_id.to_string()),
+        Ok(Err(_)) | Err(_) => {
             tracing::warn!("could not send the call notification");
             None
         }
@@ -215,18 +237,30 @@ impl CallSession {
             .device_id()
             .ok_or(CoreError::NotLoggedIn)?
             .to_string();
-        let service_url = own_livekit_service(client, service_override).await?;
-        let encrypted = room
-            .latest_encryption_state()
-            .await
-            .map_err(|_| CoreError::Call("could not check whether the room is encrypted".into()))?
-            .is_encrypted();
+        let service_url = bounded(
+            "finding the call service",
+            own_livekit_service(client, service_override),
+        )
+        .await?;
+        let encrypted = bounded("checking the room's encryption", async {
+            room.latest_encryption_state().await.map_err(|_| {
+                CoreError::Call("could not check whether the room is encrypted".into())
+            })
+        })
+        .await?
+        .is_encrypted();
         let version = room
             .version()
             .map_or_else(|| "1".to_owned(), |v| v.as_str().to_owned());
         let state_key = membership::state_key(&user_id, &device_id, &version);
 
-        let delay_id = schedule_delayed_leave(client, &room, &state_key).await?;
+        // A delayed leave that timed out here but reached the server only
+        // clears a membership that was never sent.
+        let delay_id = bounded(
+            "preparing the call membership",
+            schedule_delayed_leave(client, &room, &state_key),
+        )
+        .await?;
         let joined_ms = now_ms();
         let content = membership::join_content(
             &user_id,
@@ -288,6 +322,8 @@ impl CallSession {
                 intent,
                 delay_id,
                 gone: own_gone.clone(),
+                notices: to_engine.clone(),
+                give_up_after: REJOIN_GIVE_UP,
             },
             joined_ms,
         )));
@@ -320,7 +356,12 @@ impl CallSession {
             .await
             .iter()
             .all(|m| m.backend_identity == own_identity);
-        let membership_event = match send_membership(&room, &state_key, content).await {
+        let membership_event = match bounded(
+            "sending the call membership",
+            send_membership(&room, &state_key, content),
+        )
+        .await
+        {
             Ok(id) => id,
             Err(e) => {
                 session.leave().await;
@@ -416,6 +457,14 @@ impl CallSession {
             to_engine,
         )));
         Ok(session)
+    }
+
+    /// Holds (or releases) our camera, screen share and its sound while our
+    /// call membership is gone.
+    pub(crate) fn set_held(&mut self, held: bool) {
+        if let Some(own) = self.own.as_mut() {
+            own.set_held(held);
+        }
     }
 
     /// Mutes or unmutes our published microphone; others see the change.
@@ -580,5 +629,26 @@ impl CallSession {
         }
         let delay_id = self.delay_id.lock().await.take();
         own_membership::remove(&self.room, &self.state_key, delay_id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_join_step_that_never_answers_fails_after_the_limit() {
+        let started = tokio::time::Instant::now();
+        let result: Result<(), CoreError> =
+            bounded("sending the call membership", std::future::pending()).await;
+        assert_eq!(
+            result,
+            Err(CoreError::Call(
+                "sending the call membership took too long".into()
+            ))
+        );
+        assert_eq!(started.elapsed(), CALL_STEP_LIMIT);
+        // A step that answers in time keeps its result.
+        assert_eq!(bounded("x", async { Ok(7) }).await, Ok(7));
     }
 }

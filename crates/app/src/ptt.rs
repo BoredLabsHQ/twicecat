@@ -2,9 +2,11 @@
 //!
 //! The service (`twicecat-ptt`) runs while the input mode is push-to-talk
 //! or toggle-to-talk and a call, the mic test or the Voice & audio card
-//! needs it (plan Q1), so the key is not grabbed the rest of the time. It is
-//! started, restarted and dropped from `update`, which Iced runs on the
-//! main thread: global-hotkey needs that on macOS and Windows.
+//! needs it (plan Q1), so the key is not watched (or, on macOS, grabbed) the
+//! rest of the time. On X11 and Windows other apps still receive the key
+//! (#49). It is started, restarted and dropped from `update`, which Iced runs
+//! on the main thread: global-hotkey needs that on macOS (and on Windows
+//! when it falls back to grabbing the key).
 //!
 //! Its events go to one forwarding thread, not through `update` (roadmap:
 //! "Don't route the toggle through Iced's `update`"). The thread turns

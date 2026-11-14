@@ -518,6 +518,9 @@ pub struct App {
     pub(crate) shown_row_height: f32,
     /// The loaded length for which `LoadMoreRooms` was last sent.
     pub load_more_at: Option<usize>,
+    /// A room asked for (the call card, a notification) that the list did
+    /// not show yet; opened when it arrives (see [`App::open_room`]).
+    pub pending_open: Option<RoomId>,
     /// Avatar requests and answers of this session (plan Q11).
     pub avatars: Avatars,
     /// The room whose timeline is open.
@@ -716,6 +719,7 @@ impl App {
             newest_panel: crate::layout::SidePanel::default(),
             shown_row_height: 0.0,
             load_more_at: None,
+            pending_open: None,
             avatars: Avatars::default(),
             selected: None,
             timeline: TimelineView::default(),
@@ -829,6 +833,18 @@ impl App {
             }
             (app, task)
         }
+    }
+
+    /// Keeps the window within what the GPU surface can take: iced 0.14
+    /// asks wgpu for its default limits, whose largest texture side is
+    /// [`MAX_SURFACE_SIDE`] pixels, and a bigger window panicked in
+    /// `Surface::configure` (issue #47: 6899 x 9036 on Windows). Again on
+    /// every change of the display's scale and of the text scale, as iced
+    /// turns the logical size into pixels with both.
+    pub(crate) fn cap_window_size(&self) -> Task<Message> {
+        let side = max_window_side(self.window_scale, self.scale_factor());
+        window::oldest()
+            .and_then(move |id| window::set_max_size(id, Some(iced::Size::new(side, side))))
     }
 
     /// Replaces the local settings (read from the settings file at boot).
@@ -1057,13 +1073,59 @@ impl App {
     }
 
     fn open_room_from_notification(&mut self, room: RoomId) -> Task<Message> {
-        let select =
-            if self.selected.as_ref() != Some(&room) && room_list::contains(&self.rooms, &room) {
-                self.update_inner(Message::SelectRoom(room))
-            } else {
+        Task::batch([self.open_room(room), focus_window()])
+    }
+
+    /// Opens `room`: at once when the list shows it; otherwise brings it in
+    /// (the default query, without search, tab or space, then more pages)
+    /// and opens it when it arrives. `SelectRoom` takes only listed rooms,
+    /// and the call card's room or a notification's may be missing from a
+    /// filtered or partly loaded list: the card's **Call** did nothing
+    /// (issue #48).
+    pub(crate) fn open_room(&mut self, room: RoomId) -> Task<Message> {
+        if room_list::contains(&self.rooms, &room) {
+            self.pending_open = None;
+            return if self.selected.as_ref() == Some(&room) {
                 Task::none()
+            } else {
+                self.update_inner(Message::SelectRoom(room))
             };
-        Task::batch([select, focus_window()])
+        }
+        self.pending_open = Some(room);
+        if self.query != RoomListQuery::default() {
+            self.search_input.clear();
+            return self.set_query(RoomListQuery::default());
+        }
+        self.load_more_for_pending()
+    }
+
+    /// The next page while a room to open is still missing (once per loaded
+    /// length, and only while the server has more).
+    fn load_more_for_pending(&mut self) -> Task<Message> {
+        let len = self.rooms.len();
+        let more = self
+            .total_rooms
+            .is_some_and(|total| usize::try_from(total).unwrap_or(usize::MAX) > len);
+        if !more || self.load_more_at == Some(len) {
+            return Task::none();
+        }
+        self.load_more_at = Some(len);
+        self.send(Command::LoadMoreRooms)
+    }
+
+    /// After a room list change: opens the room asked for if it arrived,
+    /// else pages on (only on the default query, which `open_room` set).
+    fn open_pending_room(&mut self) -> Task<Message> {
+        let Some(room) = self.pending_open.clone() else {
+            return Task::none();
+        };
+        if room_list::contains(&self.rooms, &room) {
+            self.open_room(room)
+        } else if self.query == RoomListQuery::default() {
+            self.load_more_for_pending()
+        } else {
+            Task::none()
+        }
     }
 
     /// Shows a desktop notification built elsewhere (an incoming call), when
@@ -1361,7 +1423,7 @@ impl App {
                 if scale.is_finite() && (0.25..=16.0).contains(&scale) {
                     self.window_scale = scale;
                 }
-                Task::none()
+                self.cap_window_size()
             }
             Message::NotificationShown { room_id, id } => {
                 self.folding.shown(&room_id, id);
@@ -1654,6 +1716,8 @@ impl App {
                 if !room_list::contains(&self.rooms, &id) {
                     return Task::none();
                 }
+                // A room picked now replaces one asked for earlier.
+                self.pending_open = None;
                 let stop_typing = self.stop_typing();
                 let marker = self.move_read_marker();
                 // Before the core opens the next room (commands run in order).
@@ -1835,14 +1899,18 @@ impl App {
                 if self.screen == Screen::Loading && !self.rooms.is_empty() {
                     self.screen = Screen::Main;
                 }
-                task = Task::batch([self.after_list_change(), self.rooms_after_list_change()]);
+                task = Task::batch([
+                    self.after_list_change(),
+                    self.rooms_after_list_change(),
+                    self.open_pending_room(),
+                ]);
             }
             CoreEvent::RoomListLoaded { total_rooms } => {
                 self.total_rooms = total_rooms;
                 if self.screen == Screen::Loading {
                     self.screen = Screen::Main;
                 }
-                task = self.check_paging();
+                task = Task::batch([self.check_paging(), self.open_pending_room()]);
             }
             CoreEvent::TimelineDiff { room_id, diffs } => {
                 task = self.apply_timeline(&room_id, diffs);
@@ -2731,11 +2799,19 @@ impl App {
         self.sidebar_menu = None;
         // Memory only: no sidebar file is touched at logout.
         self.sidebar.unload();
-        self.reset_threads();
+        self.forget_threads();
+        // Nothing of the old account outlives it: the switcher (its rooms),
+        // a room still to open, the search, tab and space (the core keeps
+        // its query across sessions, so it is told), and the tray's count.
+        self.switcher = crate::switcher::SwitcherModel::default();
+        self.pending_open = None;
+        self.search_input.clear();
+        let query = self.set_query(RoomListQuery::default());
+        self.tray.set_unread(0, self.ui_settings.tray_badge);
         self.notice = Some(notice.to_owned());
         self.end_login_attempt();
         self.screen = Screen::Login;
-        flush
+        Task::batch([flush, query])
     }
 
     pub(crate) fn deselect(&mut self) {
@@ -3216,6 +3292,23 @@ fn visible_images(view: &TimelineView) -> Vec<String> {
         .collect()
 }
 
+/// The largest side, in pixels, of a texture under `wgpu::Limits::default()`,
+/// which iced_wgpu 0.14 requests: the window surface may not be larger.
+pub(crate) const MAX_SURFACE_SIDE: f32 = 8192.0;
+
+/// The largest window side in logical units for the display's scale
+/// (`display`) and the app's text scale (`text`), so that iced's conversion
+/// (logical times both) stays within [`MAX_SURFACE_SIDE`] pixels.
+pub(crate) fn max_window_side(display: f32, text: f32) -> f32 {
+    let factor = display * text;
+    let factor = if factor.is_finite() && factor > 0.0 {
+        factor
+    } else {
+        1.0
+    };
+    (MAX_SURFACE_SIDE / factor).floor()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -3224,6 +3317,28 @@ mod tests {
     use twicecat_core::api::{DeviceId, ListDiff, RoomId};
 
     use super::*;
+
+    #[test]
+    fn the_window_never_outgrows_the_gpu_surface() {
+        assert_eq!(max_window_side(1.0, 1.0), 8192.0);
+        assert_eq!(max_window_side(1.5, 1.0), 5461.0);
+        assert_eq!(max_window_side(2.0, 1.5), 2730.0);
+        for display in [1.0_f32, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0] {
+            for text in [0.8_f32, 1.0, 1.1, 1.25, 1.5, 2.0] {
+                let side = max_window_side(display, text);
+                assert!(
+                    side * display * text <= MAX_SURFACE_SIDE,
+                    "{display} {text}"
+                );
+            }
+        }
+        assert_eq!(
+            max_window_side(f32::NAN, 1.0),
+            8192.0,
+            "a bad factor counts as 1"
+        );
+        assert_eq!(max_window_side(0.0, 1.0), 8192.0);
+    }
 
     fn app_with(capacity: usize) -> (App, mpsc::Receiver<Command>) {
         let (tx, rx) = mpsc::channel(capacity);
@@ -10537,6 +10652,43 @@ mod tests {
         }
 
         #[test]
+        fn logging_out_leaves_nothing_of_the_account_behind() {
+            let mut rig = rig();
+            let _ = rig
+                .app
+                .update(Message::WindowOpened(iced::window::Id::unique()));
+            let _ = rig.app.update(core(CoreEvent::UnreadTotals {
+                notifications: 3,
+                highlights: 0,
+            }));
+            rig.app.switcher.open = true;
+            rig.app.switcher.query = "old room".into();
+            rig.app.switcher.seed = vec![RoomSummary::new(RoomId::from("!a:x"), "a".into())];
+            rig.app.pending_open = Some(RoomId::from("!b:x"));
+            rig.app.search_input = "old".into();
+            rig.app.query = RoomListQuery {
+                search: "old".into(),
+                ..RoomListQuery::default()
+            };
+            while rig.rx.try_recv().is_ok() {}
+
+            let _ = rig.app.update(core(CoreEvent::LoggedOut));
+            assert!(!rig.app.switcher.open && rig.app.switcher.seed.is_empty());
+            assert!(rig.app.switcher.query.is_empty());
+            assert_eq!(rig.app.pending_open, None);
+            assert!(rig.app.search_input.is_empty());
+            assert_eq!(rig.app.query, RoomListQuery::default());
+            let sent: Vec<Command> = std::iter::from_fn(|| rig.rx.try_recv().ok()).collect();
+            assert!(
+                sent.iter().any(
+                    |c| matches!(c, Command::SetRoomListQuery(q) if *q == RoomListQuery::default())
+                ),
+                "the core's query is reset too: {sent:?}"
+            );
+            assert_eq!(*rig.tray.badges.lock().expect("test mutex"), [true, false]);
+        }
+
+        #[test]
         fn a_tray_failure_leaves_the_app_working() {
             let mut rig = rig_with(true);
             let _ = rig
@@ -12077,6 +12229,40 @@ mod tests {
             // A second close has nothing to close.
             let _ = app.update(Message::Threads(ThreadsMessage::Close));
             assert!(drain(&mut rx).is_empty());
+        }
+
+        #[test]
+        fn an_unsent_thread_reply_comes_back_when_its_thread_opens_again() {
+            let (mut app, mut rx) = thread_app();
+            let typed = |app: &mut App, text: &str| {
+                let _ = app.update(Message::Threads(ThreadsMessage::Draft(MessageText::from(
+                    text,
+                ))));
+            };
+            typed(&mut app, "half a reply");
+            // Esc, then the same thread again.
+            let _ = app.update(Message::Threads(ThreadsMessage::Close));
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("r"))));
+            assert_eq!(open_panel(&app).draft, "half a reply");
+            // Another thread starts empty and keeps its own.
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("s"))));
+            assert!(open_panel(&app).draft.is_empty());
+            typed(&mut app, "other");
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("r"))));
+            assert_eq!(open_panel(&app).draft, "half a reply");
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("s"))));
+            assert_eq!(open_panel(&app).draft, "other");
+            // Sent text is not kept.
+            let _ = app.update(Message::Threads(ThreadsMessage::Submit));
+            let _ = app.update(Message::Threads(ThreadsMessage::Close));
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("s"))));
+            assert!(open_panel(&app).draft.is_empty());
+            assert!(!format!("{:?}", app.threads).contains("half a reply"));
+            // The session's end forgets them.
+            let _ = app.back_to_login("bye");
+            assert!(!format!("{:?}", app.threads).contains("drafts: 1"));
+            assert!(format!("{:?}", app.threads).contains("drafts: 0"));
+            drain(&mut rx);
         }
 
         #[test]
