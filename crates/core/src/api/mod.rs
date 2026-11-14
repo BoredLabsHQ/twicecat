@@ -36,8 +36,8 @@ pub use rooms::{
     CreateRoomRequest, DensityChoice, MAX_SPACE_ROOMS, MembershipView, NotificationKind,
     NotificationSettingsView, NotificationView, OwnProfileView, PowerLevelView, Role,
     RoomDetailsView, RoomListChoice, RoomMemberView, RoomNotificationModeView, RoomPermissions,
-    RoomVisibility, SpaceUnreadView, SpaceView, ThemeChoice, ThemeName, ThemeNameError,
-    ThreadSummaryView, UiSettings, UnreadCountsView, UpdateCheckChoice,
+    RoomSortChoice, RoomVisibility, SpaceUnreadView, SpaceView, ThemeChoice, ThemeName,
+    ThemeNameError, ThreadSummaryView, UiSettings, UnreadCountsView, UpdateCheckChoice,
 };
 pub use security::{
     CancelReason, CrossSigning, DeviceSummary, DeviceTrust, DeviceVerification, QrImage,
