@@ -500,6 +500,16 @@ pub enum RoomListChoice {
     Rail,
 }
 
+/// How the room list is ordered where the user has not ordered it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RoomSortChoice {
+    /// Most recent activity first (the SDK's order).
+    #[default]
+    Activity,
+    /// By name, A to Z.
+    Name,
+}
+
 /// Whether Twicecat may check GitHub for a newer version once a day (Phase 7
 /// Task 9). Asked once, at the first start where the check applies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -527,6 +537,8 @@ pub enum UpdateCheckChoice {
 /// assert_eq!(s.density, DensityChoice::Comfortable);
 /// assert_eq!(s.room_list, RoomListChoice::Expanded);
 /// assert_eq!(s.text_scale_percent, 100);
+/// assert_eq!(s.room_sort, twicecat_core::api::RoomSortChoice::Activity);
+/// assert!(!s.unread_first);
 /// assert_eq!(s.update_check, twicecat_core::api::UpdateCheckChoice::Unasked);
 /// assert_eq!(s.update_checked_at, 0);
 /// ```
@@ -557,6 +569,10 @@ pub struct UiSettings {
     /// When the last update check was sent, in seconds since the Unix epoch
     /// (0: never).
     pub update_checked_at: u64,
+    /// How the room list is sorted.
+    pub room_sort: RoomSortChoice,
+    /// Put rooms with unread messages before the rest.
+    pub unread_first: bool,
 }
 
 impl Default for UiSettings {
@@ -573,6 +589,8 @@ impl Default for UiSettings {
             advanced_settings: false,
             update_check: UpdateCheckChoice::Unasked,
             update_checked_at: 0,
+            room_sort: RoomSortChoice::Activity,
+            unread_first: false,
         }
     }
 }

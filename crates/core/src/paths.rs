@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use crate::api::sidebar::is_valid_user_id;
 use crate::api::sidebar::limits::MAX_SIDEBAR_BYTES;
 use crate::api::{
-    CustomSection, DensityChoice, FolderLayout, RailEntry, RoomId, RoomListChoice, SectionKey,
-    SidebarLabel, SidebarLayout, SidebarRead, SpaceLayout, ThemeChoice, ThemeName, UiSettings,
-    UpdateCheckChoice, UserId,
+    CustomSection, DensityChoice, FolderLayout, RailEntry, RoomId, RoomListChoice, RoomSortChoice,
+    SectionKey, SidebarLabel, SidebarLayout, SidebarRead, SpaceLayout, ThemeChoice, ThemeName,
+    UiSettings, UpdateCheckChoice, UserId,
 };
 
 /// Largest settings file read (64 KiB); anything bigger is treated as corrupt.
@@ -61,6 +61,12 @@ fn settings_from_map(map: &serde_json::Map<String, serde_json::Value>) -> UiSett
             .get("update_checked_at")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(defaults.update_checked_at),
+        room_sort: match text("room_sort") {
+            Some("Name") => RoomSortChoice::Name,
+            Some("Activity") => RoomSortChoice::Activity,
+            _ => defaults.room_sort,
+        },
+        unread_first: flag("unread_first", defaults.unread_first),
     }
 }
 
@@ -498,6 +504,11 @@ impl DataPaths {
                 UpdateCheckChoice::On => "On",
             },
             "update_checked_at": settings.update_checked_at,
+            "room_sort": match settings.room_sort {
+                RoomSortChoice::Activity => "Activity",
+                RoomSortChoice::Name => "Name",
+            },
+            "unread_first": settings.unread_first,
         });
         // No key while `None` (the built-in theme), so a later change of the
         // app's default reaches this user. `palette` is never written again.
@@ -1103,6 +1114,45 @@ mod tests {
         assert!(!s.tray_badge);
         assert!(p.settings_file().exists());
         assert!(!p.root().join("settings.json.bad").exists());
+    }
+
+    #[test]
+    fn the_room_sort_round_trips_and_defaults_per_field() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = DataPaths::at(tmp.path().join("root"));
+        for room_sort in [RoomSortChoice::Activity, RoomSortChoice::Name] {
+            for unread_first in [false, true] {
+                let s = UiSettings {
+                    room_sort,
+                    unread_first,
+                    ..UiSettings::default()
+                };
+                p.write_settings(&s).unwrap();
+                assert_eq!(p.read_settings(), s);
+            }
+        }
+        // A file without the fields.
+        let s = read_text(&p, r#"{"tray_badge":false}"#);
+        assert_eq!(s.room_sort, RoomSortChoice::Activity);
+        assert!(!s.unread_first);
+        // Unknown values: default for that field, the rest is kept.
+        let s = read_text(
+            &p,
+            r#"{"room_sort":"zigzag","unread_first":3,"theme":"Dark"}"#,
+        );
+        assert_eq!(s.room_sort, RoomSortChoice::Activity);
+        assert!(!s.unread_first);
+        assert_eq!(s.theme, ThemeChoice::Dark);
+        let s = read_text(&p, r#"{"room_sort":"Name","unread_first":"yes"}"#);
+        assert_eq!(s.room_sort, RoomSortChoice::Name);
+        assert!(!s.unread_first);
+    }
+
+    #[test]
+    fn ui_settings_stays_copy() {
+        fn is_copy<T: Copy>() {}
+        is_copy::<UiSettings>();
+        assert_eq!(RoomSortChoice::default(), RoomSortChoice::Activity);
     }
 
     #[test]

@@ -4153,3 +4153,10 @@ Three reviews (core messaging and sync, calls and audio, app UI) found the bugs 
 - **Red first:** the unit test did not compile (`RoomListTab::Unreads` and the parts missing) before the code.
 - **Checks:** fmt, clippy (default and `--all-features`), `cargo test --workspace`, `cargo check --workspace --lib --bins --locked`, the four scripts and `cargo test -p twicecat-core --test room_tags -- --ignored` pass. `cargo deny` skipped (known unrelated advisories). No dependency change.
 - **Open issues:** none. Nothing here needs the human checkpoint (no UI).
+
+### Step 3: room list sort settings in the core (sbr.3)
+- **Added (core, nothing on screen):** `RoomSortChoice::{Activity, Name}` (`Default` is `Activity`, exported from `api`), `UiSettings.room_sort` and `UiSettings.unread_first` (default `Activity` and `false`). `settings_from_map` reads both field by field (an unknown value, such as `"zigzag"` or `3`, gives that field's default and keeps the other settings) and the hand-built JSON in `write_settings` writes them as `"room_sort": "Activity" | "Name"` and `"unread_first": bool`. `UiSettings` is still `Copy` (compile-time check in the test). No serializer added, so the guard test passes unchanged.
+- **Tests:** `paths::tests::the_room_sort_round_trips_and_defaults_per_field` (round trip of all four combinations, a file without the fields, unknown values keep the rest) and `ui_settings_stays_copy`. `an_oversized_settings_file_gives_defaults` is unchanged and passes. The app's `UiSettings` literals all use `..UiSettings::default()`, so none needed an edit.
+- **Red first:** the tests did not compile (`RoomSortChoice`, `room_sort`, `unread_first` missing) before the code.
+- **Checks:** fmt, clippy (default and `--all-features`), `cargo test --workspace`, `cargo check --workspace --lib --bins --locked` and the four scripts pass. `cargo deny` skipped (known unrelated advisories). No dependency change.
+- **Open issues:** none. Nothing here needs the human checkpoint (no UI).
