@@ -184,6 +184,11 @@ pub fn empty_label(tab: RoomListTab, search: &str) -> &'static str {
         RoomListTab::All | RoomListTab::Rooms => "No rooms",
         RoomListTab::People => "No direct messages",
         RoomListTab::Spaces => "No spaces",
+        RoomListTab::Unreads => "No unread rooms",
+        RoomListTab::Mentions => "No mentions",
+        RoomListTab::Favourites => "No favourites",
+        RoomListTab::LowPriority => "No low priority rooms",
+        RoomListTab::Invites => "No invitations",
     }
 }
 

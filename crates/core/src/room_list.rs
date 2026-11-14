@@ -6,8 +6,10 @@ use matrix_sdk::ruma::{OwnedMxcUri, OwnedRoomId};
 use matrix_sdk::{Room, RoomState};
 use matrix_sdk_ui::eyeball_im::VectorDiff;
 use matrix_sdk_ui::room_list_service::filters::{
-    BoxedFilterFn, RoomCategory, new_filter_all, new_filter_category, new_filter_identifiers,
-    new_filter_non_left, new_filter_normalized_match_room_name, new_filter_not, new_filter_space,
+    BoxedFilterFn, ReadReceiptsCategory, RoomCategory, new_filter_all, new_filter_category,
+    new_filter_favourite, new_filter_identifiers, new_filter_invite, new_filter_low_priority,
+    new_filter_non_left, new_filter_normalized_match_room_name, new_filter_not,
+    new_filter_read_receipts, new_filter_space,
 };
 use matrix_sdk_ui::room_list_service::{RoomListItem, RoomListLoadingState};
 use matrix_sdk_ui::timeline::{LatestEventValue, RoomExt, TimelineDetails};
@@ -62,6 +64,18 @@ pub(crate) enum FilterPart {
     Space,
     /// Anything but spaces.
     NotSpace,
+    /// Rooms with unread messages or marked unread
+    /// (`ReadReceiptsCategory::Messages`).
+    Unread,
+    /// Rooms with unread mentions or marked unread
+    /// (`ReadReceiptsCategory::Mentions`).
+    Mention,
+    /// Rooms tagged `m.favourite`.
+    Favourite,
+    /// Rooms tagged `m.lowpriority`.
+    LowPriority,
+    /// Invitations.
+    Invite,
     /// Only these rooms (the descendants of the selected space).
     Identifiers(Vec<OwnedRoomId>),
     /// Case- and diacritic-insensitive substring of the room name. Holds the
@@ -84,6 +98,11 @@ pub(crate) fn filter_spec(
         RoomListTab::People => parts.extend([FilterPart::People, FilterPart::NotSpace]),
         RoomListTab::Rooms => parts.extend([FilterPart::Group, FilterPart::NotSpace]),
         RoomListTab::Spaces => parts.push(FilterPart::Space),
+        RoomListTab::Unreads => parts.push(FilterPart::Unread),
+        RoomListTab::Mentions => parts.push(FilterPart::Mention),
+        RoomListTab::Favourites => parts.push(FilterPart::Favourite),
+        RoomListTab::LowPriority => parts.push(FilterPart::LowPriority),
+        RoomListTab::Invites => parts.push(FilterPart::Invite),
     }
     if query.space.is_some() {
         parts.push(FilterPart::Identifiers(
@@ -112,6 +131,15 @@ pub(crate) fn build_filter(
                 FilterPart::Group => Box::new(new_filter_category(RoomCategory::Group)),
                 FilterPart::Space => Box::new(new_filter_space()),
                 FilterPart::NotSpace => Box::new(new_filter_not(Box::new(new_filter_space()))),
+                FilterPart::Unread => {
+                    Box::new(new_filter_read_receipts(ReadReceiptsCategory::Messages))
+                }
+                FilterPart::Mention => {
+                    Box::new(new_filter_read_receipts(ReadReceiptsCategory::Mentions))
+                }
+                FilterPart::Favourite => Box::new(new_filter_favourite()),
+                FilterPart::LowPriority => Box::new(new_filter_low_priority()),
+                FilterPart::Invite => Box::new(new_filter_invite()),
                 FilterPart::Identifiers(ids) => Box::new(new_filter_identifiers(ids)),
                 FilterPart::NameMatch(text) => {
                     Box::new(new_filter_normalized_match_room_name(&text))
@@ -403,6 +431,32 @@ mod tests {
             filter_spec(&q(RoomListTab::Spaces, ""), None),
             vec![NonLeft, Space]
         );
+    }
+
+    #[test]
+    fn filter_spec_puts_each_new_tab_part_after_non_left_and_before_space_and_search() {
+        use FilterPart::*;
+        let kids = ids(&["!a:x"]);
+        for (tab, part) in [
+            (RoomListTab::Unreads, Unread),
+            (RoomListTab::Mentions, Mention),
+            (RoomListTab::Favourites, Favourite),
+            (RoomListTab::LowPriority, LowPriority),
+            (RoomListTab::Invites, Invite),
+        ] {
+            assert_eq!(filter_spec(&q(tab, ""), None), vec![NonLeft, part.clone()]);
+            let mut query = q(tab, " cafe ");
+            query.space = Some(RoomId::from("!s:x"));
+            assert_eq!(
+                filter_spec(&query, Some(&kids)),
+                vec![
+                    NonLeft,
+                    part,
+                    Identifiers(kids.clone()),
+                    NameMatch("cafe".to_owned())
+                ]
+            );
+        }
     }
 
     #[test]

@@ -17,7 +17,8 @@ use matrix_sdk::ruma::OwnedRoomId;
 use matrix_sdk::ruma::events::tag::TagName;
 use twicecat_core::CoreHandle;
 use twicecat_core::api::{
-    ActionKind, Command, CoreError, CoreEvent, ListDiff, RoomId, RoomSummary, RoomTagView,
+    ActionKind, Command, CoreError, CoreEvent, ListDiff, RoomId, RoomListQuery, RoomListTab,
+    RoomSummary, RoomTagView,
 };
 use twicecat_core::secrets::InMemorySecretStore;
 
@@ -141,4 +142,117 @@ async fn tagging_an_unknown_room_fails_without_a_panic() {
         failed,
         Some((ActionKind::RoomTag, room, _)) if room == nowhere
     ));
+}
+
+/// The ids of `mine` that `rooms` lists, sorted.
+fn listed(rooms: &[RoomSummary], mine: &[&OwnedRoomId]) -> Vec<String> {
+    let mut found: Vec<String> = mine
+        .iter()
+        .filter(|id| flags(rooms, id).is_some())
+        .map(|id| id.to_string())
+        .collect();
+    found.sort();
+    found
+}
+
+fn sorted(ids: &[&OwnedRoomId]) -> Vec<String> {
+    let mut v: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+    v.sort();
+    v
+}
+
+#[tokio::test]
+#[ignore = "needs the local homeserver"]
+async fn each_new_tab_lists_exactly_its_rooms() {
+    use matrix_sdk::ruma::events::Mentions;
+    use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+
+    let env = TestEnv::load();
+    assert_local_homeserver(env.homeserver_url());
+    let alice = raw_login(1).await;
+    let bob = raw_login(2).await;
+    let bob_id = env.user_id(2);
+
+    let favourite = create_room(&alice, &unique_room_name(), None).await;
+    let low = create_room(&alice, &unique_room_name(), None).await;
+    let read = create_room(&alice, &unique_room_name(), None).await;
+    let marked = create_room(&alice, &unique_room_name(), None).await;
+    let mentioned = create_room(&alice, &unique_room_name(), Some(&bob_id)).await;
+    let invited = create_room(&bob, &unique_room_name(), Some(&env.user_id(1))).await;
+
+    // Bob joins his invitation to the mention room and mentions alice.
+    bob.sync_once(matrix_sdk::config::SyncSettings::default())
+        .await
+        .expect("bob syncs");
+    bob.get_room(&mentioned)
+        .expect("bob knows the invitation")
+        .join()
+        .await
+        .expect("bob joins");
+    let content =
+        RoomMessageEventContent::text_plain("ping").add_mentions(Mentions::with_user_ids([env
+            .user_id(1)
+            .try_into()
+            .unwrap()]));
+    common::send_content(&bob, &mentioned, &content).await;
+
+    // The marked room has no message at all: only the unread mark.
+    alice
+        .sync_once(matrix_sdk::config::SyncSettings::default())
+        .await
+        .expect("alice syncs");
+    alice
+        .get_room(&marked)
+        .expect("alice knows her room")
+        .set_unread_flag(true)
+        .await
+        .expect("mark unread");
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = start_core(dir.path(), Arc::new(InMemorySecretStore::new()));
+    login_and_run(&mut core, &env, 1).await;
+    let mut rooms = Vec::new();
+    let all = [&favourite, &low, &read, &marked, &mentioned, &invited];
+    assert!(
+        pump(&mut core, &mut rooms, |r| listed(r, &all).len() == 6)
+            .await
+            .is_none()
+    );
+    for (id, tag) in [
+        (&favourite, RoomTagView::Favourite),
+        (&low, RoomTagView::LowPriority),
+    ] {
+        core.commands
+            .send(Command::SetRoomTag {
+                room_id: RoomId::from(id.as_str()),
+                tag: Some(tag),
+            })
+            .await
+            .unwrap();
+    }
+    let tagged = |r: &[RoomSummary]| {
+        flags(r, &favourite) == Some((true, false)) && flags(r, &low) == Some((false, true))
+    };
+    assert!(pump(&mut core, &mut rooms, tagged).await.is_none());
+
+    let cases: [(RoomListTab, Vec<&OwnedRoomId>); 5] = [
+        (RoomListTab::Favourites, vec![&favourite]),
+        (RoomListTab::LowPriority, vec![&low]),
+        (RoomListTab::Invites, vec![&invited]),
+        (RoomListTab::Mentions, vec![&mentioned, &marked]),
+        (RoomListTab::Unreads, vec![&mentioned, &marked]),
+    ];
+    for (tab, expected) in cases {
+        core.commands
+            .send(Command::SetRoomListQuery(RoomListQuery {
+                tab,
+                ..RoomListQuery::default()
+            }))
+            .await
+            .unwrap();
+        // The new filter arrives as a `Reset`; wait for the expected set.
+        let want = sorted(&expected);
+        let failed = pump(&mut core, &mut rooms, |r| listed(r, &all) == want).await;
+        assert!(failed.is_none(), "a command failed");
+    }
 }

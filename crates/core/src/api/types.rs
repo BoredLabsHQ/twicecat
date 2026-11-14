@@ -148,6 +148,16 @@ pub enum RoomListTab {
     Rooms,
     /// Spaces.
     Spaces,
+    /// Rooms with unread messages, or marked unread.
+    Unreads,
+    /// Rooms with unread mentions, or marked unread.
+    Mentions,
+    /// Rooms tagged as favourites.
+    Favourites,
+    /// Rooms tagged as low priority.
+    LowPriority,
+    /// Invitations.
+    Invites,
 }
 
 /// A room list query: a tab plus a name search.
