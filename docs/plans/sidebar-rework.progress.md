@@ -14,3 +14,4 @@ Task 4: started
 Task 4: complete (e631152..0102cb3, gate ok, security PASS, review PASS, evidence PROVEN)
   evidence: docs/plans/sidebar-rework.evidence/task-4.md
   notes: (1) docs/sidebar.md must carry the K4 sentence (an older twicecat drops the two keys) in the app task that first writes them (Task 9 or 10). (2) crates/app/src/list_drop.rs: placeholder arms (drop onto Favourites/LowPriority = Refused, room already in one dropped on its built-in default = Nothing) must be revisited when the sections become real drop targets (L6: SetRoomTag, and default-section drop removes the tag); Task 9/10 acceptance tests should cover this. (3) list_drop.rs was edited beyond the plan file list (exhaustive match). (4) cosmetic: re-wrap the to_key doc comment in api/sidebar.rs when next touched. (5) the security auditor could not build without CC=clang-22: audits must set CC=clang-22 CXX=clang++-22.
+Task 5: started
