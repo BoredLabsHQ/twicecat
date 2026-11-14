@@ -266,6 +266,8 @@ pub(crate) fn summarize(item: &RoomListItem) -> RoomSummary {
         is_invite: item.state() == RoomState::Invited,
         highlights: highlights_of(mentions, item.unread_notification_counts().highlight_count),
         marked_unread: item.is_marked_unread(),
+        is_favourite: item.is_favourite(),
+        is_low_priority: item.is_low_priority(),
         notification_mode: item
             .cached_user_defined_notification_mode()
             .map(crate::notifications::mode_view),

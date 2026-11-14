@@ -28,8 +28,8 @@ use tokio::task::{AbortHandle, JoinSet};
 
 use crate::api::{
     ActionKind, CoreError, CoreEvent, CreateRoomRequest, MembershipView, OwnProfileView,
-    PowerLevelView, Role, RoomDetailsView, RoomId, RoomMemberView, RoomPermissions, RoomVisibility,
-    UserId,
+    PowerLevelView, Role, RoomDetailsView, RoomId, RoomMemberView, RoomPermissions, RoomTagView,
+    RoomVisibility, UserId,
 };
 use crate::avatars::MAX_AVATAR_BYTES;
 use crate::notifications::clean_line;
@@ -278,6 +278,7 @@ pub(crate) enum Job {
     Decline(Room),
     Invite(Room, OwnedUserId),
     Leave(Room),
+    Tag(Room, Option<RoomTagView>),
     Name(Room, String),
     Topic(Room, String),
     RoomAvatar(Room, mime::Mime, Vec<u8>),
@@ -538,6 +539,17 @@ async fn execute(client: &Client, dms: &StartedDms, job: Job) -> Done {
             leave_only(client, &room)
                 .await
                 .map_err(|e| sdk_failure(&e, "could not leave the room"))?;
+            Ok(None)
+        }
+        Job::Tag(room, tag) => {
+            let done = match tag {
+                Some(RoomTagView::Favourite) => room.set_is_favourite(true, None).await,
+                Some(RoomTagView::LowPriority) => room.set_is_low_priority(true, None).await,
+                None if room.is_favourite() => room.set_is_favourite(false, None).await,
+                None if room.is_low_priority() => room.set_is_low_priority(false, None).await,
+                None => Ok(()),
+            };
+            done.map_err(|e| sdk_failure(&e, "could not change the room's tag"))?;
             Ok(None)
         }
         Job::Name(room, name) => {
