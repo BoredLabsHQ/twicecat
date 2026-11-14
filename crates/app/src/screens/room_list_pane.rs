@@ -138,6 +138,11 @@ pub fn tab_label(tab: RoomListTab) -> &'static str {
         RoomListTab::People => "DMs",
         RoomListTab::Rooms => "Rooms",
         RoomListTab::Spaces => "Spaces",
+        RoomListTab::Unreads => "Unreads",
+        RoomListTab::Mentions => "Mentions",
+        RoomListTab::Favourites => "Favourites",
+        RoomListTab::LowPriority => "Low priority",
+        RoomListTab::Invites => "Invites",
     }
 }
 
