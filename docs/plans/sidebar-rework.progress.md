@@ -7,3 +7,6 @@ Task 2: complete (b462bcb..8c659b7, gate ok, security PASS, review PASS, evidenc
   evidence: docs/plans/sidebar-rework.evidence/task-2.md
   notes: SDK read-receipts filter matches num_unread > 0 || is_marked_unread, so a room marked unread also appears under Mentions (follows from K2): Task 7 hint text and Task 8 "Unreads first" ordering must not assume Mentions excludes marked rooms. Task 2 also added empty_label arms in crates/app/src/room_list.rs (exhaustive match, not in plan file list). Mutation (swap Favourite/LowPriority) fails the integration test by timeout. Task 7 table test could assert the Task 2 labels stay non-empty. cargo deny skipped (known advisories): track and list in the deny ignore config before release.
 Task 3: started
+Task 3: complete (3a0930c..7be68f1, gate ok, security PASS, review PASS, evidence PROVEN)
+  evidence: docs/plans/sidebar-rework.evidence/task-3.md
+  notes: no open issues. Optional: a test for a wrong-case value such as "name" (falls to the default). Mutation (unread_first always false) fails the round-trip test by assertion.
