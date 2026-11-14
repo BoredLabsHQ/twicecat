@@ -338,6 +338,10 @@ pub struct RoomSummary {
     /// The user's own notification mode for this room; `None` when the room
     /// follows the account default.
     pub notification_mode: Option<RoomNotificationModeView>,
+    /// The room has the `m.favourite` tag.
+    pub is_favourite: bool,
+    /// The room has the `m.lowpriority` tag.
+    pub is_low_priority: bool,
 }
 
 impl RoomSummary {
@@ -367,6 +371,8 @@ impl RoomSummary {
             is_encrypted: false,
             dm_peer: None,
             notification_mode: None,
+            is_favourite: false,
+            is_low_priority: false,
         }
     }
 }
@@ -993,6 +999,17 @@ pub enum ActionKind {
     Profile,
     /// Open or page a thread.
     Thread,
+    /// Set or remove a room's favourite or low priority tag.
+    RoomTag,
+}
+
+/// A room's favourite or low priority tag. A room has at most one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomTagView {
+    /// `m.favourite`.
+    Favourite,
+    /// `m.lowpriority`.
+    LowPriority,
 }
 
 /// What a timeline item is.

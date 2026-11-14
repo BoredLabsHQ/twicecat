@@ -1571,6 +1571,12 @@ impl Engine {
             Command::SetRoomNotificationMode { room_id, mode } => {
                 self.set_room_notification_mode(room_id, mode).await;
             }
+            Command::SetRoomTag { room_id, tag } => {
+                self.room_job(room_id.clone(), ActionKind::RoomTag, |client| {
+                    Ok(rooms::Job::Tag(joined_room(client, &room_id)?, tag))
+                })
+                .await;
+            }
             Command::SetDefaultNotificationMode { one_to_one, mode } => {
                 self.notification_job(
                     RoomId::from(""),
@@ -4518,7 +4524,7 @@ mod tests {
     fn phase5_commands() -> Vec<(Command, ActionKind, RoomId)> {
         use crate::api::{
             AttachmentData, CreateRoomRequest, EventId, MediaBytes, MediaKind, OutgoingAttachment,
-            RoomNotificationModeView, RoomVisibility,
+            RoomNotificationModeView, RoomTagView, RoomVisibility,
         };
         let room = || rid("p5");
         let none = || RoomId::from("");
@@ -4547,6 +4553,14 @@ mod tests {
                     mode: Some(RoomNotificationModeView::Mute),
                 },
                 ActionKind::Notifications,
+                room(),
+            ),
+            (
+                Command::SetRoomTag {
+                    room_id: room(),
+                    tag: Some(RoomTagView::Favourite),
+                },
+                ActionKind::RoomTag,
                 room(),
             ),
             (
@@ -4822,6 +4836,27 @@ mod tests {
                     [CoreEvent::ActionFailed {
                         room_id,
                         action: ActionKind::Notifications,
+                        error: CoreError::UnknownRoom(named),
+                    }] if *room_id == bad && *named == bad
+                ),
+                "{got:?}"
+            );
+        }
+        // The same for a tag change.
+        for bad in [rid("nowhere"), RoomId::from("not a room id")] {
+            engine
+                .handle(Command::SetRoomTag {
+                    room_id: bad.clone(),
+                    tag: None,
+                })
+                .await;
+            let got = drain(&mut rx).await;
+            assert!(
+                matches!(
+                    got.as_slice(),
+                    [CoreEvent::ActionFailed {
+                        room_id,
+                        action: ActionKind::RoomTag,
                         error: CoreError::UnknownRoom(named),
                     }] if *room_id == bad && *named == bad
                 ),
