@@ -136,6 +136,9 @@ fn room_onto_header(
             room,
             section: *section,
         },
+        // Tag sections are never drawn yet (sbr.9 and sbr.10 add them), so no
+        // drop reaches them.
+        SectionKey::Favourites | SectionKey::LowPriority => return Verdict::Refused,
         // A built-in section takes a room only back: it is the room's default.
         SectionKey::Channels | SectionKey::Direct | SectionKey::SubSpace(_) => {
             let home = spot_of(defaults, &room).map(|spot| spot.section);
@@ -145,7 +148,11 @@ fn room_onto_header(
             match now.section {
                 SectionKey::Starred => Op::Unstar { space, room },
                 SectionKey::Custom(_) => Op::RoomToDefault { space, room },
-                SectionKey::Channels | SectionKey::Direct | SectionKey::SubSpace(_) => {
+                SectionKey::Channels
+                | SectionKey::Direct
+                | SectionKey::SubSpace(_)
+                | SectionKey::Favourites
+                | SectionKey::LowPriority => {
                     return Verdict::Nothing;
                 }
             }

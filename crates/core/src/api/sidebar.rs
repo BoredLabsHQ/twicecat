@@ -153,6 +153,10 @@ fn is_graphic_id(id: &str) -> bool {
 /// A section of a space's room list.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum SectionKey {
+    /// The rooms tagged as favourites on the homeserver.
+    Favourites,
+    /// The rooms tagged as low priority on the homeserver.
+    LowPriority,
     /// The starred rooms.
     Starred,
     /// The space's own rooms.
@@ -166,10 +170,13 @@ pub enum SectionKey {
 }
 
 impl SectionKey {
-    /// The key as written in the file: `starred`, `channels`, `dms`,
+    /// The key as written in the file: `favourites`, `lowpriority`, `starred`,
+    /// `channels`, `dms`,
     /// `sub:<room id>` or `custom:<id>`.
     pub(crate) fn to_key(&self) -> String {
         match self {
+            Self::Favourites => "favourites".to_owned(),
+            Self::LowPriority => "lowpriority".to_owned(),
             Self::Starred => "starred".to_owned(),
             Self::Channels => "channels".to_owned(),
             Self::Direct => "dms".to_owned(),
@@ -181,6 +188,8 @@ impl SectionKey {
     /// Reads a key written by [`Self::to_key`]; `None` for anything else.
     pub(crate) fn from_key(key: &str) -> Option<Self> {
         match key {
+            "favourites" => Some(Self::Favourites),
+            "lowpriority" => Some(Self::LowPriority),
             "starred" => Some(Self::Starred),
             "channels" => Some(Self::Channels),
             "dms" => Some(Self::Direct),
@@ -206,6 +215,8 @@ impl SectionKey {
 impl fmt::Debug for SectionKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Favourites => f.write_str("Favourites"),
+            Self::LowPriority => f.write_str("LowPriority"),
             Self::Starred => f.write_str("Starred"),
             Self::Channels => f.write_str("Channels"),
             Self::Direct => f.write_str("Direct"),
