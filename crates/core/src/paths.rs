@@ -1618,6 +1618,56 @@ mod tests {
     }
 
     #[test]
+    fn favourites_and_low_priority_keys_round_trip_in_a_version_1_file() {
+        let (_t, p) = sidebar_paths();
+        let mut l = full_layout("@a:x");
+        l.spaces[0].order = vec![
+            SectionKey::Favourites,
+            SectionKey::Starred,
+            SectionKey::Channels,
+            SectionKey::Direct,
+            SectionKey::LowPriority,
+        ];
+        l.spaces[0].collapsed = vec![SectionKey::LowPriority, SectionKey::Favourites];
+        p.write_sidebar(&l).unwrap();
+        let text = std::fs::read_to_string(p.sidebar_file(&user("@a:x"))).unwrap();
+        assert!(text.contains("\"version\":1"), "{text}");
+        assert!(text.contains("\"favourites\""), "{text}");
+        assert!(text.contains("\"lowpriority\""), "{text}");
+        assert_eq!(p.read_sidebar(&user("@a:x")), SidebarRead::Layout(l));
+    }
+
+    #[test]
+    fn an_unknown_section_key_drops_only_that_key() {
+        let (_t, p) = sidebar_paths();
+        let text = serde_json::json!({
+            "version": 1,
+            "account": "@a:x",
+            "spaces": [{
+                "space": "!s:x",
+                "order": ["favourites", "pinned", "channels", "lowpriority", "dms"],
+                "collapsed": ["pinned", "lowpriority"],
+                "starred": ["!r1:x"]
+            }]
+        })
+        .to_string();
+        put(&p, "@a:x", &text);
+        let l = layout_of(timed(&p, "@a:x"));
+        let sp = &l.spaces[0];
+        assert_eq!(
+            sp.order,
+            vec![
+                SectionKey::Favourites,
+                SectionKey::Channels,
+                SectionKey::LowPriority,
+                SectionKey::Direct
+            ]
+        );
+        assert_eq!(sp.collapsed, vec![SectionKey::LowPriority]);
+        assert_eq!(sp.starred, vec![RoomId::from("!r1:x")]);
+    }
+
+    #[test]
     fn writing_replaces_the_layout_and_tightens_a_stale_temp_file() {
         let (_t, p) = sidebar_paths();
         let mut l = full_layout("@a:x");

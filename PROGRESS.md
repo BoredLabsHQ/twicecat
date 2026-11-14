@@ -4160,3 +4160,11 @@ Three reviews (core messaging and sync, calls and audio, app UI) found the bugs 
 - **Red first:** the tests did not compile (`RoomSortChoice`, `room_sort`, `unread_first` missing) before the code.
 - **Checks:** fmt, clippy (default and `--all-features`), `cargo test --workspace`, `cargo check --workspace --lib --bins --locked` and the four scripts pass. `cargo deny` skipped (known unrelated advisories). No dependency change.
 - **Open issues:** none. Nothing here needs the human checkpoint (no UI).
+
+### Step 4: Favourites and Low priority section keys in the sidebar file (sbr.4)
+- **Added (core, nothing on screen):** `SectionKey::{Favourites, LowPriority}`, written `"favourites"` and `"lowpriority"` by `to_key` and read by `from_key` (`api/sidebar.rs`); `paths.rs` needed no change, since it goes through those two functions. The file stays `"version":1` (K4, Q13). An older twicecat drops the two keys as unknown and loses only their place in `order` and `collapsed`; this is not `Newer`.
+- **App:** only exhaustive match arms, in `list_drop.rs` (a drop onto either key is `Refused`, a room whose current section is either gives `Nothing`). `sections.rs` and `sidebar.rs` matched with `Starred | Custom` or wildcards and needed no edit. The keys are never produced yet, so nothing is drawn.
+- **Tests:** `paths::tests::favourites_and_low_priority_keys_round_trip_in_a_version_1_file` (round trip through `order` and `collapsed`, file text says `"version":1`) and `an_unknown_section_key_drops_only_that_key` (`"pinned"` is dropped from `order` and `collapsed`, the rest is kept). The existing `paths::` and `api::sidebar::` tests pass unchanged.
+- **Red first:** the tests did not compile (`SectionKey::Favourites` and `LowPriority` missing) before the code.
+- **Checks:** fmt, clippy (default and `--all-features`), `cargo test --workspace`, `cargo check --workspace --lib --bins --locked` and the four scripts pass. `cargo deny` skipped (known unrelated advisories). No dependency change.
+- **Open issues:** `docs/sidebar.md` does not yet say that an older twicecat drops the two keys (K4); it goes in with the app tasks that draw the sections. Nothing here needs the human checkpoint (no UI).
