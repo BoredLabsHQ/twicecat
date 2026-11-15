@@ -9,7 +9,7 @@ use std::fmt;
 use super::{AvatarId, EventId, MessageText, RoomId, UserId};
 
 /// A name or text field printed as its length only.
-struct Hidden(usize);
+pub(super) struct Hidden(usize);
 
 impl fmt::Debug for Hidden {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -17,11 +17,11 @@ impl fmt::Debug for Hidden {
     }
 }
 
-fn hide(s: &str) -> Hidden {
+pub(super) fn hide(s: &str) -> Hidden {
     Hidden(s.len())
 }
 
-fn hide_opt(s: &Option<String>) -> Option<Hidden> {
+pub(super) fn hide_opt(s: &Option<String>) -> Option<Hidden> {
     s.as_deref().map(hide)
 }
 
@@ -307,7 +307,40 @@ pub struct SpaceView {
     pub level: u32,
     /// Number of child rooms.
     pub children: u64,
+    /// The rooms this space holds, from the SDK space filter's descendants,
+    /// unchanged and at most [`MAX_SPACE_ROOMS`]. For a level 0 space these
+    /// are its direct children, rooms and sub-spaces alike; for a level 1
+    /// space they are all its descendants, recursively, and the SDK also
+    /// lists the space itself, last. A consumer that wants rooms only leaves
+    /// out `id`.
+    pub rooms: Vec<RoomId>,
 }
+
+/// Unread counts of a group of rooms. Muted rooms are left out of the sums,
+/// and the sums saturate.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UnreadCountsView {
+    /// Unread notifications.
+    pub notifications: u64,
+    /// Unread highlights (mentions).
+    pub highlights: u64,
+    /// Some room is marked unread or has unread messages.
+    pub unread: bool,
+}
+
+/// The unread counts of one space, over every room it holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpaceUnreadView {
+    /// The space's room ID.
+    pub space: RoomId,
+    /// Counts over the rooms of the space. For a top-level space these are
+    /// its direct rooms and the descendants of its sub-spaces, each room
+    /// once; a space ID never counts as a room.
+    pub counts: UnreadCountsView,
+}
+
+/// The most room IDs a [`SpaceView`] carries in `rooms`; the rest are left out.
+pub const MAX_SPACE_ROOMS: usize = 2000;
 
 impl fmt::Debug for SpaceView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -317,6 +350,7 @@ impl fmt::Debug for SpaceView {
             .field("avatar", &self.avatar)
             .field("level", &self.level)
             .field("children", &self.children)
+            .field("rooms", &self.rooms.len())
             .finish()
     }
 }
@@ -360,18 +394,90 @@ pub enum ThemeChoice {
     Dark,
 }
 
-/// The colour set the user picked. `None` in [`UiSettings::palette`] means
-/// "the app's default".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaletteChoice {
-    /// The Twicecat colours.
-    Twicecat,
-    /// The Frost colours.
-    Frost,
-    /// The Ember colours.
-    Ember,
-    /// The high-contrast colours.
-    HighContrast,
+/// The name of a custom colour theme, as kept in the local settings.
+///
+/// Valid names are 1 to 32 bytes of `[A-Za-z0-9 _-]` with no leading or
+/// trailing space, and not "twicecat" or "default" in any case (those name the
+/// built-in theme), nor a Windows device name in any case (`CON`, `PRN`, `AUX`,
+/// `NUL`, `COM1` to `COM9`, `LPT1` to `LPT9`), which Windows will not take as a
+/// file name. Such a name is safe to show and to use in a file name.
+/// `None` in [`UiSettings::theme_name`] means the built-in theme.
+///
+/// ```
+/// use twicecat_core::api::ThemeName;
+/// let name = ThemeName::try_from("Nord Dark").unwrap();
+/// assert_eq!(name.as_str(), "Nord Dark");
+/// assert!(ThemeName::try_from("a_b-c 1").is_ok());
+/// assert!(ThemeName::try_from("../x").is_err());
+/// assert!(ThemeName::try_from("").is_err());
+/// assert!(ThemeName::try_from(" lead").is_err());
+/// assert!(ThemeName::try_from("TwiceCat").is_err());
+/// assert!(ThemeName::try_from("con").is_err());
+/// assert!(ThemeName::try_from("COM1").is_err());
+/// assert!(ThemeName::try_from("COM10").is_ok());
+/// assert!(ThemeName::try_from("a".repeat(33).as_str()).is_err());
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ThemeName {
+    bytes: [u8; Self::MAX_LEN],
+    len: u8,
+}
+
+/// A theme name that fails the rules of [`ThemeName`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("not a valid theme name")]
+pub struct ThemeNameError;
+
+impl ThemeName {
+    /// The longest name, in bytes.
+    pub const MAX_LEN: usize = 32;
+
+    /// The name as text; always valid ASCII.
+    pub fn as_str(&self) -> &str {
+        // The bytes were checked to be ASCII when the name was made.
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or_default()
+    }
+}
+
+impl TryFrom<&str> for ThemeName {
+    type Error = ThemeNameError;
+
+    fn try_from(name: &str) -> Result<Self, Self::Error> {
+        let plain = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b' ' | b'_' | b'-');
+        let ok = (1..=Self::MAX_LEN).contains(&name.len())
+            && name.bytes().all(plain)
+            && !name.starts_with(' ')
+            && !name.ends_with(' ')
+            && !["twicecat", "default"]
+                .iter()
+                .any(|reserved| name.eq_ignore_ascii_case(reserved))
+            && !is_windows_device_name(name);
+        if !ok {
+            return Err(ThemeNameError);
+        }
+        let mut bytes = [0; Self::MAX_LEN];
+        bytes[..name.len()].copy_from_slice(name.as_bytes());
+        let len = u8::try_from(name.len()).map_err(|_| ThemeNameError)?;
+        Ok(Self { bytes, len })
+    }
+}
+
+/// Whether Windows reserves the name for a device (`CON`, `COM1`, ...).
+fn is_windows_device_name(name: &str) -> bool {
+    const PLAIN: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    if PLAIN.iter().any(|d| name.eq_ignore_ascii_case(d)) {
+        return true;
+    }
+    let bytes = name.as_bytes();
+    bytes.len() == 4
+        && (bytes[..3].eq_ignore_ascii_case(b"COM") || bytes[..3].eq_ignore_ascii_case(b"LPT"))
+        && (b'1'..=b'9').contains(&bytes[3])
+}
+
+impl std::fmt::Debug for ThemeName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ThemeName({:?})", self.as_str())
+    }
 }
 
 /// How much room the lists and messages take.
@@ -394,6 +500,16 @@ pub enum RoomListChoice {
     Rail,
 }
 
+/// How the room list is ordered where the user has not ordered it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RoomSortChoice {
+    /// Most recent activity first (the SDK's order).
+    #[default]
+    Activity,
+    /// By name, A to Z.
+    Name,
+}
+
 /// Whether Twicecat may check GitHub for a newer version once a day (Phase 7
 /// Task 9). Asked once, at the first start where the check applies.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -409,18 +525,20 @@ pub enum UpdateCheckChoice {
 
 /// Settings kept on this device only. No secrets, no content.
 ///
-/// The appearance fields default to "no visible change": no palette (the
-/// app's default), comfortable density, an expanded room list and 100 % text.
+/// The appearance fields default to "no visible change": no theme name (the
+/// built-in theme), comfortable density, an expanded room list and 100 % text.
 ///
 /// ```
 /// use twicecat_core::api::{DensityChoice, RoomListChoice, ThemeChoice, UiSettings};
 /// let s = UiSettings::default();
 /// assert_eq!(s.theme, ThemeChoice::System);
 /// assert!(s.desktop_notifications && s.show_message_content && s.tray_badge);
-/// assert_eq!(s.palette, None);
+/// assert_eq!(s.theme_name, None);
 /// assert_eq!(s.density, DensityChoice::Comfortable);
 /// assert_eq!(s.room_list, RoomListChoice::Expanded);
 /// assert_eq!(s.text_scale_percent, 100);
+/// assert_eq!(s.room_sort, twicecat_core::api::RoomSortChoice::Activity);
+/// assert!(!s.unread_first);
 /// assert_eq!(s.update_check, twicecat_core::api::UpdateCheckChoice::Unasked);
 /// assert_eq!(s.update_checked_at, 0);
 /// ```
@@ -434,8 +552,9 @@ pub struct UiSettings {
     pub show_message_content: bool,
     /// Show the unread badge on the tray icon.
     pub tray_badge: bool,
-    /// The colour set; `None` is the app's default.
-    pub palette: Option<PaletteChoice>,
+    /// The custom theme chosen by name; `None` is the built-in theme. An older
+    /// `palette` key in the file is ignored.
+    pub theme_name: Option<ThemeName>,
     /// Spacing density.
     pub density: DensityChoice,
     /// Expanded or collapsed room list.
@@ -450,6 +569,10 @@ pub struct UiSettings {
     /// When the last update check was sent, in seconds since the Unix epoch
     /// (0: never).
     pub update_checked_at: u64,
+    /// How the room list is sorted.
+    pub room_sort: RoomSortChoice,
+    /// Put rooms with unread messages before the rest.
+    pub unread_first: bool,
 }
 
 impl Default for UiSettings {
@@ -459,13 +582,15 @@ impl Default for UiSettings {
             desktop_notifications: true,
             show_message_content: true,
             tray_badge: true,
-            palette: None,
+            theme_name: None,
             density: DensityChoice::Comfortable,
             room_list: RoomListChoice::Expanded,
             text_scale_percent: 100,
             advanced_settings: false,
             update_check: UpdateCheckChoice::Unasked,
             update_checked_at: 0,
+            room_sort: RoomSortChoice::Activity,
+            unread_first: false,
         }
     }
 }

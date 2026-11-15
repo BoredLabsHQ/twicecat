@@ -28,31 +28,38 @@ use iced::{Element, Event, Pixels, Rectangle, Renderer, Size, window};
 use twicecat_app::ui::fonts;
 use twicecat_app::{App, Message};
 use twicecat_core::api::{
-    DensityChoice, PaletteChoice, RoomListChoice, ThemeChoice, UiSettings, UpdateCheckChoice,
+    DensityChoice, RoomListChoice, ThemeChoice, ThemeName, UiSettings, UpdateCheckChoice,
 };
 
 const WIDE: Size = Size::new(1280.0, 800.0);
 const NARROW: Size = Size::new(720.0, 800.0);
 const SIZES: [Size; 2] = [WIDE, NARROW];
 
-const FAMILIES: [(PaletteChoice, &str); 4] = [
-    (PaletteChoice::Twicecat, "twicecat"),
-    (PaletteChoice::Frost, "frost"),
-    (PaletteChoice::Ember, "ember"),
-    (PaletteChoice::HighContrast, "high-contrast"),
+/// The themes the gallery draws, as (stored mode choice, tag): the built-in
+/// Twicecat and the light example Daylight, which is read from
+/// `tests/fixtures/themes`. Both have one look, so the choice does not change
+/// what is drawn.
+const THEMES: [(ThemeChoice, &str); 2] = [
+    (ThemeChoice::System, "twicecat"),
+    (ThemeChoice::System, "daylight"),
 ];
-const MODES: [(ThemeChoice, &str); 2] =
-    [(ThemeChoice::Light, "light"), (ThemeChoice::Dark, "dark")];
+
+/// The folder of the example themes.
+const THEME_FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/themes");
+
+/// The stored theme name a theme tag stands for; Twicecat is no name.
+fn stored_theme(tag: &str) -> Option<ThemeName> {
+    (tag == "daylight").then(|| ThemeName::try_from("Daylight").expect("a valid name"))
+}
 const DENSITIES: [(DensityChoice, &str); 2] = [
     (DensityChoice::Comfortable, "comfortable"),
     (DensityChoice::Compact, "compact"),
 ];
 
-/// One combination of colour set, mode, density and room list.
+/// One combination of theme, density and room list.
 #[derive(Clone, Copy)]
 struct Variant {
-    family: (PaletteChoice, &'static str),
-    mode: (ThemeChoice, &'static str),
+    theme: (ThemeChoice, &'static str),
     density: (DensityChoice, &'static str),
     list: RoomListChoice,
 }
@@ -63,14 +70,29 @@ fn apply(app: &mut App, variant: Variant) {
     settings.advanced_settings = app.ui_settings.advanced_settings;
     // The scenario's answer to the update question (its bar or none).
     settings.update_check = app.ui_settings.update_check;
+    // The sort a scenario chose (the Sort card's).
+    settings.room_sort = app.ui_settings.room_sort;
+    settings.unread_first = app.ui_settings.unread_first;
+    // A scenario that picked a theme of its own keeps it; the theme variants
+    // only replace Twicecat and Daylight.
+    if let Some(own) = app.ui_settings.theme_name
+        && stored_theme("daylight") != Some(own)
+    {
+        settings.theme_name = Some(own);
+    }
+    if app.themes.is_none() {
+        app.set_themes(twicecat_app::themes::load_dir(std::path::Path::new(
+            THEME_FIXTURES,
+        )));
+    }
     app.set_ui_settings(settings);
 }
 
 impl Variant {
     fn settings(self) -> UiSettings {
         UiSettings {
-            theme: self.mode.0,
-            palette: Some(self.family.0),
+            theme: self.theme.0,
+            theme_name: stored_theme(self.theme.1),
             density: self.density.0,
             room_list: self.list,
             // Answered: no update question bar over the screens.
@@ -79,19 +101,19 @@ impl Variant {
         }
     }
 
-    /// `<family>-<mode>-<density>` plus `-rail` for the collapsed room list.
+    /// `<theme>-<density>` plus `-rail` for the collapsed room list.
     fn tag(self) -> String {
         let rail = if self.list == RoomListChoice::Rail {
             "-rail"
         } else {
             ""
         };
-        format!("{}-{}-{}{rail}", self.family.1, self.mode.1, self.density.1)
+        format!("{}-{}{rail}", self.theme.1, self.density.1)
     }
 }
 
-/// Every variant of a screen: all 16, and 16 more with the rail for the
-/// screens that show the room list.
+/// Every variant of a screen: each theme at both densities, and again with
+/// the rail for the screens that show the room list.
 fn variants(room_list: bool) -> Vec<Variant> {
     let lists: &[RoomListChoice] = if room_list {
         &[RoomListChoice::Expanded, RoomListChoice::Rail]
@@ -100,16 +122,13 @@ fn variants(room_list: bool) -> Vec<Variant> {
     };
     let mut all = Vec::new();
     for &list in lists {
-        for mode in MODES {
-            for density in DENSITIES {
-                for family in FAMILIES {
-                    all.push(Variant {
-                        family,
-                        mode,
-                        density,
-                        list,
-                    });
-                }
+        for density in DENSITIES {
+            for theme in THEMES {
+                all.push(Variant {
+                    theme,
+                    density,
+                    list,
+                });
             }
         }
     }
@@ -206,7 +225,7 @@ fn gallery_dir() -> PathBuf {
     }
 }
 
-/// `index.html`: a plain `<img>` grid, one column per colour set, no scripts
+/// `index.html`: a plain `<img>` grid, one column per theme, no scripts
 /// and nothing remote. `shots` are `(screen, [(variant tag, file)])`.
 fn index_html(shots: &[(&str, Vec<(String, String)>)]) -> String {
     let mut html = String::from(
@@ -224,30 +243,28 @@ fn index_html(shots: &[(&str, Vec<(String, String)>)]) -> String {
         html.push_str(&format!(
             "<h2 id=\"{screen}\">{screen}</h2>\n<table>\n<tr class=\"families\"><th></th>"
         ));
-        for (_, name) in FAMILIES {
+        for (_, name) in THEMES {
             html.push_str(&format!("<th>{name}</th>"));
         }
         html.push_str("</tr>\n");
-        for mode in MODES {
-            for density in DENSITIES {
-                for rail in [false, true] {
-                    let suffix = if rail { "-rail" } else { "" };
-                    let row = format!("{}-{}{suffix}", mode.1, density.1);
-                    let cells: Vec<String> = FAMILIES
-                        .iter()
-                        .filter_map(|(_, family)| {
-                            let tag = format!("{family}-{row}");
-                            files.iter().find(|(t, _)| *t == tag).map(|(_, file)| {
-                                format!(
-                                    "<td><a href=\"{file}\"><img src=\"{file}\" \
-                                     alt=\"{screen} {tag}\" loading=\"lazy\"></a></td>"
-                                )
-                            })
+        for density in DENSITIES {
+            for rail in [false, true] {
+                let suffix = if rail { "-rail" } else { "" };
+                let row = format!("{}{suffix}", density.1);
+                let cells: Vec<String> = THEMES
+                    .iter()
+                    .filter_map(|(_, theme)| {
+                        let tag = format!("{theme}-{row}");
+                        files.iter().find(|(t, _)| *t == tag).map(|(_, file)| {
+                            format!(
+                                "<td><a href=\"{file}\"><img src=\"{file}\" \
+                                 alt=\"{screen} {tag}\" loading=\"lazy\"></a></td>"
+                            )
                         })
-                        .collect();
-                    if cells.len() == FAMILIES.len() {
-                        html.push_str(&format!("<tr><th>{row}</th>{}</tr>\n", cells.concat()));
-                    }
+                    })
+                    .collect();
+                if cells.len() == THEMES.len() {
+                    html.push_str(&format!("<tr><th>{row}</th>{}</tr>\n", cells.concat()));
                 }
             }
         }
@@ -328,11 +345,21 @@ fn the_fixture_reaches_every_screen_it_names() {
         "audio-levels",
         "audio-mic-test",
         "audio-ringtone",
+        "audio-ringtone-sounds-off",
         "audio-other-voices",
         "audio-announce",
         "audio-diagnostics",
         "settings",
         "settings-appearance",
+        "settings-appearance-themes",
+        "settings-appearance-pair",
+        "settings-appearance-pair-dark",
+        "settings-appearance-fallback",
+        "settings-appearance-loading",
+        "settings-appearance-sidebar",
+        "settings-appearance-sidebar-ask",
+        "settings-appearance-sidebar-newer",
+        "settings-appearance-sidebar-other",
         "settings-notifications",
         "settings-voice-audio",
         "settings-video",
@@ -375,6 +402,28 @@ fn the_fixture_reaches_every_screen_it_names() {
         "switcher",
         "switcher-empty",
         "switcher-long",
+        "rail-dragging",
+        "rail-tree",
+        "rail-menu",
+        "rail-folder-name",
+        "room-list-chips",
+        "room-list-sort",
+        "room-list-card",
+        "space-sections",
+        "space-sections-collapsed",
+        "space-sections-tags",
+        "voice-channel",
+        "space-categories",
+        "space-categories-collapsed",
+        "space-sections-custom",
+        "space-sections-dragging",
+        "space-sections-dragging-line",
+        "space-sections-dragging-refused",
+        "space-sections-dragging-header",
+        "space-sections-dragging-tag",
+        "space-sections-dragging-ghost",
+        "section-menu",
+        "space-sections-empty-card",
         "verification-requested",
         "verification-emojis",
         "verification-done",
@@ -481,7 +530,7 @@ fn ctrl_wheel_over_the_status_bar_never_logs_out() {
     let mut laid = Laid::new(&app, &renderer, WIDE);
     laid.settle(&renderer, WIDE);
     let mut messages: Vec<Message> = Vec::new();
-    let mut deliver = |laid: &mut Laid<'_>, event: Event, at: Point| {
+    let mut deliver = |laid: &mut Laid<'_>, event: Event, at: iced::Point| {
         let mut shell = Shell::new(&mut messages);
         laid.element.as_widget_mut().update(
             &mut laid.tree,
@@ -550,27 +599,24 @@ fn the_index_is_a_plain_image_grid() {
     assert!(!html.contains("<script"));
     assert!(!html.contains("http"));
     assert!(!html.contains("javascript"));
-    for (_, family) in FAMILIES {
-        assert!(html.contains(&format!("<th>{family}</th>")), "{family}");
+    for (_, theme) in THEMES {
+        assert!(html.contains(&format!("<th>{theme}</th>")), "{theme}");
     }
-    assert_eq!(html.matches("<img ").count(), 16);
-    assert_eq!(
-        html.matches("<tr><th>").count(),
-        4,
-        "one row per mode x density"
-    );
+    assert_eq!(html.matches("<img ").count(), 4);
+    assert_eq!(html.matches("<tr><th>").count(), 2, "one row per density");
 }
 
 #[test]
 fn variant_tags_are_file_name_safe() {
     let all = variants(true);
-    assert_eq!(all.len(), 32);
+    assert_eq!(all.len(), 8);
     let mut tags: Vec<String> = all.iter().map(|v| v.tag()).collect();
     tags.sort_unstable();
     tags.dedup();
-    assert_eq!(tags.len(), 32);
-    assert!(tags.contains(&"frost-dark-compact-rail".to_owned()));
-    assert!(tags.contains(&"high-contrast-light-comfortable".to_owned()));
+    assert_eq!(tags.len(), 8);
+    assert!(tags.contains(&"daylight-comfortable-rail".to_owned()));
+    assert!(tags.contains(&"twicecat-compact-rail".to_owned()));
+    assert!(tags.contains(&"twicecat-comfortable".to_owned()));
 }
 
 /// Writes the gallery. Run on purpose:
@@ -590,11 +636,19 @@ fn write_the_gallery() {
         let mut app = (scenario.build)();
         let mut files = Vec::new();
         for variant in variants(scenario.room_list) {
-            apply(&mut app, variant);
-            let renderer = renderer();
-            let mut laid = Laid::new(&app, &renderer, WIDE);
-            laid.settle(&renderer, WIDE);
-            let pixels = laid.pixels(&app, renderer, WIDE);
+            let pixels = if scenario.name == "rail-dragging" {
+                // A drag shows in the widgets, not in the app: the picture
+                // is taken after real pointer events.
+                let mut app = (scenario.build)();
+                apply(&mut app, variant);
+                rail_reorder_drag::dragging_pixels(app)
+            } else {
+                apply(&mut app, variant);
+                let renderer = renderer();
+                let mut laid = Laid::new(&app, &renderer, WIDE);
+                laid.settle(&renderer, WIDE);
+                laid.pixels(&app, renderer, WIDE)
+            };
             let file = format!("{}-{}.png", scenario.name, variant.tag());
             let (w, h) = (WIDE.width as u32, WIDE.height as u32);
             image::RgbaImage::from_raw(w, h, pixels)
@@ -858,6 +912,94 @@ fn the_room_list_is_300_wide_or_a_72_px_rail_and_keeps_its_five_slots() {
                     }
                     assert!(out.is_empty(), "{what}: spills {out:?}");
                 }
+            }
+        }
+    }
+}
+
+// ---- Filter chips (sidebar rework, Task 7) ----------------------------------
+
+/// Checks the chips laid out inside `slot`: every painted leaf is inside the
+/// slot and no two overlap. Returns the number of chip lines.
+fn check_chips_drawn_whole(slot: &Node, what: &str) -> usize {
+    // `painted_leaves` adds the node's own offset, so the leaves are in the
+    // coordinates of the node's parent, where the node's bounds are the frame.
+    let mut leaves = Vec::new();
+    painted_leaves(slot, iced::Point::ORIGIN, &mut leaves);
+    let frame = slot.bounds();
+    assert!(leaves.len() >= 9, "{what}: {} leaves", leaves.len());
+    for leaf in &leaves {
+        assert!(
+            leaf.x >= frame.x - 0.5
+                && leaf.y >= frame.y - 0.5
+                && leaf.x + leaf.width <= frame.x + frame.width + 0.5
+                && leaf.y + leaf.height <= frame.y + frame.height + 0.5,
+            "{what}: {leaf:?} sticks out of {frame:?}"
+        );
+    }
+    for (a, first) in leaves.iter().enumerate() {
+        for second in &leaves[a + 1..] {
+            assert!(
+                !overlap(first, second),
+                "{what}: {first:?} overlaps {second:?}"
+            );
+        }
+    }
+    let mut lines: Vec<i32> = leaves.iter().map(|l| l.y.round() as i32).collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines.len()
+}
+
+#[test]
+fn the_chips_wrap_in_the_pane_and_no_chip_is_drawn_in_the_rail() {
+    let renderer = renderer();
+    for scenario in fixture::scenarios().iter().filter(|s| s.room_list) {
+        let mut app = (scenario.build)();
+        for variant in variants(true) {
+            apply(&mut app, variant);
+            for size in SIZES {
+                app.window_width = size.width;
+                let what = format!("{} {} at {}", scenario.name, variant.tag(), size.width);
+                let laid = Laid::new(&app, &renderer, size);
+                let column = list_column(list_pane_node(&laid));
+                assert_eq!(column.children().len(), 5, "{what}");
+                let slot = &column.children()[1];
+                // A window under 800 px shows the rail whatever is saved.
+                let expanded = variant.list == RoomListChoice::Expanded && size.width >= 800.0;
+                if expanded {
+                    // 300 px minus the pane's padding: nine chips need lines.
+                    let lines = check_chips_drawn_whole(slot, &what);
+                    assert!(lines >= 2, "{what}: the chips did not wrap ({lines} line)");
+                    assert!(slot.bounds().width <= 300.0, "{what}");
+                } else {
+                    assert!(slot.bounds().height < 0.5, "{what}: a chip in the rail");
+                    assert!(slot.children().is_empty(), "{what}: a chip in the rail");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_chips_wrap_without_overlap_or_clipping_at_every_pane_width() {
+    use twicecat_app::screens::room_list_pane::{TABS, chips};
+    let renderer = renderer();
+    for width in [300.0_f32, 240.0, 180.0] {
+        for active in TABS {
+            let mut element = chips(active);
+            let mut tree = Tree::new(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &Limits::new(Size::ZERO, Size::new(width, 400.0)),
+            );
+            let what = format!("{active:?} in {width} px");
+            assert!(node.bounds().width <= width + 0.5, "{what}");
+            let lines = check_chips_drawn_whole(&node, &what);
+            assert!(lines >= 2, "{what}: {lines} line");
+            if width <= 180.0 {
+                assert!(lines >= 4, "{what}: the narrower the pane the more lines");
             }
         }
     }
@@ -1312,6 +1454,691 @@ fn the_slots_follow_the_layout_at_every_width_and_the_room_pane_keeps_its_place(
     }
 }
 
+/// The 72 px slots of the spaces rail, in window coordinates: the outermost
+/// nodes that are 48 px high and as wide as the rail (or 4 px less, inside an
+/// open folder).
+fn rail_slots<'n>(node: &'n Node, at: iced::Point, out: &mut Vec<(Rectangle, &'n Node)>) {
+    let b = node.bounds();
+    let here = iced::Point::new(at.x + b.x, at.y + b.y);
+    if b.height == 48.0 && (b.width == 72.0 || b.width == 68.0) {
+        out.push((Rectangle::new(here, b.size()), node));
+        return;
+    }
+    for child in node.children() {
+        rail_slots(child, here, out);
+    }
+}
+
+#[test]
+fn rail_states_draws_every_slot_whole_and_apart_at_every_width() {
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "rail-states")
+        .expect("the rail-states scenario");
+    for variant in variants(true) {
+        let mut app = (scenario.build)();
+        apply(&mut app, variant);
+        for width in [1280.0, 1000.0, 720.0] {
+            let size = Size::new(width, 800.0);
+            app.window_width = width;
+            let shown = app.pane_layout().sidebar;
+            let laid = Laid::new(&app, &renderer, size);
+            let what = format!("{} at {width}", variant.tag());
+            let pane = &panes_row(&laid).children()[0];
+            let mut slots = Vec::new();
+            rail_slots(pane, iced::Point::ORIGIN, &mut slots);
+            if !shown {
+                assert_eq!(pane.bounds().width, 0.0, "{what}: the rail is hidden");
+                assert!(slots.is_empty(), "{what}");
+                continue;
+            }
+            // Home, five spaces, a closed folder, an open folder and its two
+            // spaces.
+            assert_eq!(slots.len(), 10, "{what}");
+            for (i, (a, _)) in slots.iter().enumerate() {
+                assert!(
+                    a.x >= -0.5 && a.x + a.width <= 72.5,
+                    "{what}: slot {i} is outside the rail: {a:?}"
+                );
+                for (b, _) in &slots[i + 1..] {
+                    assert!(!overlap(a, b), "{what}: {a:?} overlaps {b:?}");
+                }
+            }
+            // Every part of a slot (icon, pill, badge) is inside it.
+            for (i, (rect, node)) in slots.iter().enumerate() {
+                let origin = iced::Point::new(rect.x - node.bounds().x, rect.y - node.bounds().y);
+                let mut leaves = Vec::new();
+                painted_leaves(node, origin, &mut leaves);
+                assert!(!leaves.is_empty(), "{what}: slot {i} draws nothing");
+                for leaf in leaves {
+                    assert!(
+                        leaf.x >= rect.x - 0.5
+                            && leaf.y >= rect.y - 0.5
+                            && leaf.x + leaf.width <= rect.x + rect.width + 0.5
+                            && leaf.y + leaf.height <= rect.y + rect.height + 0.5,
+                        "{what}: slot {i}: {leaf:?} is outside {rect:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The slots of the rail with a tree, in window coordinates: the outermost
+/// nodes that are 48 px high and 72 (or 68) wide, or 40 px high and 64 (or
+/// 60) wide, which is a sub-space's.
+fn tree_slots(node: &Node, at: iced::Point, out: &mut Vec<(Rectangle, bool)>) {
+    let b = node.bounds();
+    let here = iced::Point::new(at.x + b.x, at.y + b.y);
+    let top = b.height == 48.0 && (b.width == 72.0 || b.width == 68.0);
+    let sub = b.height == 40.0 && (b.width == 64.0 || b.width == 60.0);
+    if top || sub {
+        out.push((Rectangle::new(here, b.size()), sub));
+        return;
+    }
+    for child in node.children() {
+        tree_slots(child, here, out);
+    }
+}
+
+/// The 32 x 2 px line under Home, in window coordinates.
+fn separators(node: &Node, at: iced::Point, out: &mut Vec<Rectangle>) {
+    let b = node.bounds();
+    let here = iced::Point::new(at.x + b.x, at.y + b.y);
+    if b.width == 32.0 && b.height == 2.0 {
+        out.push(Rectangle::new(here, b.size()));
+        return;
+    }
+    for child in node.children() {
+        separators(child, here, out);
+    }
+}
+
+#[test]
+fn rail_tree_draws_the_separator_and_every_slot_whole_and_apart_at_every_width() {
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "rail-tree")
+        .expect("the rail-tree scenario");
+    for variant in variants(true) {
+        let mut app = (scenario.build)();
+        apply(&mut app, variant);
+        for width in [1280.0, 1000.0, 720.0] {
+            let size = Size::new(width, 800.0);
+            app.window_width = width;
+            let shown = app.pane_layout().sidebar;
+            let laid = Laid::new(&app, &renderer, size);
+            let what = format!("{} at {width}", variant.tag());
+            let pane = &panes_row(&laid).children()[0];
+            let mut slots = Vec::new();
+            tree_slots(pane, iced::Point::ORIGIN, &mut slots);
+            let mut lines = Vec::new();
+            separators(pane, iced::Point::ORIGIN, &mut lines);
+            if !shown {
+                assert!(slots.is_empty() && lines.is_empty(), "{what}: hidden");
+                continue;
+            }
+            // Home, Quartz, its two sub-spaces, Bravo and the folder.
+            assert_eq!(slots.len(), 6, "{what}");
+            assert_eq!(slots.iter().filter(|(_, sub)| *sub).count(), 2, "{what}");
+            for (i, (a, _)) in slots.iter().enumerate() {
+                assert!(
+                    a.x >= -0.5 && a.x + a.width <= 72.5,
+                    "{what}: slot {i} is outside the rail: {a:?}"
+                );
+                for (b, _) in &slots[i + 1..] {
+                    assert!(!overlap(a, b), "{what}: {a:?} overlaps {b:?}");
+                }
+            }
+            // The separator: one, 32 x 2 and centred, 4 px under Home and 4 px
+            // above the first item, outside every slot.
+            assert_eq!(lines.len(), 1, "{what}: one separator");
+            let line = lines[0];
+            let (home, quartz) = (slots[0].0, slots[1].0);
+            assert!(
+                (line.x - 20.0).abs() < 0.5,
+                "{what}: centred in 72: {line:?}"
+            );
+            assert!(
+                (line.y - (home.y + home.height + 4.0)).abs() < 0.5,
+                "{what}: {line:?}"
+            );
+            assert!(
+                (quartz.y - (line.y + line.height + 4.0)).abs() < 0.5,
+                "{what}: {line:?}"
+            );
+            assert!(slots.iter().all(|(r, _)| !overlap(r, &line)), "{what}");
+            // Each sub-space is indented 8 px under its parent, inside the
+            // band that is under the parent's slot.
+            let subs: Vec<Rectangle> = slots.iter().filter(|(_, s)| *s).map(|(r, _)| *r).collect();
+            for sub in &subs {
+                assert!((sub.x - 8.0).abs() < 0.5, "{what}: indented 8 px: {sub:?}");
+                assert!(sub.y > quartz.y + quartz.height, "{what}: under the parent");
+            }
+            // Every part of a slot (icon, pill, badge, chevron) is inside it.
+            for (i, (rect, _)) in slots.iter().enumerate() {
+                let mut nodes = Vec::new();
+                fn find(node: &Node, at: iced::Point, rect: &Rectangle, out: &mut Vec<Rectangle>) {
+                    let b = node.bounds();
+                    let here = iced::Point::new(at.x + b.x, at.y + b.y);
+                    if (here.x - rect.x).abs() < 0.5
+                        && (here.y - rect.y).abs() < 0.5
+                        && (b.width - rect.width).abs() < 0.5
+                        && (b.height - rect.height).abs() < 0.5
+                    {
+                        painted_leaves(node, iced::Point::new(here.x - b.x, here.y - b.y), out);
+                        return;
+                    }
+                    for child in node.children() {
+                        find(child, here, rect, out);
+                    }
+                }
+                find(pane, iced::Point::ORIGIN, rect, &mut nodes);
+                assert!(!nodes.is_empty(), "{what}: slot {i} draws nothing");
+                for leaf in nodes {
+                    assert!(
+                        leaf.x >= rect.x - 0.5
+                            && leaf.y >= rect.y - 0.5
+                            && leaf.x + leaf.width <= rect.x + rect.width + 0.5
+                            && leaf.y + leaf.height <= rect.y + rect.height + 0.5,
+                        "{what}: slot {i}: {leaf:?} is outside {rect:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_closed_parent_stands_for_its_selected_sub_space_and_an_open_one_does_not() {
+    use twicecat_app::screens::spaces_sidebar::{ItemState, space_state};
+    use twicecat_app::spaces::SpacesMessage;
+    let mut app = fixture::rail_tree_app();
+    let quartz = app
+        .spaces
+        .spaces()
+        .iter()
+        .find(|s| s.id == fixture::rail_space("qa"))
+        .expect("Quartz")
+        .clone();
+    let select = |app: &mut App, id| {
+        let _ = app.update(Message::Spaces(SpacesMessage::Select(id)));
+    };
+    select(&mut app, Some(fixture::rail_space("sd")));
+    assert_eq!(space_state(&app, &quartz, Some(true)), ItemState::Unread);
+    assert_eq!(
+        space_state(&app, &quartz, Some(false)),
+        ItemState::Selected,
+        "closed, it stands for Delta"
+    );
+    // Its own selection and a sub-space of another parent.
+    select(&mut app, Some(fixture::rail_space("qa")));
+    assert_eq!(space_state(&app, &quartz, Some(true)), ItemState::Selected);
+    select(&mut app, Some(fixture::rail_space("sz")));
+    assert_eq!(space_state(&app, &quartz, Some(false)), ItemState::Unread);
+    select(&mut app, None);
+    assert_eq!(space_state(&app, &quartz, Some(false)), ItemState::Unread);
+}
+
+// ---- Sections inside a space (sidebar plan, Task 8) -----------------------
+
+#[test]
+fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes() {
+    use twicecat_app::screens::room_list_pane::{SCROLLBAR_GUTTER, channel_avatar_size};
+    use twicecat_app::sections::{
+        COMPACT_HEADER_HEIGHT, HEADER_HEIGHT, Line, line_height, line_offsets,
+    };
+    let renderer = renderer();
+    for name in [
+        "space-sections",
+        "space-sections-collapsed",
+        "space-sections-tags",
+        "voice-channel",
+        "space-categories",
+        "space-categories-collapsed",
+        "space-sections-custom",
+        "space-sections-dragging",
+        "space-sections-dragging-line",
+        "space-sections-dragging-refused",
+        "space-sections-dragging-header",
+        "space-sections-dragging-tag",
+        "space-sections-dragging-ghost",
+    ] {
+        let scenario = fixture::scenarios()
+            .into_iter()
+            .find(|s| s.name == name)
+            .expect("the scenario");
+        for variant in variants(true) {
+            let mut app = (scenario.build)();
+            apply(&mut app, variant);
+            for size in SIZES {
+                app.window_width = size.width;
+                let what = format!("{name} {} at {}", variant.tag(), size.width);
+                let sectioned = variant.list == RoomListChoice::Expanded && size.width >= 800.0;
+                assert_eq!(app.sections_shown(), sectioned, "{what}");
+                let laid = Laid::new(&app, &renderer, size);
+                if !sectioned {
+                    // The rail, or a window under 800 px: the flat list, whose
+                    // rows are all the rail's 56 px.
+                    let (rows, _) = list_rows(&laid);
+                    assert!(!rows.is_empty(), "{what}");
+                    assert!(
+                        rows.iter().all(|(r, _)| (r.height - 56.0).abs() < 0.5),
+                        "{what}: the rail stays flat"
+                    );
+                    continue;
+                }
+                let lines = app.section_lines().expect("sections show");
+                let density = app.density();
+                let offsets = line_offsets(&lines, density);
+                let (mut rows, content_width) = list_rows(&laid);
+                // The last child is the free space under the lines (Task
+                // 11c): at least one row tall, and no line.
+                let filler = rows.pop().expect("the free space").0;
+                assert!(
+                    filler.height + 0.5 >= twicecat_app::room_list::row_height(density),
+                    "{what}: the free space is {} high",
+                    filler.height
+                );
+                // The list is short enough to be built whole.
+                assert_eq!(rows.len(), lines.len(), "{what}: every line is built");
+                let mut y = rows[0].0.y;
+                for (i, ((rect, node), line)) in rows.iter().zip(&lines).enumerate() {
+                    let at = format!("{what}, line {i}");
+                    assert!(
+                        (rect.height - line_height(line, density)).abs() < 0.5,
+                        "{at}: {} high",
+                        rect.height
+                    );
+                    assert!(
+                        (rect.y - (rows[0].0.y + offsets[i])).abs() < 0.5
+                            && (rect.y - y).abs() < 0.5,
+                        "{at}: lines follow one another with no gap or overlap"
+                    );
+                    y = rect.y + rect.height;
+                    if matches!(line, Line::Header(_)) {
+                        let header = if density == twicecat_app::ui::tokens::Density::Comfortable {
+                            HEADER_HEIGHT
+                        } else {
+                            COMPACT_HEADER_HEIGHT
+                        };
+                        assert!((rect.height - header).abs() < 0.5, "{at}");
+                    }
+                    assert!(
+                        rect.x + rect.width
+                            <= rect.x - node.bounds().x + content_width - SCROLLBAR_GUTTER + 0.5,
+                        "{at}: reaches into the scrollbar's gutter"
+                    );
+                    let mut leaves = Vec::new();
+                    painted_leaves(
+                        node,
+                        iced::Point::new(rect.x - node.bounds().x, rect.y - node.bounds().y),
+                        &mut leaves,
+                    );
+                    for leaf in &leaves {
+                        assert!(
+                            leaf.x >= rect.x - 0.5
+                                && leaf.y >= rect.y - 0.5
+                                && leaf.x + leaf.width <= rect.x + rect.width + 0.5
+                                && leaf.y + leaf.height <= rect.y + rect.height + 0.5,
+                            "{at}: {leaf:?} sticks out of {rect:?}"
+                        );
+                    }
+                    // A voice room's speaker is drawn over its avatar's
+                    // corner on purpose. Tree order is the edge slot (a pill
+                    // or bar under 5 px wide), the avatar's letter, then the
+                    // speaker. Only that one pair may overlap, and only when
+                    // the speaker lies inside the bottom right quadrant of the
+                    // avatar's slot (a square of `channel_avatar_size`
+                    // centred on the letter); every other pair is checked.
+                    let voice = matches!(line, Line::Room(room) if room.is_call_room);
+                    let letter = leaves.iter().position(|l| l.width > 5.0).unwrap_or(0);
+                    let mut allowed = None;
+                    if voice {
+                        let slot = channel_avatar_size(density);
+                        let (l, sp) = (leaves[letter], leaves[letter + 1]);
+                        let (cx, cy) = (l.x + l.width / 2.0, l.y + l.height / 2.0);
+                        assert!(
+                            sp.x >= cx - 0.5
+                                && sp.y >= cy - 0.5
+                                && sp.x + sp.width <= cx + slot / 2.0 + 0.5
+                                && sp.y + sp.height <= cy + slot / 2.0 + 0.5,
+                            "{at}: the speaker {sp:?} is not in the avatar's bottom right"
+                        );
+                        allowed = Some((letter, letter + 1));
+                    }
+                    for (a, first) in leaves.iter().enumerate() {
+                        for (b, second) in leaves.iter().enumerate().skip(a + 1) {
+                            assert!(
+                                !overlap(first, second) || allowed == Some((a, b)),
+                                "{at}: {first:?} overlaps {second:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Sidebar rework, Task 11: a space's list is drawn as categories. Capitals
+/// on the headers, no "#" (every channel has its avatar, a voice room with a
+/// speaker at its corner), and neither a preview nor a time on a channel row,
+/// in both densities and every test theme.
+#[test]
+fn space_categories_draw_headers_in_capitals_and_channels_without_previews() {
+    use twicecat_app::ui::icons::Icon;
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "space-categories")
+        .expect("the scenario");
+    for variant in variants(true)
+        .into_iter()
+        .filter(|v| v.list == RoomListChoice::Expanded)
+    {
+        let mut app = (scenario.build)();
+        apply(&mut app, variant);
+        let what = variant.tag();
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let words: Vec<String> = texts(&mut laid, &renderer)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        let count = |w: &str| words.iter().filter(|t| t.as_str() == w).count();
+        for header in ["STARRED", "CHANNELS", "VOICE", "TECH"] {
+            assert_eq!(count(header), 1, "{what}: header {header}");
+        }
+        assert_eq!(count("Channels"), 0, "{what}: no header in mixed case");
+        // General, Random and Announcements; the voice rooms have the speaker.
+        assert_eq!(count("#"), 0, "{what}: no hash: a channel has its avatar");
+        assert!(
+            count(Icon::Speaker.glyph()) >= 2,
+            "{what}: a speaker per voice room"
+        );
+        for name in ["General", "Random", "Announcements"] {
+            assert_eq!(count(name), 1, "{what}: {name}");
+        }
+        // The open voice room is named in the header and the call bar too.
+        for name in ["vocal", "coworking"] {
+            assert!(count(name) >= 1, "{what}: {name}");
+        }
+        // Every room of the fixture has a preview; only the direct message
+        // (Alice, which keeps its row) shows it, in the comfortable density.
+        let previews = words
+            .iter()
+            .filter(|t| t.contains("Sounds good to me"))
+            .count();
+        let expected = usize::from(app.density() == twicecat_app::ui::tokens::Density::Comfortable);
+        assert_eq!(previews, expected, "{what}: only the DM row has a preview");
+    }
+}
+
+/// Sidebar rework, Task 12: with every category shut, the open room and the
+/// room of this device's call stay drawn, with the call's people, and no other
+/// room does, in both densities and every test theme.
+#[test]
+fn a_collapsed_category_still_draws_the_open_room_and_the_call() {
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "space-categories-collapsed")
+        .expect("the scenario");
+    for variant in variants(true)
+        .into_iter()
+        .filter(|v| v.list == RoomListChoice::Expanded)
+    {
+        let mut app = (scenario.build)();
+        apply(&mut app, variant);
+        let what = variant.tag();
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let words: Vec<String> = texts(&mut laid, &renderer)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        let count = |w: &str| words.iter().filter(|t| t.as_str() == w).count();
+        for header in [
+            "STARRED",
+            "CHANNELS",
+            "VOICE",
+            "TECH",
+            "HOBBIES",
+            "DIRECT MESSAGES",
+        ] {
+            assert_eq!(count(header), 1, "{what}: header {header}");
+        }
+        assert!(count("General") >= 1, "{what}: the open room is kept");
+        assert!(count("vocal") >= 1, "{what}: the call room is kept");
+        for hidden in [
+            "Random",
+            "Announcements",
+            "coworking",
+            "Roadmap",
+            "Alice Example",
+        ] {
+            assert_eq!(count(hidden), 0, "{what}: {hidden} is hidden");
+        }
+        for person in ["Rhaenyra", "Septimus"] {
+            assert_eq!(count(person), 1, "{what}: {person} is in the call");
+        }
+    }
+}
+
+/// A channel row laid out alone is as tall as a row of the list in each
+/// density, and its glyph slot has its width (sidebar rework, Task 11).
+#[test]
+fn a_channel_row_alone_is_row_height_tall_with_its_glyph_slot() {
+    use twicecat_app::room_list::row_height;
+    use twicecat_app::screens::room_list_pane::{channel_avatar_size, channel_row_alone};
+    use twicecat_app::ui::tokens::Density;
+    use twicecat_core::api::{RoomId, RoomSummary};
+    let renderer = renderer();
+    let mut room = RoomSummary::new(RoomId::from("!r:x"), "General".to_owned());
+    room.unread_messages = 2;
+    for density in [Density::Comfortable, Density::Compact] {
+        for call in [false, true] {
+            for selected in [false, true] {
+                room.is_call_room = call;
+                let mut element = channel_row_alone(&room, density, selected, None);
+                let mut tree = Tree::new(element.as_widget());
+                let node = element.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &Limits::new(Size::ZERO, Size::new(288.0, 400.0)),
+                );
+                let what = format!("{density:?} call={call} selected={selected}");
+                assert!(
+                    (node.bounds().height - row_height(density)).abs() < 0.5,
+                    "{what}: {} high",
+                    node.bounds().height
+                );
+                // [edge, body]; body -> the line; the line's first child.
+                let glyph = &node.children()[1].children()[0].children()[0];
+                assert!(
+                    (glyph.bounds().width - channel_avatar_size(density)).abs() < 0.5,
+                    "{what}: glyph slot {} wide",
+                    glyph.bounds().width
+                );
+            }
+        }
+    }
+}
+
+/// A channel row draws the room's avatar (its first letter without an
+/// image) and no "#"; a voice room adds the speaker at the avatar's corner and
+/// a DM has none (sidebar rework, Task 11b).
+#[test]
+fn a_channel_row_draws_the_avatar_and_a_speaker_only_on_a_voice_room() {
+    use twicecat_app::screens::room_list_pane::channel_row_alone;
+    use twicecat_app::ui::icons::Icon;
+    use twicecat_app::ui::tokens::Density;
+    use twicecat_core::api::{RoomId, RoomSummary};
+    let renderer = renderer();
+    let words = |room: &RoomSummary, density: Density| -> Vec<String> {
+        let mut element = channel_row_alone(room, density, false, None);
+        let mut tree = Tree::new(element.as_widget());
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &Limits::new(Size::ZERO, Size::new(288.0, 400.0)),
+        );
+        let mut op = Texts(Vec::new());
+        element
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut op);
+        op.0.into_iter().map(|(t, _)| t).collect()
+    };
+    let text_room = RoomSummary::new(RoomId::from("!t:x"), "Garden".to_owned());
+    let mut voice = RoomSummary::new(RoomId::from("!v:x"), "Lounge".to_owned());
+    voice.is_call_room = true;
+    let mut dm = RoomSummary::new(RoomId::from("!d:x"), "Alice Example".to_owned());
+    dm.is_dm = true;
+    for density in [Density::Comfortable, Density::Compact] {
+        let speaker = Icon::Speaker.glyph();
+        let has = |w: &[String], t: &str| w.iter().any(|x| x == t);
+        let w = words(&text_room, density);
+        assert!(has(&w, "G") && has(&w, "Garden"), "{density:?}: {w:?}");
+        assert!(!has(&w, "#") && !has(&w, speaker), "{density:?}: {w:?}");
+        let w = words(&voice, density);
+        assert!(has(&w, "L") && has(&w, "Lounge"), "{density:?}: {w:?}");
+        assert!(has(&w, speaker) && !has(&w, "#"), "{density:?}: {w:?}");
+        let w = words(&dm, density);
+        assert!(
+            has(&w, "AE") && !has(&w, speaker) && !has(&w, "#"),
+            "{density:?}: {w:?}"
+        );
+    }
+}
+
+/// Sidebar rework, Task 10d: the ghost tile of a dragged room. Its own parts
+/// sit inside the tile and apart, the tile is as tall as the row it copies,
+/// and in the whole window it is where `ghost_position` puts it (the pointer
+/// minus the grab offset), inside the window. It overlaps the list by design:
+/// that is the one overlap this test allows, and the list's own rows are
+/// checked by `space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes`
+/// (the scenario is in that test, and its rows ignore the ghost layer).
+#[test]
+fn the_ghost_tile_is_whole_the_height_of_its_row_and_where_the_pointer_holds_it() {
+    use twicecat_app::drag::ghost_position;
+    use twicecat_app::room_list::row_height;
+    use twicecat_app::screens::room_list_pane::{ghost_size, ghost_tile};
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "space-sections-dragging-ghost")
+        .expect("the scenario");
+    for variant in variants(true)
+        .into_iter()
+        .filter(|v| v.list == RoomListChoice::Expanded)
+    {
+        let mut app = (scenario.build)();
+        apply(&mut app, variant);
+        let what = variant.tag();
+        let density = app.density();
+        let ghost = app.ghost().expect("a ghost");
+        let size = ghost_size(&ghost.item, density);
+        assert!((size.height - row_height(density)).abs() < 0.5, "{what}");
+        // The tile alone.
+        let mut element = ghost_tile(&app, &ghost.item, density);
+        let mut tree = Tree::new(element.as_widget());
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &Limits::new(Size::ZERO, Size::new(500.0, 500.0)),
+        );
+        assert!((node.bounds().width - size.width).abs() < 0.5, "{what}");
+        assert!((node.bounds().height - size.height).abs() < 0.5, "{what}");
+        let mut leaves = Vec::new();
+        painted_leaves(&node, iced::Point::ORIGIN, &mut leaves);
+        assert!(!leaves.is_empty(), "{what}");
+        let tile = Rectangle::with_size(size);
+        for leaf in &leaves {
+            assert!(
+                leaf.x >= -0.5
+                    && leaf.y >= -0.5
+                    && leaf.x + leaf.width <= tile.width + 0.5
+                    && leaf.y + leaf.height <= tile.height + 0.5,
+                "{what}: {leaf:?} sticks out of the tile"
+            );
+        }
+        for (a, first) in leaves.iter().enumerate() {
+            for second in &leaves[a + 1..] {
+                assert!(
+                    !overlap(first, second),
+                    "{what}: {first:?} overlaps {second:?}"
+                );
+            }
+        }
+        // In the window: the dragged room's name is drawn twice (the row and
+        // the ghost); one of them is in the tile's place.
+        let at = ghost_position(
+            ghost.pointer,
+            ghost.grab.expect("the fixture seen a grab"),
+            size,
+            WIDE,
+        );
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let words = texts(&mut laid, &renderer);
+        let tile_rect = Rectangle::new(at, size);
+        let named: Vec<&Rectangle> = words
+            .iter()
+            .filter(|(t, _)| t == "General")
+            .map(|(_, r)| r)
+            .collect();
+        assert!(named.len() >= 2, "{what}: the row and the ghost: {named:?}");
+        assert!(
+            named.iter().any(|r| tile_rect.contains(r.center())),
+            "{what}: no name in the tile {tile_rect:?}: {named:?}"
+        );
+        assert!(
+            at.x >= 0.0 && at.y >= 0.0 && at.x + size.width <= WIDE.width + 0.5,
+            "{what}: inside the window"
+        );
+    }
+}
+
+#[test]
+fn a_big_sectioned_space_builds_only_the_lines_in_view() {
+    use twicecat_core::api::{RoomId, RoomSummary};
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "space-sections")
+        .expect("the scenario");
+    let mut app = (scenario.build)();
+    app.rooms = (0..10_000)
+        .map(|i| {
+            RoomSummary::new(
+                RoomId::from(format!("!big{i}:example.org")),
+                format!("Room {i}"),
+            )
+        })
+        .collect();
+    app.list_viewport_h = 700.0;
+    for density in DENSITIES {
+        let mut settings = variants(false)[0].settings();
+        settings.density = density.0;
+        app.set_ui_settings(settings);
+        assert!(app.sections_shown());
+        for offset in [0.0, 100_000.0, f32::MAX] {
+            app.list_offset_y = offset;
+            let laid = Laid::new(&app, &renderer, WIDE);
+            let (rows, _) = list_rows(&laid);
+            assert!(
+                (1..100).contains(&rows.len()),
+                "{} at {offset}: {} lines built",
+                density.1,
+                rows.len()
+            );
+        }
+    }
+}
+
 /// Ctrl + wheel is the zoom gesture, and a `pick_list` with a value takes it
 /// as "pick the next option": over the header's notification menu that would
 /// silently mute a room. Sweep the top of the window, wide and narrow.
@@ -1328,7 +2155,7 @@ fn ctrl_wheel_over_the_room_header_never_changes_the_notification_mode() {
         let mut laid = Laid::new(&app, &renderer, size);
         laid.settle(&renderer, size);
         let mut messages: Vec<Message> = Vec::new();
-        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: Point| {
+        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: iced::Point| {
             let mut shell = Shell::new(&mut messages);
             laid.element.as_widget_mut().update(
                 &mut laid.tree,
@@ -1363,6 +2190,537 @@ fn ctrl_wheel_over_the_room_header_never_changes_the_notification_mode() {
             "Ctrl + wheel changed a room's notification mode at {width}"
         );
     }
+}
+
+/// The same for the options cards of the rail and of a room row: their "Move
+/// to folder" and "Move to section" lists take Ctrl + wheel as "pick the
+/// next one" unless they are behind `kit::menu`, and that would move a space
+/// into a folder, or a room into a section, while the user only zooms.
+#[test]
+fn ctrl_wheel_over_the_options_cards_never_picks_a_folder_or_a_section() {
+    use iced::keyboard::{self, Modifiers};
+    use iced::{Point, mouse::ScrollDelta};
+    let renderer = renderer();
+    for (scenario, width) in [
+        ("rail-menu", 1280.0),
+        ("rail-menu", 720.0),
+        ("section-menu", 1280.0),
+        ("space-sections-empty-card", 1280.0),
+        ("section-menu", 720.0),
+        ("space-sections-empty-card", 720.0),
+        ("room-list-sort", 1280.0),
+        ("room-list-sort", 720.0),
+        ("room-list-card", 1280.0),
+        ("room-list-card", 720.0),
+    ] {
+        let size = Size::new(width, 800.0);
+        let mut app = fixture::scenarios()
+            .into_iter()
+            .find(|s| s.name == scenario)
+            .map(|s| (s.build)())
+            .expect("the menu scenario");
+        app.set_ui_settings(variants(false)[0].settings());
+        app.window_width = width;
+        let mut laid = Laid::new(&app, &renderer, size);
+        laid.settle(&renderer, size);
+        let mut messages: Vec<Message> = Vec::new();
+        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: iced::Point| {
+            let mut shell = Shell::new(&mut messages);
+            laid.element.as_widget_mut().update(
+                &mut laid.tree,
+                &event,
+                Layout::new(&laid.node),
+                mouse::Cursor::Available(at),
+                &renderer,
+                &mut clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(size),
+            );
+        };
+        let ctrl = Event::Keyboard(keyboard::Event::ModifiersChanged(Modifiers::CTRL));
+        deliver(&mut laid, ctrl, Point::new(1.0, 1.0));
+        for y in (0..800).step_by(4) {
+            for x in (0..width as i32).step_by(6) {
+                let at = Point::new(x as f32, y as f32);
+                for dy in [1.0, -1.0] {
+                    let wheel = Event::Mouse(mouse::Event::WheelScrolled {
+                        delta: ScrollDelta::Lines { x: 0.0, y: dy },
+                    });
+                    deliver(&mut laid, wheel, at);
+                }
+            }
+        }
+        let picks = messages
+            .iter()
+            .filter(|m| matches!(m, Message::SidebarMenu(_)))
+            .count();
+        assert_eq!(
+            picks, 0,
+            "Ctrl + wheel acted on the {scenario} card at {width}"
+        );
+    }
+}
+
+/// The `room-list-sort` scenario (sidebar rework, Task 8): the card is open
+/// over the list in A to Z with the unread rooms first, in every theme and
+/// density, at both widths. The card fits the window, its words do not touch,
+/// and the expanded list reads Design review (a mention), Lounge (a
+/// notification), Build alerts and Stand-up (unread, marked), then the rest
+/// A to Z.
+#[test]
+fn the_sort_scenario_shows_the_card_over_a_to_z_with_unreads_first() {
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "room-list-sort")
+        .expect("the scenario");
+    let expected = [
+        "Design review",
+        "Lounge",
+        "Build alerts",
+        "Stand-up",
+        "Alice Example",
+        "Bob Example",
+        "Book club",
+        "Garden club",
+        "Kitchen",
+        "Open house",
+        "Photos",
+        "Reading list",
+        "Travel",
+        "Voice hangout",
+    ];
+    let mut app = (scenario.build)();
+    let mut checked = 0;
+    for variant in variants(true) {
+        apply(&mut app, variant);
+        for size in SIZES {
+            app.window_width = size.width;
+            let what = format!("{} at {}", variant.tag(), size.width);
+            let mut laid = Laid::new(&app, &renderer, size);
+            laid.settle(&renderer, size);
+            let card = dialogs::card_rect(&laid, 380.0);
+            assert!(
+                card.x >= 0.0 && card.x + card.width <= size.width,
+                "{what}: {card:?}"
+            );
+            assert!(
+                card.y >= -0.5 && card.y + card.height <= size.height + 0.5,
+                "{what}: {card:?}"
+            );
+            let shown = texts(&mut laid, &renderer);
+            let in_card: Vec<&(String, Rectangle)> = shown
+                .iter()
+                .filter(|(_, r)| card.contains(r.center()))
+                .collect();
+            for words in ["Sort rooms", "Order", "Unreads first"] {
+                assert!(
+                    in_card.iter().any(|(t, _)| t == words),
+                    "{what}: no \"{words}\" in the card"
+                );
+            }
+            for (a, ra) in &in_card {
+                assert!(
+                    ra.x >= card.x && ra.x + ra.width <= card.x + card.width + 0.5,
+                    "{what}: {a:?} {ra:?} runs out of the card"
+                );
+                for (b, rb) in &in_card {
+                    assert!(
+                        std::ptr::eq(a, b) || a == b || !overlap(ra, rb),
+                        "{what}: {a:?} overlaps {b:?}"
+                    );
+                }
+            }
+            if variant.list == RoomListChoice::Expanded && size.width >= 800.0 {
+                // The list's own names are left of the card.
+                let ys: Vec<f32> = expected
+                    .iter()
+                    .map(|name| {
+                        shown
+                            .iter()
+                            .find(|(t, r)| t == name && r.x < 320.0)
+                            .unwrap_or_else(|| panic!("{what}: no row {name}"))
+                            .1
+                            .y
+                    })
+                    .collect();
+                assert!(
+                    ys.windows(2).all(|w| w[0] < w[1]),
+                    "{what}: the rows are not in the sorted order: {ys:?}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    // Every theme at both densities, in the expanded list, at the wide size.
+    assert_eq!(checked, variants(false).len(), "the expanded variants read");
+}
+
+/// The `room-list-card` scenario (sidebar rework, Task 9b): a flat row's card
+/// is open over Home in every theme and density, at both widths. The card fits
+/// the window, holds the two tag buttons worded after the room's flags and
+/// nothing that needs a section, and its words do not touch.
+#[test]
+fn the_flat_card_scenario_shows_only_the_tags_in_every_theme_and_density() {
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "room-list-card")
+        .expect("the scenario");
+    let mut app = (scenario.build)();
+    for variant in variants(true) {
+        apply(&mut app, variant);
+        for size in SIZES {
+            app.window_width = size.width;
+            let what = format!("{} at {}", variant.tag(), size.width);
+            let mut laid = Laid::new(&app, &renderer, size);
+            laid.settle(&renderer, size);
+            let card = dialogs::card_rect(&laid, 380.0);
+            assert!(
+                card.x >= 0.0 && card.x + card.width <= size.width,
+                "{what}: {card:?}"
+            );
+            assert!(
+                card.y >= -0.5 && card.y + card.height <= size.height + 0.5,
+                "{what}: {card:?}"
+            );
+            let shown = texts(&mut laid, &renderer);
+            let in_card: Vec<&(String, Rectangle)> = shown
+                .iter()
+                .filter(|(_, r)| card.contains(r.center()))
+                .collect();
+            for words in [
+                "Kitchen",
+                "Remove from favourites",
+                "Mark as low priority",
+                "Close",
+            ] {
+                assert!(
+                    in_card.iter().any(|(t, _)| t == words),
+                    "{what}: no \"{words}\" in the card"
+                );
+            }
+            for words in [
+                "Star",
+                "Unstar",
+                "Move up",
+                "Move down",
+                "Back to its default section",
+                "Move to section",
+                "Add to favourites",
+                "Remove low priority",
+            ] {
+                assert!(
+                    in_card.iter().all(|(t, _)| t != words),
+                    "{what}: \"{words}\" is in the flat card"
+                );
+            }
+            for (a, ra) in &in_card {
+                assert!(
+                    ra.x >= card.x && ra.x + ra.width <= card.x + card.width + 0.5,
+                    "{what}: {a:?} {ra:?} runs out of the card"
+                );
+                for (b, rb) in &in_card {
+                    assert!(
+                        std::ptr::eq(a, b) || a == b || !overlap(ra, rb),
+                        "{what}: {a:?} overlaps {b:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A right-click through the real widgets on the free space under a space's
+/// list asks for the card with "New section"; on a row or a header it asks
+/// for theirs and never also for this one; a wheel turn over the free space is
+/// not taken, so the list scrolls.
+#[test]
+fn a_right_click_on_the_free_space_of_the_sectioned_list_asks_for_its_card_only_there() {
+    use twicecat_app::sidebar_menu::SidebarMenuMessage;
+    let renderer = renderer();
+    let size = WIDE;
+    let build = |name: &str| {
+        fixture::scenarios()
+            .into_iter()
+            .find(|s| s.name == name)
+            .map(|s| (s.build)())
+            .expect("the scenario")
+    };
+    let deliver =
+        |laid: &mut Laid<'_>, at: iced::Point, events: &[Event]| -> (Vec<Message>, bool) {
+            let mut messages: Vec<Message> = Vec::new();
+            let mut captured = false;
+            for event in events {
+                let mut shell = Shell::new(&mut messages);
+                laid.element.as_widget_mut().update(
+                    &mut laid.tree,
+                    event,
+                    Layout::new(&laid.node),
+                    mouse::Cursor::Available(at),
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut shell,
+                    &Rectangle::with_size(size),
+                );
+                captured |= shell.is_event_captured();
+            }
+            (messages, captured)
+        };
+    let right_click = |laid: &mut Laid<'_>, at: iced::Point| {
+        deliver(
+            laid,
+            at,
+            &[
+                Event::Mouse(mouse::Event::CursorMoved { position: at }),
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)),
+            ],
+        )
+        .0
+    };
+    let count = |sent: &[Message], f: &dyn Fn(&SidebarMenuMessage) -> bool| {
+        sent.iter()
+            .filter(|m| matches!(m, Message::SidebarMenu(inner) if f(inner)))
+            .count()
+    };
+    let is_list = |m: &SidebarMenuMessage| matches!(m, SidebarMenuMessage::OpenList);
+    // A tall window, so the list ends above the bottom: free space under its
+    // last line.
+    let size = Size::new(1280.0, 1500.0);
+    let app = build("space-sections-collapsed");
+    let mut laid = Laid::new(&app, &renderer, size);
+    laid.settle(&renderer, size);
+    let lowest = texts(&mut laid, &renderer)
+        .into_iter()
+        .filter(|(_, r)| r.x < 320.0 && r.y > 150.0 && r.y < 1400.0)
+        .map(|(_, r)| r.y + r.height)
+        .fold(0.0_f32, f32::max);
+    // Walk down from the last text: the first right-click that asks for the
+    // list's card is the free space, and nothing above it asks for it.
+    let mut free = None;
+    let mut y = lowest - 40.0;
+    while y < 1400.0 {
+        let at = iced::Point::new(150.0, y);
+        let sent = right_click(&mut laid, at);
+        if count(&sent, &is_list) == 1 {
+            free = Some(at);
+            break;
+        }
+        y += 4.0;
+    }
+    let free = free.expect("a point of the free space under the last line");
+    assert!(free.y > lowest - 40.0, "{} under {lowest}", free.y);
+    let free = iced::Point::new(free.x, free.y + 8.0);
+    let sent = right_click(&mut laid, free);
+    assert_eq!(count(&sent, &is_list), 1, "{sent:?}");
+    assert_eq!(count(&sent, &|_| true), 1, "nothing else: {sent:?}");
+    // A left click there asks for nothing.
+    let (sent, _) = deliver(
+        &mut laid,
+        free,
+        &[
+            Event::Mouse(mouse::Event::CursorMoved { position: free }),
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ],
+    );
+    assert!(sent.is_empty(), "{sent:?}");
+    // The wheel is not taken by it.
+    let (sent, captured) = deliver(
+        &mut laid,
+        free,
+        &[Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+        })],
+    );
+    assert!(!captured && sent.is_empty(), "{sent:?}");
+    // A header and a row: their own card, never this one too.
+    let app = build("space-sections");
+    let mut laid = Laid::new(&app, &renderer, size);
+    laid.settle(&renderer, size);
+    let all = texts(&mut laid, &renderer);
+    let at = |name: &str| {
+        all.iter()
+            .find(|(t, r)| t == name && r.x < 320.0)
+            .unwrap_or_else(|| panic!("{name} is in the list"))
+            .1
+            .center()
+    };
+    let sent = right_click(&mut laid, at("CHANNELS"));
+    assert_eq!(
+        count(&sent, &|m| matches!(m, SidebarMenuMessage::OpenSection(_))),
+        1,
+        "{sent:?}"
+    );
+    assert_eq!(count(&sent, &is_list), 0, "{sent:?}");
+    let sent = right_click(&mut laid, at("General"));
+    assert_eq!(
+        count(&sent, &|m| matches!(m, SidebarMenuMessage::OpenRoom(_))),
+        1,
+        "{sent:?}"
+    );
+    assert_eq!(count(&sent, &is_list), 0, "{sent:?}");
+}
+
+/// A right-click on a flat row through the real widgets: it asks for the
+/// card of that room and does not select it; a left click still selects the
+/// room and never asks for the card, twice in a row too; a wheel turn over a
+/// row is not taken by the row, so the list scrolls as before.
+#[test]
+fn a_right_click_on_a_flat_row_asks_for_its_card_and_a_click_still_selects() {
+    use twicecat_app::sidebar_menu::SidebarMenuMessage;
+    let renderer = renderer();
+    let app = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "main-no-room")
+        .map(|s| (s.build)())
+        .expect("the scenario");
+    let size = WIDE;
+    let mut laid = Laid::new(&app, &renderer, size);
+    laid.settle(&renderer, size);
+    let alice = texts(&mut laid, &renderer)
+        .into_iter()
+        .find(|(t, r)| t == "Alice Example" && r.x < 320.0)
+        .expect("an Alice Example row in the list")
+        .1
+        .center();
+    let deliver = |laid: &mut Laid<'_>, events: &[Event]| -> (Vec<Message>, bool) {
+        let mut messages: Vec<Message> = Vec::new();
+        let mut captured = false;
+        for event in events {
+            let mut shell = Shell::new(&mut messages);
+            laid.element.as_widget_mut().update(
+                &mut laid.tree,
+                event,
+                Layout::new(&laid.node),
+                mouse::Cursor::Available(alice),
+                &renderer,
+                &mut clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(size),
+            );
+            captured |= shell.is_event_captured();
+        }
+        (messages, captured)
+    };
+    let at = Event::Mouse(mouse::Event::CursorMoved { position: alice });
+    let right = |press: bool| {
+        Event::Mouse(if press {
+            mouse::Event::ButtonPressed(mouse::Button::Right)
+        } else {
+            mouse::Event::ButtonReleased(mouse::Button::Right)
+        })
+    };
+    let (sent, _) = deliver(&mut laid, &[at.clone(), right(true), right(false)]);
+    let opened = sent
+        .iter()
+        .filter(|m| {
+            matches!(
+                m,
+                Message::SidebarMenu(SidebarMenuMessage::OpenFlatRoom(id))
+                    if id.as_str().starts_with("!alice:")
+            )
+        })
+        .count();
+    assert_eq!(opened, 1, "{sent:?}");
+    assert!(
+        sent.iter().all(|m| !matches!(m, Message::SelectRoom(_))),
+        "a right-click does not open the room: {sent:?}"
+    );
+    // A click, as before.
+    let left = |press: bool| {
+        Event::Mouse(if press {
+            mouse::Event::ButtonPressed(mouse::Button::Left)
+        } else {
+            mouse::Event::ButtonReleased(mouse::Button::Left)
+        })
+    };
+    let (sent, _) = deliver(&mut laid, &[at.clone(), left(true), left(false)]);
+    assert_eq!(
+        sent.iter()
+            .filter(|m| matches!(m, Message::SelectRoom(id) if id.as_str().starts_with("!alice:")))
+            .count(),
+        1,
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter().all(|m| !matches!(m, Message::SidebarMenu(_))),
+        "{sent:?}"
+    );
+    // Two clicks in a row (a double-click) select it twice, as a button does.
+    let (sent, _) = deliver(
+        &mut laid,
+        &[at.clone(), left(true), left(false), left(true), left(false)],
+    );
+    assert_eq!(
+        sent.iter()
+            .filter(|m| matches!(m, Message::SelectRoom(_)))
+            .count(),
+        2,
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter().all(|m| !matches!(m, Message::SidebarMenu(_))),
+        "{sent:?}"
+    );
+    // The wheel over a row still scrolls the list: the row does not take it.
+    let wheel = Event::Mouse(mouse::Event::WheelScrolled {
+        delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+    });
+    let (sent, _) = deliver(&mut laid, &[at, wheel]);
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [Message::RoomListScrolled { offset_y, .. }] if *offset_y > 0.0
+        ),
+        "{sent:?}"
+    );
+}
+
+/// The narrow rail's rows have no card: a right-click on one asks for
+/// nothing.
+#[test]
+fn a_right_click_on_a_rail_row_asks_for_no_card() {
+    let renderer = renderer();
+    let mut app = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "main-no-room")
+        .map(|s| (s.build)())
+        .expect("the scenario");
+    app.window_width = 720.0;
+    let size = NARROW;
+    let mut laid = Laid::new(&app, &renderer, size);
+    laid.settle(&renderer, size);
+    let mut messages: Vec<Message> = Vec::new();
+    for y in (0..800).step_by(8) {
+        for x in (0..size.width as i32).step_by(8) {
+            let at = iced::Point::new(x as f32, y as f32);
+            for event in [
+                Event::Mouse(mouse::Event::CursorMoved { position: at }),
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)),
+            ] {
+                let mut shell = Shell::new(&mut messages);
+                laid.element.as_widget_mut().update(
+                    &mut laid.tree,
+                    &event,
+                    Layout::new(&laid.node),
+                    mouse::Cursor::Available(at),
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut shell,
+                    &Rectangle::with_size(size),
+                );
+            }
+        }
+    }
+    assert!(
+        messages
+            .iter()
+            .all(|m| !matches!(m, Message::SidebarMenu(_))),
+        "{messages:?}"
+    );
 }
 
 #[test]
@@ -1433,9 +2791,13 @@ fn ctrl_wheel_over_the_menus_of_the_settings_and_call_screens_changes_nothing() 
         "audio-microphone-gpu-found",
         "audio-levels",
         "audio-mic-test",
+        "audio-ringtone",
+        "audio-ringtone-sounds-off",
         "audio-other-voices",
         "settings",
         "settings-appearance",
+        "settings-appearance-themes",
+        "settings-appearance-pair",
         "settings-notifications",
         "sessions",
         "sessions-confirm-all",
@@ -1466,7 +2828,7 @@ fn ctrl_wheel_over_the_menus_of_the_settings_and_call_screens_changes_nothing() 
         let mut laid = Laid::new(app, &renderer, WIDE);
         laid.settle(&renderer, WIDE);
         let mut messages: Vec<Message> = Vec::new();
-        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: Point| {
+        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: iced::Point| {
             let mut shell = Shell::new(&mut messages);
             laid.element.as_widget_mut().update(
                 &mut laid.tree,
@@ -1535,6 +2897,7 @@ fn dock_lines(dock: &Node) -> &[Node] {
 
 fn with_settings(app: &mut App, density: (DensityChoice, &str), list: RoomListChoice) {
     let mut settings = variants(false)[0].settings();
+    settings.theme_name = app.ui_settings.theme_name;
     settings.density = density.0;
     settings.room_list = list;
     settings.advanced_settings = app.ui_settings.advanced_settings;
@@ -2063,7 +3426,7 @@ fn leave_sends_once_and_is_off_while_a_leave_or_join_waits() {
 
 mod audio {
     use super::*;
-    use twicecat_app::audio_settings::{AudioMessage, AudioPage};
+    use twicecat_app::audio_settings::{AudioMessage, AudioPage, Slider};
     use twicecat_app::screens::audio_settings::NAV_WIDTH;
     use twicecat_core::api::{AudioSettings, CoreEvent, InputMode};
 
@@ -2124,7 +3487,7 @@ mod audio {
         }
     }
 
-    const PAGE_SCENARIOS: [&str; 16] = [
+    const PAGE_SCENARIOS: [&str; 17] = [
         "audio-devices",
         "audio-talking",
         "audio-talking-capturing",
@@ -2137,6 +3500,7 @@ mod audio {
         "audio-levels-loud",
         "audio-mic-test",
         "audio-ringtone",
+        "audio-ringtone-sounds-off",
         "audio-other-voices",
         "audio-announce",
         "audio-diagnostics",
@@ -2369,6 +3733,7 @@ mod audio {
             (AudioPage::Levels, "audio-levels"),
             (AudioPage::MicTest, "audio-mic-test"),
             (AudioPage::Ringtone, "audio-ringtone"),
+            (AudioPage::Ringtone, "audio-ringtone-sounds-off"),
             (AudioPage::OtherVoices, "audio-other-voices"),
             (AudioPage::Announce, "audio-announce"),
             (AudioPage::Diagnostics, "audio-diagnostics"),
@@ -2433,6 +3798,47 @@ mod audio {
             missing.is_empty(),
             "no click sent {missing:?}; saw {seen:?}"
         );
+    }
+
+    #[test]
+    fn the_call_sounds_controls_are_live_only_while_the_master_switch_is_on() {
+        let renderer = renderer();
+        let volume = |m: &AudioMessage| {
+            matches!(
+                m,
+                AudioMessage::Slide(Slider::CallSoundsVolume, _)
+                    | AudioMessage::Step(Slider::CallSoundsVolume, _)
+            )
+        };
+        let on = clicked(&page_app("audio-ringtone"), &renderer);
+        for (what, found) in [
+            ("master", on.contains(&AudioMessage::CallSounds(false))),
+            (
+                "others joining",
+                on.contains(&AudioMessage::OthersJoining(false)),
+            ),
+            ("leaving", on.contains(&AudioMessage::LeavingSound(false))),
+            ("volume", on.iter().any(volume)),
+        ] {
+            assert!(found, "{what} sends nothing with the sounds on: {on:?}");
+        }
+        assert!(
+            on.iter()
+                .filter(|m| matches!(m, AudioMessage::Step(Slider::CallSoundsVolume, _)))
+                .count()
+                >= 1
+        );
+        let off = clicked(&page_app("audio-ringtone-sounds-off"), &renderer);
+        assert!(off.contains(&AudioMessage::CallSounds(true)), "{off:?}");
+        for message in &off {
+            assert!(
+                !matches!(
+                    message,
+                    AudioMessage::OthersJoining(_) | AudioMessage::LeavingSound(_)
+                ) && !volume(message),
+                "a disabled control sends {message:?}"
+            );
+        }
     }
 
     #[test]
@@ -2997,7 +4403,7 @@ mod settings_pages {
     use super::*;
 
     /// Every page at the simple level, then at the advanced one.
-    const PAGE_SCENARIOS: [(&str, SettingsPage); 15] = [
+    const PAGE_SCENARIOS: [(&str, SettingsPage); 24] = [
         ("settings", SettingsPage::Profile),
         ("settings-appearance", SettingsPage::Appearance),
         ("settings-notifications", SettingsPage::Notifications),
@@ -3016,6 +4422,21 @@ mod settings_pages {
         ("settings-video-advanced", SettingsPage::Video),
         ("settings-video-advanced-call", SettingsPage::Video),
         ("settings-notifications-long", SettingsPage::Notifications),
+        ("settings-appearance-themes", SettingsPage::Appearance),
+        ("settings-appearance-pair", SettingsPage::Appearance),
+        ("settings-appearance-pair-dark", SettingsPage::Appearance),
+        ("settings-appearance-fallback", SettingsPage::Appearance),
+        ("settings-appearance-loading", SettingsPage::Appearance),
+        ("settings-appearance-sidebar", SettingsPage::Appearance),
+        ("settings-appearance-sidebar-ask", SettingsPage::Appearance),
+        (
+            "settings-appearance-sidebar-newer",
+            SettingsPage::Appearance,
+        ),
+        (
+            "settings-appearance-sidebar-other",
+            SettingsPage::Appearance,
+        ),
     ];
 
     /// A scenario with the switch on.
@@ -3033,6 +4454,7 @@ mod settings_pages {
     fn page_app(name: &str) -> App {
         let mut app = scenario_app(name);
         let mut settings = variants(false)[0].settings();
+        settings.theme_name = app.ui_settings.theme_name;
         settings.advanced_settings = is_advanced(name);
         app.set_ui_settings(settings);
         app.window_width = WIDE.width;
@@ -3123,73 +4545,91 @@ mod settings_pages {
         assert!(tall >= 2, "only {tall} tall pages: the check did not run");
     }
 
-    #[test]
-    fn the_four_colour_sets_fit_the_page_without_spilling() {
-        // The swatches are two by two: all four are on screen, none past the
-        // page, in the narrowest card.
-        let renderer = renderer();
-        let mut app = page_app("settings-appearance");
-        app.window_width = NARROW.width;
-        let mut laid = Laid::new(&app, &renderer, NARROW);
-        let shown = texts(&mut laid, &renderer);
-        for label in ["Twicecat", "Frost", "Ember", "High contrast"] {
-            assert!(
-                shown.iter().any(|(t, _)| t.starts_with(label)),
-                "no swatch named {label}"
-            );
-        }
-    }
-
-    fn swatch_names(app: &App) -> Vec<String> {
+    /// What the Appearance page says, at the narrowest card.
+    fn appearance_texts(app: &App) -> Vec<String> {
         let renderer = renderer();
         let mut laid = Laid::new(app, &renderer, NARROW);
         texts(&mut laid, &renderer)
             .into_iter()
             .map(|(t, _)| t)
-            .filter(|t| {
-                ["Twicecat", "Frost", "Ember", "High contrast"]
-                    .iter()
-                    .any(|l| t.starts_with(l))
-            })
             .collect()
     }
 
     #[test]
-    fn the_swatch_marked_default_is_frost() {
-        let mut app = page_app("settings-appearance");
-        app.window_width = NARROW.width;
-        let mut settings = app.ui_settings;
-        settings.palette = None;
-        app.set_ui_settings(settings);
-        let names = swatch_names(&app);
-        assert!(names.contains(&"Frost (default)".to_owned()), "{names:?}");
-        assert_eq!(
-            names.iter().filter(|n| n.contains("(default)")).count(),
-            1,
-            "{names:?}"
-        );
+    fn the_appearance_page_names_the_theme_and_has_no_swatches_or_mode_radios() {
+        for choice in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
+            let mut app = page_app("settings-appearance");
+            app.window_width = NARROW.width;
+            let mut settings = app.ui_settings;
+            settings.theme = choice;
+            app.set_ui_settings(settings);
+            let shown = appearance_texts(&app);
+            assert!(shown.contains(&"Theme".to_owned()), "{shown:?}");
+            assert_eq!(
+                app.selected_theme_option().to_string(),
+                "Twicecat (default)"
+            );
+            assert!(
+                !shown.iter().any(|t| t.to_lowercase().contains("dark")),
+                "{choice:?}: the page says something about dark: {shown:?}"
+            );
+            assert!(
+                !shown.iter().any(|t| t.starts_with("This theme")),
+                "{choice:?}: a note for a single-look theme: {shown:?}"
+            );
+            for gone in [
+                "Frost",
+                "Ember",
+                "High contrast",
+                "Colours",
+                "Use the default",
+                "Follow the system",
+                "Light",
+                "Dark",
+            ] {
+                assert!(
+                    !shown.iter().any(|t| t.starts_with(gone)),
+                    "{choice:?}: {gone:?} is still on the page: {shown:?}"
+                );
+            }
+            // The radios are not drawn, so nothing sends a Theme message.
+            let renderer = renderer();
+            for message in clicked(&app, &renderer) {
+                assert_ne!(message.name(), "Theme", "{choice:?}");
+            }
+        }
     }
 
     #[test]
-    fn a_settings_file_with_an_explicit_twicecat_palette_still_shows_twicecat() {
-        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("ui17-explicit-palette");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let paths = twicecat_core::paths::DataPaths::at(&dir);
-        std::fs::write(paths.settings_file(), r#"{"palette":"Twicecat"}"#).expect("write");
-        let read = paths.read_settings();
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(read.palette, Some(PaletteChoice::Twicecat));
-        let mut app = page_app("settings-appearance");
-        app.window_width = NARROW.width;
-        app.set_ui_settings(read);
-        assert_eq!(
-            twicecat_app::theme::resolve_family(read.palette),
-            twicecat_app::theme::Family::Twicecat
-        );
-        let names = swatch_names(&app);
-        assert!(names.contains(&"Twicecat".to_owned()), "{names:?}");
-        assert!(names.contains(&"Frost (default)".to_owned()), "{names:?}");
+    fn a_settings_file_with_an_older_palette_shows_twicecat() {
+        for palette in ["Twicecat", "Frost", "Ember", "HighContrast", "Bogus"] {
+            let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
+                .join(format!("thm1-old-palette-{palette}"));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).expect("temp dir");
+            let paths = twicecat_core::paths::DataPaths::at(&dir);
+            std::fs::write(
+                paths.settings_file(),
+                format!(r#"{{"palette":"{palette}","theme":"Light"}}"#),
+            )
+            .expect("write");
+            let read = paths.read_settings();
+            let _ = std::fs::remove_dir_all(&dir);
+            let mut app = page_app("settings-appearance");
+            app.window_width = NARROW.width;
+            app.set_ui_settings(read);
+            let theme = app.current_theme();
+            assert_eq!(theme.to_string(), "Twicecat", "{palette}");
+            assert_eq!(
+                theme.palette(),
+                twicecat_app::theme::built_in().palette(),
+                "{palette}"
+            );
+            assert_eq!(
+                app.selected_theme_option().to_string(),
+                "Twicecat (default)"
+            );
+        }
     }
 
     #[test]
@@ -3293,6 +4733,80 @@ mod settings_pages {
         shown.iter().any(|t| t.starts_with(wanted))
     }
 
+    /// The light/dark choices a click on the page's radios sends. A radio
+    /// hides its label from the text walk, so the radios are found by their
+    /// clicks.
+    fn radio_choices(name: &str) -> Vec<ThemeChoice> {
+        let renderer = renderer();
+        let mut found: Vec<ThemeChoice> = clicked(&page_app(name), &renderer)
+            .into_iter()
+            .filter_map(|m| match m {
+                SettingsMessage::Theme(choice) => Some(choice),
+                _ => None,
+            })
+            .collect();
+        found.dedup();
+        found
+    }
+
+    /// The three light/dark radios are there for a paired theme and nowhere
+    /// else.
+    #[test]
+    fn the_radios_are_shown_for_the_pair_only() {
+        for name in ["settings-appearance-pair", "settings-appearance-pair-dark"] {
+            let found = radio_choices(name);
+            for want in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
+                assert!(found.contains(&want), "{name} lacks {want:?}: {found:?}");
+            }
+        }
+        for name in [
+            "settings-appearance",
+            "settings-appearance-themes",
+            "settings-appearance-fallback",
+            "settings-appearance-loading",
+        ] {
+            assert!(radio_choices(name).is_empty(), "{name} shows radios");
+        }
+        // Faint has one look, dark: no radios either.
+        let renderer = renderer();
+        let mut faint = page_app("settings-appearance-themes");
+        let mut settings = faint.ui_settings;
+        settings.theme_name = ThemeName::try_from("Faint").ok();
+        faint.set_ui_settings(settings);
+        assert!(!faint.selected_is_paired());
+        let sent = clicked(&faint, &renderer);
+        assert!(!sent.iter().any(|m| m.name() == "Theme"));
+    }
+
+    #[test]
+    fn the_pair_is_drawn_light_and_dark_by_the_system_mode() {
+        let light = page_app("settings-appearance-pair");
+        let dark = page_app("settings-appearance-pair-dark");
+        assert_ne!(
+            light.current_theme().palette().background,
+            dark.current_theme().palette().background
+        );
+        assert_eq!(light.ui_settings.theme, ThemeChoice::System);
+    }
+
+    #[test]
+    fn the_page_says_when_the_folder_is_being_read() {
+        assert!(has(
+            &card_texts("settings-appearance-loading"),
+            "Reading the themes folder"
+        ));
+        assert!(!has(
+            &card_texts("settings-appearance-themes"),
+            "Reading the themes folder"
+        ));
+        let fallback = card_texts("settings-appearance-fallback");
+        assert!(
+            has(&fallback, "Theme \"Mixed\" could not be used"),
+            "{fallback:?}"
+        );
+        assert!(has(&card_texts("settings-appearance-themes"), "Mixed: "));
+    }
+
     /// What only the advanced level shows, page by page: nothing of it is on
     /// the simple page, all of it is on the advanced one.
     #[test]
@@ -3339,7 +4853,7 @@ mod settings_pages {
         }
         // The simple pages keep what a person needs.
         let appearance = card_texts("settings-appearance");
-        for wanted in ["Colours", "Text size"] {
+        for wanted in ["Theme", "Reload themes", "Open themes folder", "Text size"] {
             assert!(has(&appearance, wanted), "Appearance lacks {wanted:?}");
         }
         let notifications = card_texts("settings-notifications");
@@ -3456,7 +4970,7 @@ mod settings_pages {
             "word".to_owned().into(),
         )));
         apps.push((SettingsPage::Notifications, "typed".to_owned(), typed));
-        // Appearance with a non-default colour set and a larger text: every
+        // Appearance with a larger text: every
         // button of the row is on.
         let mut zoomed = page_app("settings-appearance");
         let _ = zoomed.update(Message::Settings(SettingsMessage::Zoom(
@@ -3472,9 +4986,12 @@ mod settings_pages {
             }
         }
         // Menus open an overlay this harness does not drive; typing makes
-        // the text messages.
+        // the text messages. "Theme" is the System/Light/Dark radio, which
+        // is drawn only for a theme that comes as a light and a dark file.
         let unreachable_by_click = [
             "DefaultMode",
+            "ThemePicked",
+            "Theme",
             "Density",
             "RoomList",
             "NameInput",
@@ -3507,6 +5024,74 @@ mod settings_pages {
         }
         let wanted: BTreeSet<String> = SettingsPage::ALL.iter().map(|p| format!("{p:?}")).collect();
         assert_eq!(pages, wanted);
+    }
+
+    /// The Reset sidebar layout button, its question and its notes.
+    #[test]
+    fn reset_sidebar_layout_is_on_only_for_a_layout_that_can_be_reset() {
+        use twicecat_app::screens::settings::{
+            SIDEBAR_NEWER_NOTE, SIDEBAR_OTHER_ACCOUNT_NOTE, SIDEBAR_RESET_QUESTION,
+        };
+        let renderer = renderer();
+        let sent = |name: &str| -> Vec<String> {
+            senders(&page_app(name), &renderer, WIDE)
+                .into_iter()
+                .map(|(_, t)| t)
+                .filter(|t| t.contains("ResetSidebar"))
+                .collect()
+        };
+        // Not loaded yet (the fixture's default), a newer file and another
+        // account's file: the button is drawn and off.
+        for off in [
+            "settings-appearance",
+            "settings-appearance-sidebar-newer",
+            "settings-appearance-sidebar-other",
+        ] {
+            assert!(sent(off).is_empty(), "{off}: {:?}", sent(off));
+            assert!(
+                has(&card_texts(off), "Reset sidebar layout"),
+                "{off}: the button is drawn"
+            );
+        }
+        assert_eq!(
+            sent("settings-appearance-sidebar"),
+            ["Settings(ResetSidebarAsk)"]
+        );
+        // The question: Cancel and the reset, and the asking button is gone.
+        let mut ask = sent("settings-appearance-sidebar-ask");
+        ask.sort();
+        assert_eq!(
+            ask,
+            [
+                "Settings(ResetSidebarCancel)",
+                "Settings(ResetSidebarConfirm)"
+            ]
+        );
+        // The notes, and nowhere else.
+        let note = |name: &str, wanted: &str| has(&card_texts(name), &wanted[..40]);
+        assert!(note(
+            "settings-appearance-sidebar-newer",
+            SIDEBAR_NEWER_NOTE
+        ));
+        assert!(note(
+            "settings-appearance-sidebar-other",
+            SIDEBAR_OTHER_ACCOUNT_NOTE
+        ));
+        assert!(note(
+            "settings-appearance-sidebar-ask",
+            SIDEBAR_RESET_QUESTION
+        ));
+        assert!(!note("settings-appearance-sidebar", SIDEBAR_NEWER_NOTE));
+        assert!(!note(
+            "settings-appearance-sidebar",
+            SIDEBAR_OTHER_ACCOUNT_NOTE
+        ));
+        assert!(!note("settings-appearance-sidebar", SIDEBAR_RESET_QUESTION));
+        // The page says where the layout is kept.
+        assert!(has(
+            &card_texts("settings-appearance-sidebar"),
+            "The sidebar layout (folders, sections, starred rooms) is kept on this device only"
+        ));
     }
 
     /// Sessions has the one button that opens its screen, apart from the
@@ -3931,8 +5516,17 @@ mod sessions_screen {
             !all.iter()
                 .any(|t| t.contains("SignOutAsk") && t.contains("GALLERYDEV"))
         );
-        assert_eq!(all.iter().filter(|t| t.contains("SignOutAsk(")).count(), 2);
-        assert_eq!(all.iter().filter(|t| t.contains("RenameStart(")).count(), 3);
+        // The probe also walks the room list under the card, where a chip can
+        // sit under a button and report that button's message too; so count
+        // the distinct messages (one per device), not the places.
+        let distinct = |part: &str| {
+            all.iter()
+                .filter(|t| t.contains(part))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        };
+        assert_eq!(distinct("SignOutAsk("), 2);
+        assert_eq!(distinct("RenameStart("), 3);
         assert!(all.iter().any(|t| t.contains("SignOutAllAsk")));
     }
 
@@ -4168,7 +5762,11 @@ mod dialogs {
 
     pub(super) fn dialog_app(name: &str, size: Size) -> App {
         let mut app = scenario_app(name);
-        app.set_ui_settings(variants(false)[0].settings());
+        let mut settings = variants(false)[0].settings();
+        // The sort a scenario chose (the Sort card's).
+        settings.room_sort = app.ui_settings.room_sort;
+        settings.unread_first = app.ui_settings.unread_first;
+        app.set_ui_settings(settings);
         app.window_width = size.width;
         app
     }
@@ -4194,7 +5792,7 @@ mod dialogs {
     }
 
     /// `(scenario, card width, what the close button in the header sends)`.
-    const CARDS: [(&str, f32, &str); 8] = [
+    const CARDS: [(&str, f32, &str); 14] = [
         ("create-room", 460.0, "Rooms(CloseDialog)"),
         ("join-room", 460.0, "Rooms(CloseDialog)"),
         ("start-dm", 460.0, "Rooms(CloseDialog)"),
@@ -4203,6 +5801,12 @@ mod dialogs {
         ("members", 520.0, "Rooms(CloseMembers)"),
         ("upload", 520.0, "UploadCancelled"),
         ("upload-single", 520.0, "UploadCancelled"),
+        ("rail-menu", 380.0, "SidebarMenu(Close)"),
+        ("rail-folder-name", 380.0, "SidebarMenu(Close)"),
+        ("section-menu", 380.0, "SidebarMenu(Close)"),
+        ("space-sections-empty-card", 380.0, "SidebarMenu(Close)"),
+        ("room-list-sort", 380.0, "SidebarMenu(Close)"),
+        ("room-list-card", 380.0, "SidebarMenu(Close)"),
     ];
 
     #[test]
@@ -4246,14 +5850,23 @@ mod dialogs {
             "upload-single",
             "upload-long",
             "upload-wrong-room",
+            "rail-menu",
+            "rail-folder-name",
+            "section-menu",
+            "space-sections-empty-card",
+            "room-list-sort",
+            "room-list-card",
         ];
         for name in names {
             for size in [WIDE, NARROW, SHORT] {
                 let app = dialog_app(name, size);
                 let laid = Laid::new(&app, &renderer, size);
                 let width = match name {
+                    "room-list-sort" | "room-list-card" => 380.0,
                     n if n.starts_with("room-") || n.starts_with("members") => 520.0,
                     n if n.starts_with("upload") => 520.0,
+                    n if n.starts_with("rail-") || n.starts_with("section-") => 380.0,
+                    "space-sections-empty-card" => 380.0,
                     _ => 460.0,
                 };
                 let card = card_rect(&laid, width);
@@ -4293,6 +5906,7 @@ mod dialogs {
             ("upload-single", 520.0, "UploadConfirmed"),
             ("upload-long", 520.0, "UploadConfirmed"),
             ("user-card", 460.0, "Rooms(CardMessage)"),
+            ("rail-folder-name", 380.0, "SidebarMenu(NameSubmit)"),
         ] {
             let app = dialog_app(name, SHORT);
             let laid = Laid::new(&app, &renderer, SHORT);
@@ -4392,7 +6006,7 @@ mod dialogs {
     #[test]
     fn the_buttons_that_confirm_a_question_are_drawn_red_and_the_others_are_not() {
         let renderer = renderer();
-        for variant in variants(false).iter().step_by(5) {
+        for variant in variants(false).iter() {
             for (asking, _, confirm, cancel, _) in QUESTIONS {
                 let mut app = scenario_app(asking);
                 apply(&mut app, *variant);
@@ -4493,6 +6107,12 @@ mod dialogs {
             "upload-single",
             "viewer",
             "switcher",
+            "rail-menu",
+            "rail-folder-name",
+            "section-menu",
+            "space-sections-empty-card",
+            "room-list-sort",
+            "room-list-card",
         ] {
             let app = dialog_app(name, WIDE);
             let mut laid = Laid::new(&app, &renderer, WIDE);
@@ -5469,7 +7089,7 @@ mod security_screens {
     #[test]
     fn the_red_buttons_are_red_and_cancel_is_not() {
         let renderer = renderer();
-        for variant in variants(false).iter().step_by(5) {
+        for variant in variants(false).iter() {
             for (asking, _, confirm, cancel, _) in QUESTIONS {
                 let mut app = scenario_app(asking);
                 apply(&mut app, *variant);
@@ -6409,5 +8029,1045 @@ mod video_stage {
             sent.iter().all(|m| !matches!(m, Message::SelectRoom(_))),
             "{sent:?}"
         );
+    }
+}
+
+/// A real pointer drag through the widgets, as the window does it: events go
+/// to a view that is rebuilt after every message, the window listener's
+/// messages are fed back while the app asks for it.
+mod real_drag {
+    use super::*;
+    use twicecat_app::spaces::SpacesMessage;
+
+    fn pointer_message(event: Event) -> Option<Message> {
+        Some(Message::Spaces(match event {
+            Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                SpacesMessage::PointerMoved(position)
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(_)) => SpacesMessage::PointerReleased,
+            _ => return None,
+        }))
+    }
+
+    fn feed(app: &mut App, renderer: &Renderer, tree: &mut Tree, event: Event, at: iced::Point) {
+        let mut messages: Vec<Message> = Vec::new();
+        {
+            let mut element = app.view();
+            tree.diff(element.as_widget());
+            let node =
+                element
+                    .as_widget_mut()
+                    .layout(tree, renderer, &Limits::new(Size::ZERO, WIDE));
+            let mut shell = Shell::new(&mut messages);
+            element.as_widget_mut().update(
+                tree,
+                &event,
+                Layout::new(&node),
+                mouse::Cursor::Available(at),
+                renderer,
+                &mut clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(WIDE),
+            );
+        }
+        for message in messages {
+            let _ = app.update(message);
+        }
+    }
+
+    fn find(app: &App, renderer: &Renderer, tree: &mut Tree, word: &str) -> Rectangle {
+        let mut element = app.view();
+        tree.diff(element.as_widget());
+        let node = element
+            .as_widget_mut()
+            .layout(tree, renderer, &Limits::new(Size::ZERO, WIDE));
+        let mut op = Texts(Vec::new());
+        element
+            .as_widget_mut()
+            .operate(tree, Layout::new(&node), renderer, &mut op);
+        op.0.into_iter()
+            .find(|(t, _)| t.contains(word))
+            .unwrap_or_else(|| panic!("no text {word}"))
+            .1
+    }
+
+    /// The vertical offset of every scrollable of the view, built on `tree`.
+    fn offsets(app: &App, renderer: &Renderer, tree: &mut Tree) -> Vec<f32> {
+        struct Offsets(Vec<f32>);
+        impl iced::advanced::widget::Operation for Offsets {
+            fn traverse(
+                &mut self,
+                operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+            ) {
+                operate(self);
+            }
+
+            fn scrollable(
+                &mut self,
+                _id: Option<&iced::advanced::widget::Id>,
+                _bounds: Rectangle,
+                _content_bounds: Rectangle,
+                translation: iced::Vector,
+                _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+            ) {
+                self.0.push(translation.y);
+            }
+        }
+        let mut element = app.view();
+        tree.diff(element.as_widget());
+        let node = element
+            .as_widget_mut()
+            .layout(tree, renderer, &Limits::new(Size::ZERO, WIDE));
+        let mut op = Offsets(Vec::new());
+        element
+            .as_widget_mut()
+            .operate(tree, Layout::new(&node), renderer, &mut op);
+        op.0
+    }
+
+    /// The ghost layer is a stack whose second slot is empty when idle and
+    /// holds the tile while dragging. The main view must keep its widget state
+    /// through that change: the scrolled list stays where it was when the
+    /// drag starts and when it ends, on one persistent tree.
+    #[test]
+    fn the_scrolled_list_keeps_its_place_when_the_ghost_comes_and_goes() {
+        let renderer = renderer();
+        let mut app = scenario_app("space-sections-custom");
+        let mut tree = Tree::empty();
+        let from = find(&app, &renderer, &mut tree, "General").center();
+        // Scroll the list with the wheel.
+        feed(
+            &mut app,
+            &renderer,
+            &mut tree,
+            Event::Mouse(mouse::Event::CursorMoved { position: from }),
+            from,
+        );
+        feed(
+            &mut app,
+            &renderer,
+            &mut tree,
+            Event::Mouse(mouse::Event::WheelScrolled {
+                delta: mouse::ScrollDelta::Lines { x: 0.0, y: -3.0 },
+            }),
+            from,
+        );
+        let scrolled = offsets(&app, &renderer, &mut tree);
+        assert!(
+            scrolled.iter().any(|y| *y > 1.0),
+            "the list did not scroll: {scrolled:?}"
+        );
+        let from = find(&app, &renderer, &mut tree, "General").center();
+        // Press and drag past the threshold with real pointer events.
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        feed(&mut app, &renderer, &mut tree, press, from);
+        for at in [
+            iced::Point::new(from.x, from.y + 6.0),
+            iced::Point::new(from.x, from.y + 14.0),
+            iced::Point::new(from.x + 30.0, from.y + 40.0),
+        ] {
+            let ev = Event::Mouse(mouse::Event::CursorMoved { position: at });
+            if app.list_drag.is_active()
+                && let Some(m) = pointer_message(ev.clone())
+            {
+                let _ = app.update(m);
+            }
+            feed(&mut app, &renderer, &mut tree, ev, at);
+        }
+        assert!(app.ghost().is_some(), "the drag did not start");
+        assert_eq!(
+            offsets(&app, &renderer, &mut tree),
+            scrolled,
+            "the list lost its scroll when the ghost appeared"
+        );
+        // Let go.
+        let up = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+        feed(&mut app, &renderer, &mut tree, up.clone(), from);
+        if let Some(m) = pointer_message(up) {
+            let _ = app.update(m);
+        }
+        assert!(app.ghost().is_none());
+        assert_eq!(
+            offsets(&app, &renderer, &mut tree),
+            scrolled,
+            "the list lost its scroll when the ghost went"
+        );
+    }
+
+    #[test]
+    fn a_room_dragged_onto_a_section_header_moves() {
+        let renderer = renderer();
+        let mut app = scenario_app("space-sections-custom");
+        let mut tree = Tree::empty();
+        let before = app.section_lines().map(|l| l.len());
+        let from = find(&app, &renderer, &mut tree, "General").center();
+        let to = find(&app, &renderer, &mut tree, "READING LIST").center();
+        let steps = [
+            from,
+            iced::Point::new(from.x, from.y + 6.0),
+            iced::Point::new(from.x, from.y + 12.0),
+            to,
+            iced::Point::new(to.x + 1.0, to.y),
+            iced::Point::new(to.x + 2.0, to.y),
+        ];
+        feed(
+            &mut app,
+            &renderer,
+            &mut tree,
+            Event::Mouse(mouse::Event::CursorMoved { position: from }),
+            from,
+        );
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        feed(&mut app, &renderer, &mut tree, press.clone(), from);
+        let mut seen = vec![];
+        let mut ghost_seen = false;
+        for at in steps {
+            let ev = Event::Mouse(mouse::Event::CursorMoved { position: at });
+            if app.list_drag.is_active()
+                && let Some(m) = pointer_message(ev.clone())
+            {
+                let _ = app.update(m);
+            }
+            feed(&mut app, &renderer, &mut tree, ev, at);
+            seen.push(format!("{:?}", app.list_drag));
+            // The ghost is drawn over the list during the drag. It takes no
+            // pointer event: the header under it still becomes the target.
+            ghost_seen |= app.ghost().is_some();
+        }
+        let up = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+        let to = iced::Point::new(to.x + 2.0, to.y);
+        feed(&mut app, &renderer, &mut tree, up.clone(), to);
+        if let Some(m) = pointer_message(up) {
+            let _ = app.update(m);
+        }
+        assert!(ghost_seen, "no ghost during the drag: {seen:?}");
+        assert!(app.ghost().is_none(), "the ghost is gone after the drop");
+        assert!(!app.list_drag.is_active(), "{seen:?}");
+        assert_ne!(app.section_lines().map(|l| l.len()), before, "{seen:?}");
+    }
+}
+
+/// Dragging on the rail with real pointer events (sidebar rework plan, Task
+/// 5): events go to the app's own view, which is rebuilt and diffed against
+/// one kept widget tree after every message, as the runtime does.
+mod rail_reorder_drag {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use iced::{Point, Task};
+    use twicecat_app::rail_reorder::ReorderEvent;
+    use twicecat_app::screens::spaces_sidebar::SIDEBAR_WIDTH;
+    use twicecat_app::sidebar_store::{ResetOutcome, SidebarLoad, SidebarStore};
+    use twicecat_app::spaces::SpacesMessage;
+    use twicecat_app::ui::icons::Icon;
+    use twicecat_core::api::{CoreEvent, RoomId, SidebarLayout, SpaceView, UserId};
+
+    use super::*;
+
+    /// A store that counts the saves and touches no disk.
+    #[derive(Clone, Default)]
+    pub struct CountingStore(pub Arc<AtomicUsize>);
+
+    impl SidebarStore for CountingStore {
+        fn load(&self, _account: &UserId) -> Task<SidebarLoad> {
+            Task::none()
+        }
+
+        fn save(&self, _account: &UserId, _layout: SidebarLayout) -> Task<bool> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Task::done(true)
+        }
+
+        fn reset(&self, _account: &UserId) -> Task<ResetOutcome> {
+            Task::none()
+        }
+    }
+
+    /// What a delivered event made the widgets publish.
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    pub struct Seen {
+        pub picked: usize,
+        pub dropped: usize,
+        pub canceled: usize,
+        pub released: usize,
+    }
+
+    fn seen(messages: &[Message]) -> Seen {
+        let mut seen = Seen::default();
+        for message in messages {
+            match message {
+                Message::Spaces(SpacesMessage::RailReorder(_, ReorderEvent::Picked { .. })) => {
+                    seen.picked += 1;
+                }
+                Message::Spaces(SpacesMessage::RailReorder(_, ReorderEvent::Dropped { .. })) => {
+                    seen.dropped += 1;
+                }
+                Message::Spaces(SpacesMessage::RailReorder(_, ReorderEvent::Canceled { .. })) => {
+                    seen.canceled += 1;
+                }
+                Message::Spaces(SpacesMessage::Release(_)) => seen.released += 1,
+                _ => {}
+            }
+        }
+        seen
+    }
+
+    pub struct Rig {
+        pub app: App,
+        renderer: Renderer,
+        tree: Tree,
+        at: Point,
+        saves: Arc<AtomicUsize>,
+    }
+
+    impl Rig {
+        pub fn new(mut app: App) -> Self {
+            let store = CountingStore::default();
+            let saves = store.0.clone();
+            app.set_sidebar_store(Box::new(store));
+            let mut rig = Self {
+                app,
+                renderer: renderer(),
+                tree: Tree::empty(),
+                at: Point::ORIGIN,
+                saves,
+            };
+            rig.rebuild();
+            rig
+        }
+
+        /// The runtime diffs the widget tree against each new view.
+        pub fn rebuild(&mut self) {
+            let element = self.app.view();
+            self.tree.diff(element.as_widget());
+        }
+
+        pub fn saves(&self) -> usize {
+            self.saves.load(Ordering::SeqCst)
+        }
+
+        /// Delivers `event` at the pointer, applies what the widgets
+        /// published, and returns a summary of it.
+        pub fn event(&mut self, event: Event) -> Seen {
+            if let Event::Mouse(mouse::Event::CursorMoved { position }) = &event {
+                self.at = *position;
+            }
+            let mut messages: Vec<Message> = Vec::new();
+            {
+                let mut element = self.app.view();
+                self.tree.diff(element.as_widget());
+                let node = element.as_widget_mut().layout(
+                    &mut self.tree,
+                    &self.renderer,
+                    &Limits::new(Size::ZERO, WIDE),
+                );
+                let mut shell = Shell::new(&mut messages);
+                element.as_widget_mut().update(
+                    &mut self.tree,
+                    &event,
+                    Layout::new(&node),
+                    mouse::Cursor::Available(self.at),
+                    &self.renderer,
+                    &mut clipboard::Null,
+                    &mut shell,
+                    &Rectangle::with_size(WIDE),
+                );
+            }
+            let summary = seen(&messages);
+            for message in messages {
+                let _ = self.app.update(message);
+            }
+            self.rebuild();
+            summary
+        }
+
+        pub fn move_to(&mut self, at: Point) -> Seen {
+            self.event(Event::Mouse(mouse::Event::CursorMoved { position: at }))
+        }
+
+        pub fn press(&mut self) -> Seen {
+            self.event(Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            )))
+        }
+
+        pub fn release(&mut self) -> Seen {
+            self.event(Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Left,
+            )))
+        }
+
+        /// The cursor over `at`, as the window asks the widgets.
+        pub fn cursor_at(&mut self, at: Point) -> mouse::Interaction {
+            let element = self.app.view();
+            self.tree.diff(element.as_widget());
+            let mut element = element;
+            let node = element.as_widget_mut().layout(
+                &mut self.tree,
+                &self.renderer,
+                &Limits::new(Size::ZERO, WIDE),
+            );
+            element.as_widget().mouse_interaction(
+                &self.tree,
+                Layout::new(&node),
+                mouse::Cursor::Available(at),
+                &Rectangle::with_size(WIDE),
+                &self.renderer,
+            )
+        }
+
+        /// The middle of the rail's text `word` (an initial, or Home's glyph).
+        pub fn slot(&mut self, word: &str) -> Point {
+            self.slot_nth(word, 0)
+        }
+
+        /// The middle of the `n`th rail text `word`, top to bottom (an open
+        /// folder shows its first spaces in its head too).
+        pub fn slot_nth(&mut self, word: &str, n: usize) -> Point {
+            let mut element = self.app.view();
+            self.tree.diff(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut self.tree,
+                &self.renderer,
+                &Limits::new(Size::ZERO, WIDE),
+            );
+            let mut op = Texts(Vec::new());
+            element.as_widget_mut().operate(
+                &mut self.tree,
+                Layout::new(&node),
+                &self.renderer,
+                &mut op,
+            );
+            op.0.into_iter()
+                .filter(|(text, at)| text == word && at.x < SIDEBAR_WIDTH)
+                .nth(n)
+                .unwrap_or_else(|| panic!("no {word} #{n} on the rail"))
+                .1
+                .center()
+        }
+
+        /// The layout's rail as a list: a space by its short name, a folder
+        /// as `[a,b]`.
+        pub fn order(&self) -> Vec<String> {
+            use twicecat_core::api::RailEntry;
+            let short = |id: &RoomId| {
+                id.as_str()
+                    .trim_start_matches("!rail-")
+                    .trim_end_matches(":example.org")
+                    .to_owned()
+            };
+            let layout = self.app.sidebar.layout().expect("a layout");
+            layout
+                .rail
+                .iter()
+                .map(|entry| match entry {
+                    RailEntry::Space(id) => short(id),
+                    RailEntry::Folder(f) => format!(
+                        "[{}]",
+                        f.spaces.iter().map(short).collect::<Vec<_>>().join(",")
+                    ),
+                })
+                .collect()
+        }
+
+        pub fn selected(&self) -> Option<RoomId> {
+            self.app.query.space.clone()
+        }
+    }
+
+    /// The rail with a space picked up and carried down to another one, as
+    /// the pixels of the window.
+    pub fn dragging_pixels(app: App) -> Vec<u8> {
+        let mut rig = Rig::new(app);
+        let from = rig.slot("H");
+        let to = rig.slot("B");
+        rig.move_to(from);
+        rig.press();
+        rig.move_to(nudge(from));
+        rig.move_to(Point::new(to.x, to.y + 6.0));
+        assert!(rig.app.rail_reorder.is_some(), "the drag runs");
+        rig.pixels()
+    }
+
+    impl Rig {
+        /// What the window would draw now, with the pointer where it is.
+        pub fn pixels(&mut self) -> Vec<u8> {
+            let mut renderer = renderer();
+            let mut element = self.app.view();
+            self.tree.diff(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut self.tree,
+                &renderer,
+                &Limits::new(Size::ZERO, WIDE),
+            );
+            let theme = self.app.current_theme();
+            let palette = theme.palette();
+            element.as_widget().draw(
+                &self.tree,
+                &mut renderer,
+                &theme,
+                &Style {
+                    text_color: palette.text,
+                },
+                Layout::new(&node),
+                mouse::Cursor::Available(self.at),
+                &Rectangle::with_size(WIDE),
+            );
+            let physical = Size::new(WIDE.width as u32, WIDE.height as u32);
+            renderer.screenshot(physical, 1.0, palette.background)
+        }
+    }
+
+    /// Where the pointer goes after the press to start a drag: more than the
+    /// deadband from the press point.
+    fn nudge(at: Point) -> Point {
+        Point::new(at.x + 4.5, at.y)
+    }
+
+    fn rig() -> Rig {
+        Rig::new(fixture::rail_reorder_app())
+    }
+
+    /// A drag from `from` to `to`: press, a nudge, a move onto `to`, and the
+    /// release there.
+    fn drag(rig: &mut Rig, from: Point, to: Point) -> Seen {
+        rig.move_to(from);
+        rig.press();
+        rig.move_to(nudge(from));
+        rig.move_to(to);
+        rig.release()
+    }
+
+    #[test]
+    fn the_rail_is_home_then_the_items_in_the_layouts_order() {
+        let mut rig = rig();
+        let home = rig.slot(Icon::Home.glyph());
+        let q = rig.slot("Q");
+        let b = rig.slot("B");
+        let r = rig.slot("R");
+        let g = rig.slot("G");
+        assert!(home.y < q.y && q.y < b.y && b.y < r.y && r.y < g.y);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"]);
+    }
+
+    #[test]
+    fn a_press_a_four_pixel_move_and_a_release_selects_and_starts_no_drag() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        rig.move_to(q);
+        rig.press();
+        assert_eq!(rig.move_to(Point::new(q.x + 4.0, q.y)), Seen::default());
+        let up = rig.release();
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert_eq!(rig.selected(), Some(fixture::rail_space("qa")));
+        assert!(rig.app.rail_reorder.is_none());
+        assert_eq!(rig.saves(), 0);
+    }
+
+    #[test]
+    fn a_drag_over_a_closed_folder_puts_the_space_after_it_and_saves_once() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let f = rig.slot("R");
+        rig.move_to(q);
+        rig.press();
+        assert_eq!(rig.move_to(nudge(q)).picked, 1);
+        assert!(rig.app.rail_reorder.is_some());
+        assert_eq!(rig.cursor_at(nudge(q)), mouse::Interaction::Grabbing);
+        rig.move_to(f);
+        let up = rig.release();
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["bb", "[fa,fb]", "qa", "[ga,gb,gc]"]);
+        assert_eq!(rig.saves(), 1);
+        assert_eq!(
+            rig.selected(),
+            None,
+            "the release with the drop is no click"
+        );
+        assert!(rig.app.rail_reorder.is_none());
+    }
+
+    #[test]
+    fn a_drag_upwards_puts_the_space_before_the_one_it_is_over() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let b = rig.slot("B");
+        drag(&mut rig, b, q);
+        assert_eq!(rig.order(), ["bb", "qa", "[fa,fb]", "[ga,gb,gc]"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn home_cannot_be_picked() {
+        let mut rig = rig();
+        let home = rig.slot(Icon::Home.glyph());
+        let q = rig.slot("Q");
+        let up = drag(&mut rig, home, q);
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert!(rig.app.rail_reorder.is_none());
+        assert_eq!(rig.saves(), 0);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"]);
+        assert_eq!(rig.cursor_at(home), mouse::Interaction::Pointer);
+    }
+
+    #[test]
+    fn a_press_on_a_closed_folders_head_drags_the_whole_folder() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let f = rig.slot("R");
+        let up = drag(&mut rig, f, q);
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["[fa,fb]", "qa", "bb", "[ga,gb,gc]"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn inside_an_open_folder_a_drag_reorders_only_inside_it() {
+        let mut rig = rig();
+        // The head of an open folder previews its spaces; the spaces follow.
+        let first = rig.slot_nth("G", 1);
+        let last = rig.slot_nth("T", 1);
+        let up = drag(&mut rig, first, last);
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[gb,gc,ga]"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn dragging_a_space_of_an_open_folder_out_of_it_moves_it_inside_at_most() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let inner = rig.slot_nth("K", 1);
+        let up = drag(&mut rig, inner, q);
+        // The folder's own column holds the drag: the space cannot leave it.
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[gb,ga,gc]"]);
+    }
+
+    #[test]
+    fn a_press_on_an_open_folders_head_picks_nothing_and_no_neighbour() {
+        // The top column picks the item whose centre is nearest, and an open
+        // folder is tall: from its head the item above is nearer. The head
+        // takes the press instead, so no drag starts.
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let head = rig.slot_nth("G", 0);
+        let up = drag(&mut rig, head, q);
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert!(rig.app.rail_reorder.is_none());
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"]);
+        assert_eq!(rig.saves(), 0);
+        assert_eq!(
+            rig.selected(),
+            None,
+            "a drag that did not start is no click"
+        );
+    }
+
+    #[test]
+    fn a_press_over_nothing_on_the_rail_then_a_release_over_a_space_is_no_click() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        // The button goes down in the room pane and comes up over Quartz.
+        rig.move_to(Point::new(700.0, 400.0));
+        rig.press();
+        rig.move_to(q);
+        let up = rig.release();
+        assert_eq!(up.released, 1, "the slot saw the release");
+        assert_eq!(rig.selected(), None);
+        assert!(rig.app.rail_press.is_none());
+    }
+
+    #[test]
+    fn a_press_on_one_space_and_a_release_on_another_is_no_click() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let b = rig.slot("B");
+        rig.move_to(q);
+        rig.press();
+        // Less than the deadband in total: no drag, but the pointer left Quartz.
+        rig.move_to(b);
+        rig.release();
+        // The pointer went far enough to drag Quartz: it dropped. Either way
+        // Bravo was not selected by a click.
+        assert_eq!(rig.selected(), None);
+    }
+
+    #[test]
+    fn a_click_selects_a_space_and_a_folder_head_toggles_it() {
+        let mut rig = rig();
+        let b = rig.slot("B");
+        rig.move_to(b);
+        rig.press();
+        rig.release();
+        assert_eq!(rig.selected(), Some(fixture::rail_space("bb")));
+        let f = rig.slot("R");
+        rig.move_to(f);
+        rig.press();
+        rig.release();
+        assert_eq!(rig.order().len(), 4);
+        assert_eq!(rig.saves(), 1, "opening the folder saved once");
+    }
+
+    #[test]
+    fn the_cursor_is_grab_when_idle_and_grabbing_while_dragging() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        rig.move_to(q);
+        assert_eq!(rig.cursor_at(q), mouse::Interaction::Grab);
+        rig.press();
+        rig.move_to(nudge(q));
+        assert_eq!(rig.cursor_at(nudge(q)), mouse::Interaction::Grabbing);
+        rig.release();
+        assert_eq!(rig.cursor_at(q), mouse::Interaction::Grab);
+    }
+
+    #[test]
+    fn with_a_file_the_app_may_not_change_nothing_is_picked_and_the_cursor_is_a_pointer() {
+        for load in [SidebarLoad::Newer, SidebarLoad::OtherAccount] {
+            let mut rig = Rig::new(fixture::rail_reorder_app_protected(load));
+            let q = rig.slot("Q");
+            let f = rig.slot("R");
+            assert_eq!(rig.cursor_at(q), mouse::Interaction::Pointer);
+            let up = drag(&mut rig, q, f);
+            assert_eq!((up.picked, up.dropped), (0, 0));
+            assert!(rig.app.rail_reorder.is_none());
+            assert_eq!(rig.saves(), 0);
+            // A plain click still selects.
+            rig.move_to(q);
+            rig.press();
+            rig.release();
+            assert_eq!(rig.selected(), Some(fixture::rail_space("qa")));
+        }
+    }
+
+    /// Picks Quartz and moves over the folder, with the button still down.
+    fn dragging(rig: &mut Rig) -> Point {
+        let q = rig.slot("Q");
+        let f = rig.slot("R");
+        rig.move_to(q);
+        rig.press();
+        assert_eq!(rig.move_to(nudge(q)).picked, 1);
+        rig.move_to(f);
+        f
+    }
+
+    #[test]
+    fn esc_and_losing_the_focus_end_the_drag_and_the_release_that_follows_does_nothing() {
+        for cancel in ["esc", "focus"] {
+            let mut rig = rig();
+            let f = dragging(&mut rig);
+            let flips = rig.app.rail_generation;
+            let _ = match cancel {
+                "esc" => rig.app.update(Message::Shortcut {
+                    shortcut: twicecat_app::keys::Shortcut::Escape,
+                    captured: false,
+                }),
+                _ => rig.app.update(Message::WindowFocus(false)),
+            };
+            // The runtime builds the next view and diffs the kept tree.
+            rig.rebuild();
+            assert_ne!(rig.app.rail_generation, flips, "{cancel}");
+            let moved = rig.move_to(Point::new(f.x, f.y + 1.0));
+            let up = rig.release();
+            assert_eq!(moved, Seen::default(), "{cancel}: {moved:?}");
+            assert_eq!((up.dropped, up.canceled), (0, 0), "{cancel}: {up:?}");
+            assert_eq!(rig.saves(), 0, "{cancel}");
+            assert_eq!(rig.selected(), None, "{cancel}: no click");
+            assert_eq!(
+                rig.order(),
+                ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"],
+                "{cancel}"
+            );
+            // And a new drag works.
+            let q = rig.slot("Q");
+            let again = drag(&mut rig, q, f);
+            assert_eq!(again.dropped, 1, "{cancel}");
+            assert_eq!(rig.saves(), 1, "{cancel}");
+        }
+    }
+
+    #[test]
+    fn leaving_the_rail_ends_the_drag_and_a_later_release_saves_nothing() {
+        let mut rig = rig();
+        dragging(&mut rig);
+        // Out of the rail's scrollable: the column has no pointer position.
+        let out = rig.move_to(Point::new(700.0, 400.0));
+        assert_eq!(out.canceled, 1, "{out:?}");
+        assert!(rig.app.rail_reorder.is_none());
+        let up = rig.release();
+        assert_eq!((up.dropped, up.canceled), (0, 0));
+        assert_eq!(rig.saves(), 0);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"]);
+    }
+
+    #[test]
+    fn keys_that_changed_between_the_pick_and_the_drop_save_nothing() {
+        let mut rig = rig();
+        dragging(&mut rig);
+        // The core reports one top-level space fewer under the drag.
+        let spaces: Vec<SpaceView> = [
+            ("qa", "Quartz"),
+            ("fa", "Rust"),
+            ("fb", "Vue"),
+            ("ga", "Garden"),
+            ("gb", "Kettle"),
+            ("gc", "Tulip"),
+        ]
+        .iter()
+        .map(|(id, name)| SpaceView {
+            id: fixture::rail_space(id),
+            name: (*name).to_owned(),
+            avatar: None,
+            level: 0,
+            children: 0,
+            rooms: Vec::new(),
+        })
+        .collect();
+        let _ = rig
+            .app
+            .update(Message::Core(Box::new(CoreEvent::Spaces(spaces))));
+        rig.rebuild();
+        let f = rig.slot("R");
+        rig.move_to(f);
+        let up = rig.release();
+        assert_eq!(up.dropped, 0, "the drag was ended with the old keys");
+        assert_eq!(rig.saves(), 0);
+    }
+
+    // ---- The space tree (sidebar rework plan, Task 6) ----
+
+    fn tree_rig() -> Rig {
+        Rig::new(fixture::rail_tree_app())
+    }
+
+    impl Rig {
+        /// How many rail texts say `word` right now.
+        fn count(&mut self, word: &str) -> usize {
+            let mut element = self.app.view();
+            self.tree.diff(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut self.tree,
+                &self.renderer,
+                &Limits::new(Size::ZERO, WIDE),
+            );
+            let mut op = Texts(Vec::new());
+            element.as_widget_mut().operate(
+                &mut self.tree,
+                Layout::new(&node),
+                &self.renderer,
+                &mut op,
+            );
+            op.0.iter()
+                .filter(|(text, at)| text == word && at.x < SIDEBAR_WIDTH)
+                .count()
+        }
+    }
+
+    const TREE_ORDER: [&str; 3] = ["qa", "bb", "[fa,fb]"];
+
+    #[test]
+    fn a_press_on_a_sub_space_a_10_px_move_and_a_release_start_no_drag() {
+        let mut rig = tree_rig();
+        let delta = rig.slot("D");
+        rig.move_to(delta);
+        let down = rig.press();
+        assert_eq!(down, Seen::default());
+        let moved = rig.move_to(Point::new(delta.x + 10.0, delta.y));
+        assert_eq!(moved, Seen::default(), "no sweeten drag starts");
+        let up = rig.release();
+        assert_eq!((up.picked, up.dropped, up.canceled), (0, 0, 0));
+        assert!(rig.app.rail_reorder.is_none());
+        assert_eq!(rig.order(), TREE_ORDER, "the rail order is unchanged");
+        assert_eq!(rig.saves(), 0, "and unsaved");
+    }
+
+    #[test]
+    fn a_sub_space_cannot_be_dragged_even_onto_another_item() {
+        let mut rig = tree_rig();
+        let delta = rig.slot("D");
+        let bravo = rig.slot("B");
+        let up = drag(&mut rig, delta, bravo);
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert_eq!(rig.order(), TREE_ORDER);
+        assert_eq!(rig.saves(), 0);
+    }
+
+    #[test]
+    fn a_click_on_a_sub_space_selects_it_and_saves_nothing() {
+        let mut rig = tree_rig();
+        let echo = rig.slot("E");
+        assert_eq!(rig.cursor_at(echo), mouse::Interaction::Pointer);
+        rig.move_to(echo);
+        rig.press();
+        assert_eq!(rig.selected(), Some(fixture::rail_space("se")), "the press");
+        rig.release();
+        assert_eq!(rig.selected(), Some(fixture::rail_space("se")));
+        assert_eq!(rig.saves(), 0);
+        assert!(
+            rig.app.section_lines().is_some(),
+            "the sub-space's list is sectioned"
+        );
+    }
+
+    /// A drag that must not start: press at `from`, a nudge, a move to
+    /// `to`, the release.
+    fn no_lift(rig: &mut Rig, from: Point, to: Point, what: &str) {
+        let up = drag(rig, from, to);
+        assert_eq!((up.picked, up.dropped, up.canceled), (0, 0, 0), "{what}");
+        assert!(rig.app.rail_reorder.is_none(), "{what}");
+        assert_eq!(rig.order(), ["aa", "qa", "bb"], "{what}: order");
+        assert_eq!(rig.saves(), 0, "{what}: saves");
+    }
+
+    #[test]
+    fn an_expanded_space_is_not_lifted_by_its_head_and_no_neighbour_is() {
+        // Quartz has four sub-spaces and Alpha is above it: the whole of its
+        // 48 px head is nearer the centre of Alpha than its own.
+        let mut rig = Rig::new(fixture::rail_tree_tall_app());
+        let (alpha, quartz, bravo) = (rig.slot("A"), rig.slot("Q"), rig.slot("B"));
+        let far = Point::new(quartz.x, bravo.y + 6.0);
+        // Down the head: its top edge, the middle, the bottom edge.
+        for dy in [-20.0, 0.0, 20.0] {
+            let at = Point::new(quartz.x, quartz.y + dy);
+            no_lift(&mut rig, at, far, &format!("head at {dy}"));
+        }
+        no_lift(&mut rig, quartz, alpha, "head, up over Alpha");
+        // A press that moved away and was released elsewhere is no click.
+        assert_eq!(rig.selected(), None);
+        // The band: between two sub-spaces and on the sub-spaces' own slots.
+        let (delta, echo) = (rig.slot("D"), rig.slot("E"));
+        no_lift(
+            &mut rig,
+            Point::new(delta.x, (delta.y + echo.y) / 2.0),
+            alpha,
+            "band, between sub-spaces",
+        );
+        no_lift(&mut rig, delta, alpha, "a sub-space");
+    }
+
+    #[test]
+    fn the_bottom_padding_of_an_expanded_spaces_band_lifts_nothing_with_a_neighbour_below() {
+        let mut rig = Rig::new(fixture::rail_tree_tall_app());
+        let golf = rig.slot("G");
+        let bravo = rig.slot("B");
+        // The band's last 4 px of padding, under the last sub-space (40 px
+        // high, centred on its icon text), and nearer Bravo than Quartz.
+        let at = Point::new(golf.x, golf.y + 20.0 + 2.0);
+        no_lift(
+            &mut rig,
+            at,
+            Point::new(bravo.x, bravo.y - 30.0),
+            "bottom padding",
+        );
+    }
+
+    #[test]
+    fn a_collapsed_space_with_sub_spaces_still_drags_by_its_head() {
+        let mut rig = Rig::new(fixture::rail_tree_tall_app());
+        // Close the tree with the chevron.
+        let chevron = rig.slot(Icon::SectionOpen.glyph());
+        rig.move_to(chevron);
+        rig.press();
+        rig.release();
+        assert!(rig.app.rail_expanded.is_empty());
+        let alpha = rig.slot("A");
+        let quartz = rig.slot("Q");
+        let up = drag(&mut rig, quartz, alpha);
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["qa", "aa", "bb"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn the_expanded_space_moves_with_its_card_and_the_cursor_over_it_is_a_pointer() {
+        let mut rig = Rig::new(fixture::rail_tree_tall_app());
+        let quartz = rig.slot("Q");
+        assert_eq!(rig.cursor_at(quartz), mouse::Interaction::Pointer);
+    }
+
+    #[test]
+    fn the_parent_below_an_open_tree_can_be_dragged_up_over_it() {
+        let mut rig = tree_rig();
+        let quartz = rig.slot("Q");
+        let bravo = rig.slot("B");
+        drag(&mut rig, bravo, quartz);
+        assert_eq!(rig.order(), ["bb", "qa", "[fa,fb]"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn a_click_on_the_parent_selects_it_and_does_not_open_or_close_its_tree() {
+        let mut rig = tree_rig();
+        let quartz = rig.slot("Q");
+        rig.move_to(quartz);
+        rig.press();
+        let up = rig.release();
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert_eq!(rig.selected(), Some(fixture::rail_space("qa")));
+        assert!(rig.app.rail_expanded.contains(&fixture::rail_space("qa")));
+        assert_eq!(rig.saves(), 0);
+    }
+
+    #[test]
+    fn a_click_on_the_chevron_toggles_the_tree_and_selects_and_saves_nothing() {
+        let mut rig = tree_rig();
+        let quartz = fixture::rail_space("qa");
+        let open = Icon::SectionOpen.glyph();
+        // The tree is open: its chevron shows without the pointer on it.
+        assert_eq!(rig.count(open), 1);
+        let chevron = rig.slot(open);
+        assert_eq!(rig.cursor_at(chevron), mouse::Interaction::Pointer);
+        rig.move_to(chevron);
+        let down = rig.press();
+        assert_eq!(down, Seen::default());
+        rig.release();
+        assert!(rig.app.rail_expanded.is_empty(), "the tree closed");
+        assert_eq!(
+            rig.selected(),
+            None,
+            "the click on the chevron selects nothing"
+        );
+        assert_eq!(rig.saves(), 0);
+        assert_eq!(rig.order(), TREE_ORDER);
+        assert_eq!(rig.count("D"), 0, "the band is gone");
+        // The pointer is still on the slot: the closed chevron shows.
+        let closed = Icon::SectionClosed.glyph();
+        let chevron = rig.slot_nth(closed, 0);
+        rig.move_to(chevron);
+        rig.press();
+        rig.release();
+        assert!(rig.app.rail_expanded.contains(&quartz), "it opened again");
+        assert_eq!(rig.count("D"), 1);
+        assert_eq!(rig.selected(), None);
+        assert_eq!(rig.saves(), 0);
+    }
+
+    #[test]
+    fn a_closed_chevron_shows_on_hover_only_and_a_drag_never_starts_from_it() {
+        let mut rig = tree_rig();
+        let (open, closed) = (Icon::SectionOpen.glyph(), Icon::SectionClosed.glyph());
+        assert_eq!(rig.count(closed), 0, "Bravo is not under the pointer");
+        let bravo = rig.slot("B");
+        rig.move_to(bravo);
+        assert_eq!(rig.count(closed), 1, "on hover");
+        assert_eq!(rig.count(open), 1, "Quartz keeps its own");
+        rig.move_to(Point::new(bravo.x, bravo.y + 200.0));
+        assert_eq!(rig.count(closed), 0, "gone with the pointer");
+        // A folder and a space with no sub-space have no chevron.
+        let folder = rig.slot("R");
+        rig.move_to(folder);
+        assert_eq!(rig.count(closed), 0);
+    }
+
+    #[test]
+    fn a_press_on_the_chevron_then_a_move_starts_no_drag() {
+        let mut rig = tree_rig();
+        let chevron = rig.slot(Icon::SectionOpen.glyph());
+        rig.move_to(chevron);
+        rig.press();
+        let moved = rig.move_to(Point::new(chevron.x + 12.0, chevron.y + 30.0));
+        assert_eq!(moved, Seen::default());
+        assert!(rig.app.rail_reorder.is_none());
     }
 }

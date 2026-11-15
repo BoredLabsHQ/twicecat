@@ -12,19 +12,20 @@ mod diff;
 mod media;
 mod rooms;
 mod security;
+pub mod sidebar;
 mod types;
 mod updates;
 mod video;
 
 pub use audio::{
     AUDIO_FRAME_LEN, AudioBackend, AudioDevice, AudioDeviceId, AudioDevices, AudioProcessing,
-    AudioSettings, AudioStats, CleaningAnnouncement, EnhancerBackend, GpuBackend, GpuEnhancement,
-    InputLevel, InputMode, NoiseSuppression, NsLevel, PushToTalkBindings, RemoteCleaning,
-    SkipCleaned, VirtualAudio, VoiceCleaning, limits,
+    AudioSettings, AudioStats, CallSounds, CleaningAnnouncement, EnhancerBackend, GpuBackend,
+    GpuEnhancement, InputLevel, InputMode, NoiseSuppression, NsLevel, PushToTalkBindings,
+    RemoteCleaning, SkipCleaned, VirtualAudio, VoiceCleaning, limits,
 };
 pub use call::{
-    CallEndReason, CallIntent, CallState, CleaningStatus, Participant, ParticipantId, SkipReason,
-    SoundSource,
+    CallEndReason, CallIntent, CallMemberView, CallState, CleaningStatus, MAX_CALL_MEMBERS,
+    Participant, ParticipantId, SkipReason, SoundSource,
 };
 pub use diff::ListDiff;
 pub use media::{
@@ -32,23 +33,28 @@ pub use media::{
     UploadProgress, UploadThumbnail,
 };
 pub use rooms::{
-    CreateRoomRequest, DensityChoice, MembershipView, NotificationKind, NotificationSettingsView,
-    NotificationView, OwnProfileView, PaletteChoice, PowerLevelView, Role, RoomDetailsView,
-    RoomListChoice, RoomMemberView, RoomNotificationModeView, RoomPermissions, RoomVisibility,
-    SpaceView, ThemeChoice, ThreadSummaryView, UiSettings, UpdateCheckChoice,
+    CreateRoomRequest, DensityChoice, MAX_SPACE_ROOMS, MembershipView, NotificationKind,
+    NotificationSettingsView, NotificationView, OwnProfileView, PowerLevelView, Role,
+    RoomDetailsView, RoomListChoice, RoomMemberView, RoomNotificationModeView, RoomPermissions,
+    RoomSortChoice, RoomVisibility, SpaceUnreadView, SpaceView, ThemeChoice, ThemeName,
+    ThemeNameError, ThreadSummaryView, UiSettings, UnreadCountsView, UpdateCheckChoice,
 };
 pub use security::{
     CancelReason, CrossSigning, DeviceSummary, DeviceTrust, DeviceVerification, QrImage,
     ReauthAction, RecoveryKey, RecoveryProgress, RecoveryStatus, SasEmoji, SecurityStatus, Shield,
     ShieldCode, UserTrust, UtdReason, VerificationId, VerificationPeer, VerificationPhase,
 };
+pub use sidebar::{
+    CustomSection, FolderLayout, RailEntry, SectionKey, SidebarLabel, SidebarLabelError,
+    SidebarLayout, SidebarRead, SpaceLayout,
+};
 pub use types::{
     ActionKind, AuthUrl, AvatarId, AvatarImage, Block, CoreError, DeviceId, Draft, EventId, Inline,
     ItemActions, Member, MentionRef, MentionTarget, MessageDetails, MessageKind, MessagePreview,
     MessageText, OutgoingMessage, PaginationState, Password, PlaceholderKind, ReactionGroup,
     ReplyPreview, ReplyState, RichText, RoomId, RoomListQuery, RoomListTab, RoomSummary,
-    SendFailure, SendStatus, StateChange, SyncState, TextFormat, TextStyle, TimelineItem,
-    TimelineItemKind, TypingUser, UserId,
+    RoomTagView, SendFailure, SendStatus, StateChange, SyncState, TextFormat, TextStyle,
+    TimelineItem, TimelineItemKind, TypingUser, UserId,
 };
 pub use updates::{UPDATE_CHECK_INTERVAL, UpdateMechanism, is_newer_version, update_check_due};
 pub use video::{
@@ -299,6 +305,16 @@ pub enum Command {
         room_id: RoomId,
         /// The mode, or `None` for the default.
         mode: Option<RoomNotificationModeView>,
+    },
+    /// Tag a joined room as a favourite or as low priority, or remove its
+    /// tag (`None` removes whichever is set). A room has one of the two at
+    /// most, so setting one replaces the other. Failures are
+    /// `ActionFailed { RoomTag, .. }`; the room list reports the new tag.
+    SetRoomTag {
+        /// Room.
+        room_id: RoomId,
+        /// The tag, or `None` to remove it.
+        tag: Option<RoomTagView>,
     },
     /// Set the account default for group rooms or direct messages.
     SetDefaultNotificationMode {
@@ -756,6 +772,11 @@ impl fmt::Debug for Command {
                 .field("room_id", room_id)
                 .field("mode", mode)
                 .finish(),
+            Self::SetRoomTag { room_id, tag } => f
+                .debug_struct("SetRoomTag")
+                .field("room_id", room_id)
+                .field("tag", tag)
+                .finish(),
             Self::SetDefaultNotificationMode { one_to_one, mode } => f
                 .debug_struct("SetDefaultNotificationMode")
                 .field("one_to_one", one_to_one)
@@ -1133,6 +1154,15 @@ pub enum CoreEvent {
         /// Unread highlights.
         highlights: u64,
     },
+    /// Unread counts per space and for the rooms in no space (the Home
+    /// badge), over all joined rooms, muted ones left out. Sent by the
+    /// rules of `UnreadTotals`: at most once a second, only on a change.
+    SpaceUnread {
+        /// One entry per known space (top-level and sub-space), by ID.
+        spaces: Vec<SpaceUnreadView>,
+        /// Rooms in no space, direct messages included.
+        outside: UnreadCountsView,
+    },
     /// A room was created.
     RoomCreated {
         /// The new room.
@@ -1190,13 +1220,18 @@ pub enum CoreEvent {
         /// Changes, in order.
         diffs: Vec<ListDiff<Participant>>,
     },
-    /// How many devices are in a room's call; sent when it changes, for the
-    /// room list (voice rooms). Zero means the call ended.
+    /// Who is in a room's call; sent when the device count or the set of
+    /// people changes, for the room list (voice rooms). Zero means the call
+    /// ended.
     ActiveCall {
         /// Room.
         room_id: RoomId,
         /// Devices in the call.
         participants: u32,
+        /// The distinct users in the call, in join order, at most
+        /// [`MAX_CALL_MEMBERS`]. Not who speaks or is muted: that is known
+        /// only for the call this device is in ([`CoreEvent::CallParticipants`]).
+        members: Vec<CallMemberView>,
     },
     /// Someone rings this user, or (with `ring: false`) lets them know a
     /// call started in a group room.
@@ -1384,6 +1419,22 @@ mod tests {
             image: Some(img),
         };
         assert!(format!("{ev:?}").contains("mxc://x/y"));
+    }
+
+    #[test]
+    fn active_call_debug_shows_user_ids_but_not_names() {
+        let ev = CoreEvent::ActiveCall {
+            room_id: RoomId::from("!r:x"),
+            participants: 1,
+            members: vec![CallMemberView {
+                user_id: UserId::from("@bob:x"),
+                display_name: Some("Secret Bob".into()),
+                avatar: None,
+            }],
+        };
+        let dbg = format!("{ev:?}");
+        assert!(dbg.contains("@bob:x"), "{dbg}");
+        assert!(!dbg.contains("Secret"), "{dbg}");
     }
 
     #[test]
@@ -1885,6 +1936,7 @@ mod tests {
                 avatar: None,
                 level: 0,
                 children: 3,
+                rooms: Vec::new(),
             }]),
         ];
         for ev in events {
@@ -1931,5 +1983,30 @@ mod tests {
         let dbg = format!("{cmd:?}");
         assert!(!dbg.contains("hunter2-x"), "{dbg}");
         assert!(dbg.contains("alice"));
+    }
+
+    #[test]
+    fn set_room_tag_debug_follows_the_notification_mode() {
+        let cmd = Command::SetRoomTag {
+            room_id: RoomId::from("!r:x"),
+            tag: Some(RoomTagView::Favourite),
+        };
+        let dbg = format!("{cmd:?}");
+        assert!(dbg.starts_with("SetRoomTag"), "{dbg}");
+        assert!(dbg.contains("!r:x") && dbg.contains("Favourite"), "{dbg}");
+        let none = format!(
+            "{:?}",
+            Command::SetRoomTag {
+                room_id: RoomId::from("!r:x"),
+                tag: None,
+            }
+        );
+        assert!(none.contains("None"), "{none}");
+    }
+
+    #[test]
+    fn a_new_summary_has_no_tags() {
+        let r = RoomSummary::new(RoomId::from("!r:x"), "Lounge".into());
+        assert!(!r.is_favourite && !r.is_low_priority);
     }
 }
