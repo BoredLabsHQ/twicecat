@@ -23,6 +23,9 @@ arboard = { version = "=3.6.1", default-features = false, features = ["image-dat
 notify-rust = "=4.18.2"
 tray-icon = { version = "=0.26.1", default-features = false, features = ["ksni"] }
 twicecat-core = { path = "../core" }
+# The rail's reordering: `sweeten::widget::Column` with `on_drag` (sidebar rework
+# plan, Task 5). Used for the rail only; the room list keeps `drag.rs`.
+sweeten = "=0.14.0"
 # Push-to-talk sources; no matrix-sdk or media crates (scripts/check-app-deps.sh).
 twicecat-ptt = { path = "../ptt" }
 

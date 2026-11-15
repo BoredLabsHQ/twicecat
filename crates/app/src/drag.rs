@@ -2,16 +2,18 @@
 //! then `Pressed`, then `Dragging` after 4 px of movement, then a drop or a
 //! cancel.
 //!
-//! iced 0.14 has no drag-and-drop widget, so the sidebar builds it from
-//! `mouse_area` events plus a window listener (see `spaces.rs`). This module
-//! knows none of that: it is generic over the item and the target and takes
-//! plain events, so it is tested without a window. The only iced type it uses
-//! is [`Point`].
+//! iced 0.14 has no drag-and-drop widget, so the sectioned room list builds
+//! it from `mouse_area` events plus a window listener (see `spaces.rs`). This
+//! module knows none of that: it is generic over the item and the target and
+//! takes plain events, so it is tested without a window. The only iced type
+//! it uses is [`Point`].
 //!
-//! One machine serves the rail and the sectioned room list (each with its own
-//! item type, as `Drag<RailKey>` and `Drag<ListKey>`): the press that may
+//! It serves **the room list only** (`Drag<ListKey>`): the press that may
 //! become a click is the same press that may become a drag, so a click and a
-//! drag can never both happen.
+//! drag can never both happen. The rail no longer uses it: its items reorder
+//! in sweeten columns (`rail_reorder.rs`), because a sweeten column can reorder
+//! the children of one container and the room list is virtualized, so it
+//! cannot be one.
 
 use iced::Point;
 

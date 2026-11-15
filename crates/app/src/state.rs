@@ -36,6 +36,7 @@ use crate::list_drop::ListKey;
 use crate::media::{self, Decoded, MediaModel, SavePath};
 use crate::notifications::{self, Folding, ModeChoice, NoNotifier, Notifier};
 use crate::ptt::{PttMessage, PttModel, PttStarter, ServiceStarter};
+use crate::rail_reorder::RailReorder;
 use crate::rich_text::{LinkTarget, MAX_REVEALED, Revealed};
 use crate::room_list;
 use crate::rooms::{RoomsMessage, RoomsModel};
@@ -563,14 +564,23 @@ pub struct App {
     pub sidebar_menu: Option<SidebarMenu>,
     /// The rail item under the pointer.
     pub rail_hover: Option<RailKey>,
-    /// The one tracker of the left button on the rail: a press that is a
-    /// click, or becomes a drag of a space or folder (see `drag.rs`).
-    pub rail_drag: Drag<RailKey>,
+    /// The rail item the left button went down on and has not left since: a
+    /// release over the same item is a click (`SpacesMessage::Release`). Cleared
+    /// when the pointer leaves it, when a drag is picked, and at the click.
+    pub rail_press: Option<RailKey>,
+    /// The drag of the rail that runs, if any: its sweeten column and the keys
+    /// the column held when the item was picked (sidebar rework plan, S3).
+    pub rail_reorder: Option<RailReorder>,
+    /// Flips whenever a rail drag is cancelled by the app (Esc, focus lost, a
+    /// card opened). The rail's column is wrapped in one more widget on odd
+    /// values, which makes iced drop sweeten's state and so ends the drag it
+    /// still holds: sweeten has no way to cancel (plan S3).
+    pub rail_generation: u32,
     /// The room row or section header of the sectioned list under the pointer.
     pub list_hover: Option<ListKey>,
     /// The same state machine (`drag.rs`) for the sectioned room list: a
-    /// press on a row or header that is a click, or becomes a drag. At most
-    /// one of this and `rail_drag` is active, as there is one pointer.
+    /// press on a row or header that is a click, or becomes a drag. A press on
+    /// the rail ends it, as there is one pointer.
     pub list_drag: Drag<ListKey>,
     /// The thread panel.
     pub threads: ThreadsModel,
@@ -740,7 +750,9 @@ impl App {
             spaces: SpacesModel::default(),
             sidebar_menu: None,
             rail_hover: None,
-            rail_drag: Drag::default(),
+            rail_press: None,
+            rail_reorder: None,
+            rail_generation: 0,
             list_hover: None,
             list_drag: Drag::default(),
             threads: ThreadsModel::default(),
@@ -1200,10 +1212,9 @@ impl App {
                         | SpacesMessage::ListEnter(_)
                         | SpacesMessage::ListExit(_)
                         | SpacesMessage::ListPress(_)
-                        | SpacesMessage::Over(..)
                         | SpacesMessage::Enter(_)
                         | SpacesMessage::Exit(_)
-                        | SpacesMessage::Press(_)
+                        | SpacesMessage::RailPressed(_)
                 )
         );
         let task = self.apply_message(message);
@@ -1439,7 +1450,7 @@ impl App {
                 self.calls.chord_held = false;
                 if !focused {
                     // A button released outside the window is never seen.
-                    let _ = self.rail_drag.cancel();
+                    self.cancel_rail_reorder();
                     let _ = self.list_drag.cancel();
                     self.ptt.window_unfocused();
                     self.stop_capture();
@@ -2793,7 +2804,7 @@ impl App {
         self.notification_settings = None;
         self.spaces.clear();
         self.rail_hover = None;
-        self.rail_drag = Drag::default();
+        self.cancel_rail_reorder();
         self.list_hover = None;
         self.list_drag = Drag::default();
         self.sidebar_menu = None;
@@ -3259,7 +3270,7 @@ impl App {
             window::resize_events().map(|(_, size)| Message::WindowResized(size.width)),
             tray::subscription(),
             self.ptt.subscription(),
-            self.rail_drag_subscription(),
+            self.list_drag_subscription(),
         ])
     }
 
@@ -3720,20 +3731,20 @@ mod tests {
             };
             let key = RailKey::Folder(1);
             // A press alone, or a release alone, does nothing.
-            let _ = app.update(Message::Spaces(SpacesMessage::Press(key.clone())));
+            let _ = app.update(Message::Spaces(SpacesMessage::RailPressed(key.clone())));
             assert!(saves(&store).is_empty());
             let _ = app.update(Message::Spaces(SpacesMessage::Release(key.clone())));
             assert!(open(&app));
             assert_eq!(saves(&store).len(), 1);
             let _ = app.update(Message::Spaces(SpacesMessage::Release(key.clone())));
             assert_eq!(saves(&store).len(), 1, "a release alone is no click");
-            let _ = app.update(Message::Spaces(SpacesMessage::Press(key.clone())));
+            let _ = app.update(Message::Spaces(SpacesMessage::RailPressed(key.clone())));
             let _ = app.update(Message::Spaces(SpacesMessage::Release(key)));
             assert!(!open(&app));
             assert_eq!(saves(&store).len(), 2);
             // A folder the layout does not have saves nothing.
             let ghost = RailKey::Folder(9);
-            let _ = app.update(Message::Spaces(SpacesMessage::Press(ghost.clone())));
+            let _ = app.update(Message::Spaces(SpacesMessage::RailPressed(ghost.clone())));
             let _ = app.update(Message::Spaces(SpacesMessage::Release(ghost)));
             assert_eq!(saves(&store).len(), 2);
         }
@@ -4092,7 +4103,7 @@ mod tests {
             RailEntry::Space(rid(id))
         }
 
-        fn folder(id: u16, open: bool, spaces: &[&str]) -> RailEntry {
+        pub(super) fn folder(id: u16, open: bool, spaces: &[&str]) -> RailEntry {
             RailEntry::Folder(FolderLayout {
                 id,
                 name: None,
@@ -4476,7 +4487,7 @@ mod tests {
             let _ = app.update(Message::Spaces(crate::spaces::SpacesMessage::Enter(
                 key.clone(),
             )));
-            let _ = app.update(Message::Spaces(crate::spaces::SpacesMessage::Press(
+            let _ = app.update(Message::Spaces(crate::spaces::SpacesMessage::RailPressed(
                 key.clone(),
             )));
             assert!(
@@ -4484,7 +4495,7 @@ mod tests {
                     .is_ok()
             );
             assert_eq!(app.rail_hover, None);
-            assert!(!app.rail_drag.is_active());
+            assert_eq!(app.rail_press, None);
         }
 
         #[test]
@@ -4513,12 +4524,11 @@ mod tests {
     }
 
     mod rail_dragging {
-        use super::sidebar_menu_flow::{menu_app, rid, saves, top_space};
+        use super::sidebar_menu_flow::{folder, menu_app, rid, saves, top_space};
         use super::*;
-        use crate::drag::Zone;
         use crate::keys::Shortcut;
+        use crate::rail_reorder::{RailColumn, ReorderEvent};
         use crate::spaces::SpacesMessage as S;
-        use iced::Point;
         use twicecat_core::api::RailEntry;
 
         fn send(app: &mut App, message: S) {
@@ -4529,13 +4539,27 @@ mod tests {
             RailKey::Space(rid(id))
         }
 
-        /// Presses `from` and moves 30 px: a drag is running.
-        fn start(app: &mut App, from: &str) {
-            send(app, S::Enter(key(from)));
-            send(app, S::Press(key(from)));
-            send(app, S::PointerMoved(Point::new(10.0, 10.0)));
-            send(app, S::PointerMoved(Point::new(40.0, 10.0)));
-            assert!(app.rail_drag.is_dragging());
+        fn reorder(app: &mut App, column: RailColumn, event: ReorderEvent) {
+            send(app, S::RailReorder(column, event));
+        }
+
+        /// What sweeten reports when item `from` of the top column is picked.
+        fn pick(app: &mut App, id: &str, from: usize) {
+            send(app, S::Enter(key(id)));
+            send(app, S::RailPressed(key(id)));
+            reorder(app, RailColumn::Top, ReorderEvent::Picked { index: from });
+            assert!(app.rail_reorder.is_some());
+        }
+
+        fn drop_on(app: &mut App, from: usize, to: usize) {
+            reorder(
+                app,
+                RailColumn::Top,
+                ReorderEvent::Dropped {
+                    index: from,
+                    target_index: to,
+                },
+            );
         }
 
         fn order(app: &App) -> Vec<String> {
@@ -4546,69 +4570,75 @@ mod tests {
                 .iter()
                 .map(|e| match e {
                     RailEntry::Space(id) => id.as_str().to_owned(),
-                    RailEntry::Folder(f) => format!("[{}]", f.spaces.len()),
+                    RailEntry::Folder(f) => format!(
+                        "[{}]",
+                        f.spaces
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
                 })
                 .collect()
         }
 
         #[test]
-        fn a_drop_before_another_space_moves_it_and_saves_once() {
+        fn a_drop_after_a_later_space_moves_it_and_saves_once() {
             let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
-            start(&mut app, "!a:x");
-            send(&mut app, S::Over(key("!c:x"), Zone::Before));
-            assert_eq!(app.rail_drag.target().map(|t| t.zone), Some(Zone::Before));
+            pick(&mut app, "!a:x", 0);
             assert!(saves(&store).is_empty(), "nothing is saved before the drop");
-            send(&mut app, S::PointerReleased);
+            drop_on(&mut app, 0, 1);
             assert_eq!(order(&app), ["!b:x", "!a:x", "!c:x"]);
             assert_eq!(saves(&store).len(), 1);
-            assert!(!app.rail_drag.is_active());
+            assert!(app.rail_reorder.is_none() && app.rail_press.is_none());
         }
 
         #[test]
-        fn a_drop_into_a_space_makes_a_folder_of_the_two() {
+        fn a_drop_before_an_earlier_space_moves_it_up() {
             let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
-            start(&mut app, "!a:x");
-            send(&mut app, S::Over(key("!c:x"), Zone::Into));
-            send(&mut app, S::PointerReleased);
-            assert_eq!(order(&app), ["!b:x", "[2]"]);
+            pick(&mut app, "!c:x", 2);
+            drop_on(&mut app, 2, 0);
+            assert_eq!(order(&app), ["!c:x", "!a:x", "!b:x"]);
             assert_eq!(saves(&store).len(), 1);
         }
 
         #[test]
-        fn a_drop_with_no_target_or_onto_itself_or_to_where_it_is_saves_nothing() {
+        fn a_drop_where_it_is_or_with_no_drag_saves_nothing() {
             let (mut app, store) = menu_app(&["!a:x", "!b:x"], Vec::new());
-            start(&mut app, "!a:x");
-            send(&mut app, S::PointerReleased);
-            start(&mut app, "!a:x");
-            send(&mut app, S::Over(key("!a:x"), Zone::Into));
-            assert!(app.rail_drag.target().is_none(), "no target on itself");
-            send(&mut app, S::PointerReleased);
-            start(&mut app, "!a:x");
-            send(&mut app, S::Over(key("!b:x"), Zone::Before));
-            assert!(app.rail_drag.target().is_none(), "it is already there");
-            send(&mut app, S::Over(RailKey::Home, Zone::After));
-            assert!(app.rail_drag.target().is_none(), "Home is no target");
-            send(&mut app, S::PointerReleased);
+            pick(&mut app, "!a:x", 0);
+            drop_on(&mut app, 0, 0);
+            assert!(app.rail_reorder.is_none(), "the drag is over");
+            // A drop that was never picked is ignored.
+            drop_on(&mut app, 0, 1);
             assert!(saves(&store).is_empty());
             assert_eq!(order(&app), Vec::<String>::new(), "the layout is untouched");
-        }
-
-        #[test]
-        fn leaving_the_target_drops_nothing() {
-            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
-            start(&mut app, "!a:x");
-            send(&mut app, S::Over(key("!c:x"), Zone::After));
-            send(&mut app, S::Exit(key("!c:x")));
-            send(&mut app, S::PointerReleased);
+            // An index out of range is no place.
+            pick(&mut app, "!a:x", 0);
+            drop_on(&mut app, 0, 7);
             assert!(saves(&store).is_empty());
         }
 
         #[test]
-        fn esc_and_losing_the_focus_cancel_and_save_nothing() {
+        fn a_canceled_drag_saves_nothing_and_ends() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            pick(&mut app, "!a:x", 0);
+            reorder(
+                &mut app,
+                RailColumn::Top,
+                ReorderEvent::Canceled { index: 0 },
+            );
+            assert!(app.rail_reorder.is_none());
+            drop_on(&mut app, 0, 2);
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn esc_and_losing_the_focus_cancel_flip_the_generation_and_save_nothing() {
             for cancel in ["esc", "focus"] {
                 let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
-                start(&mut app, "!a:x");
-                send(&mut app, S::Over(key("!c:x"), Zone::After));
+                let before = app.rail_generation;
+                pick(&mut app, "!a:x", 0);
+                assert_eq!(app.rail_generation, before, "picking flips nothing");
                 match cancel {
                     "esc" => {
                         let _ = app.update(Message::Shortcut {
@@ -4620,10 +4650,12 @@ mod tests {
                         let _ = app.update(Message::WindowFocus(false));
                     }
                 }
-                assert!(!app.rail_drag.is_active(), "{cancel}");
-                // The release that follows drops nothing.
-                send(&mut app, S::PointerReleased);
+                assert!(app.rail_reorder.is_none(), "{cancel}");
+                assert_ne!(app.rail_generation, before, "{cancel}: sweeten is reset");
+                // What the old column still reports after that drops nothing.
+                drop_on(&mut app, 0, 2);
                 assert!(saves(&store).is_empty(), "{cancel}");
+                assert_eq!(app.query.space, None, "{cancel}: no click either");
             }
         }
 
@@ -4631,75 +4663,194 @@ mod tests {
         fn esc_with_no_drag_is_not_taken_by_the_rail() {
             let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
             assert!(app.rail_escape(Shortcut::Escape).is_none());
-            send(&mut app, S::Press(key("!a:x")));
+            send(&mut app, S::RailPressed(key("!a:x")));
             assert!(
                 app.rail_escape(Shortcut::Escape).is_none(),
                 "a press is no drag"
             );
+            let before = app.rail_generation;
+            let _ = app.update(Message::WindowFocus(false));
+            assert_eq!(app.rail_generation, before, "nothing ran, nothing flips");
+            assert!(app.rail_press.is_none(), "the press is forgotten");
         }
 
         #[test]
-        fn a_second_press_during_a_drag_is_ignored() {
-            let (mut app, _store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
-            start(&mut app, "!a:x");
-            send(&mut app, S::Press(key("!b:x")));
-            assert_eq!(app.rail_drag.dragged(), Some(&key("!a:x")));
-        }
-
-        #[test]
-        fn a_press_that_wobbles_is_a_click_and_a_drag_is_not() {
+        fn a_press_and_a_release_on_one_item_is_a_click() {
             let (mut app, store) = menu_app(&["!a:x", "!b:x"], Vec::new());
-            send(&mut app, S::Press(key("!a:x")));
-            send(&mut app, S::PointerMoved(Point::new(10.0, 10.0)));
-            send(&mut app, S::PointerMoved(Point::new(12.0, 11.0)));
+            send(&mut app, S::RailPressed(key("!a:x")));
             send(&mut app, S::Release(key("!a:x")));
-            send(&mut app, S::PointerReleased);
             assert_eq!(app.query.space, Some(rid("!a:x")), "a click selects");
             assert!(saves(&store).is_empty());
-            // The same press moved 30 px is a drag and selects nothing.
-            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
-            start(&mut app, "!b:x");
+            assert!(app.rail_press.is_none(), "the click is used up");
+            // A second release with no press is none.
+            send(&mut app, S::RailPressed(key("!b:x")));
+            send(&mut app, S::Exit(key("!b:x")));
             send(&mut app, S::Release(key("!b:x")));
-            send(&mut app, S::PointerReleased);
+            assert_eq!(app.query.space, Some(rid("!a:x")), "it left the item");
+        }
+
+        #[test]
+        fn a_release_nobody_pressed_is_no_click() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            send(&mut app, S::Release(key("!a:x")));
+            assert_eq!(app.query.space, None);
+            // The press was on another item.
+            send(&mut app, S::RailPressed(key("!b:x")));
+            send(&mut app, S::Release(key("!a:x")));
+            assert_eq!(app.query.space, None);
+        }
+
+        #[test]
+        fn a_picked_item_is_no_click_and_neither_is_the_release_before_the_drop() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            pick(&mut app, "!b:x", 1);
+            assert!(app.rail_press.is_none(), "picking ends the click");
+            // The release reaches the item before the column reports the drop.
+            send(&mut app, S::Release(key("!b:x")));
+            drop_on(&mut app, 1, 0);
             assert_eq!(app.query.space, None, "a drag is no click");
         }
 
         #[test]
-        fn home_and_a_layout_that_cannot_change_are_not_dragged() {
+        fn home_is_a_click_only_and_a_layout_that_cannot_change_is_not_dragged() {
             let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
-            send(&mut app, S::Press(RailKey::Home));
-            send(&mut app, S::PointerMoved(Point::new(0.0, 0.0)));
-            send(&mut app, S::PointerMoved(Point::new(50.0, 50.0)));
-            assert!(!app.rail_drag.is_dragging());
-            // No layout loaded: arranging is off.
+            send(&mut app, S::RailPressed(RailKey::Home));
+            send(&mut app, S::Release(RailKey::Home));
+            assert_eq!(app.query.space, None);
+            // No layout loaded: arranging is off, so a pick is not taken.
             let (mut app, _rx) = main_app();
-            let _ = app.update(core(CoreEvent::Spaces(vec![top_space("!a:x")])));
-            send(&mut app, S::Press(key("!a:x")));
-            send(&mut app, S::PointerMoved(Point::new(0.0, 0.0)));
-            send(&mut app, S::PointerMoved(Point::new(50.0, 50.0)));
-            assert!(!app.rail_drag.is_dragging());
+            let _ = app.update(core(CoreEvent::Spaces(vec![
+                top_space("!a:x"),
+                top_space("!b:x"),
+            ])));
+            send(&mut app, S::RailPressed(key("!a:x")));
+            reorder(&mut app, RailColumn::Top, ReorderEvent::Picked { index: 0 });
+            assert!(app.rail_reorder.is_none());
         }
 
         #[test]
-        fn the_window_listener_runs_only_while_the_button_is_down_on_an_item() {
+        fn a_pick_of_an_index_the_column_does_not_have_is_not_taken() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            reorder(&mut app, RailColumn::Top, ReorderEvent::Picked { index: 2 });
+            assert!(app.rail_reorder.is_none());
+            reorder(
+                &mut app,
+                RailColumn::Folder(9),
+                ReorderEvent::Picked { index: 0 },
+            );
+            assert!(app.rail_reorder.is_none(), "no such folder");
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn keys_that_changed_between_the_pick_and_the_drop_save_nothing() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            pick(&mut app, "!a:x", 0);
+            let before = app.rail_generation;
+            // The core reports another set of spaces under the drag.
+            let _ = app.update(core(CoreEvent::Spaces(vec![
+                top_space("!a:x"),
+                top_space("!c:x"),
+            ])));
+            assert!(app.rail_reorder.is_none(), "the drag cannot go on");
+            assert_ne!(app.rail_generation, before, "sweeten is reset");
+            drop_on(&mut app, 0, 1);
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn a_drop_the_drag_did_not_start_in_the_same_column_is_ignored() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x", "!c:x"],
+                vec![folder(1, true, &["!b:x", "!c:x"])],
+            );
+            pick(&mut app, "!a:x", 0);
+            reorder(
+                &mut app,
+                RailColumn::Folder(1),
+                ReorderEvent::Dropped {
+                    index: 0,
+                    target_index: 1,
+                },
+            );
+            assert!(saves(&store).is_empty());
+            assert_eq!(app.rail_reorder, None, "the drag is over");
+        }
+
+        #[test]
+        fn inside_an_open_folder_a_drag_reorders_only_inside_it() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x", "!c:x", "!d:x"],
+                vec![
+                    RailEntry::Space(rid("!a:x")),
+                    folder(1, true, &["!b:x", "!c:x", "!d:x"]),
+                ],
+            );
+            send(&mut app, S::RailPressed(key("!b:x")));
+            reorder(
+                &mut app,
+                RailColumn::Folder(1),
+                ReorderEvent::Picked { index: 0 },
+            );
+            assert!(app.rail_reorder.is_some());
+            reorder(
+                &mut app,
+                RailColumn::Folder(1),
+                ReorderEvent::Dropped {
+                    index: 0,
+                    target_index: 2,
+                },
+            );
+            assert_eq!(order(&app), ["!a:x", "[!c:x,!d:x,!b:x]"]);
+            assert_eq!(saves(&store).len(), 1);
+        }
+
+        #[test]
+        fn a_closed_folder_is_dragged_as_one_item() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x", "!c:x", "!d:x"],
+                vec![
+                    RailEntry::Space(rid("!a:x")),
+                    folder(1, false, &["!b:x", "!c:x"]),
+                    RailEntry::Space(rid("!d:x")),
+                ],
+            );
+            send(&mut app, S::RailPressed(RailKey::Folder(1)));
+            reorder(&mut app, RailColumn::Top, ReorderEvent::Picked { index: 1 });
+            drop_on(&mut app, 1, 2);
+            assert_eq!(order(&app), ["!a:x", "!d:x", "[!b:x,!c:x]"]);
+            assert_eq!(saves(&store).len(), 1);
+        }
+
+        #[test]
+        fn a_card_that_opens_ends_the_drag() {
+            use crate::sidebar_menu::SidebarMenuMessage;
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            pick(&mut app, "!a:x", 0);
+            let before = app.rail_generation;
+            let _ = app.update(Message::SidebarMenu(SidebarMenuMessage::Open(key("!b:x"))));
+            assert!(app.sidebar_menu.is_some());
+            assert!(app.rail_reorder.is_none());
+            assert_ne!(app.rail_generation, before);
+            drop_on(&mut app, 0, 2);
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn a_rail_drag_needs_no_window_listener() {
             // Iced subscriptions are opaque; their count is what can be seen.
             use iced::advanced::subscription::into_recipes;
             let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
-            let count = |app: &App| into_recipes(app.rail_drag_subscription()).len();
-            assert_eq!(count(&app), 0, "idle");
-            send(&mut app, S::Enter(key("!a:x")));
-            assert_eq!(count(&app), 0, "hover alone");
-            send(&mut app, S::Press(key("!a:x")));
-            assert_eq!(count(&app), 1, "pressed");
-            send(&mut app, S::PointerMoved(Point::new(0.0, 0.0)));
-            send(&mut app, S::PointerMoved(Point::new(50.0, 0.0)));
-            assert_eq!(count(&app), 1, "dragging");
-            send(&mut app, S::PointerReleased);
-            assert_eq!(count(&app), 0, "dropped");
+            let count = |app: &App| into_recipes(app.list_drag_subscription()).len();
+            send(&mut app, S::RailPressed(key("!a:x")));
+            assert_eq!(count(&app), 0, "pressed");
+            reorder(&mut app, RailColumn::Top, ReorderEvent::Picked { index: 0 });
+            assert_eq!(count(&app), 0, "dragging");
         }
 
         #[test]
         fn the_listener_turns_the_cursor_and_the_left_button_into_messages() {
+            use iced::Point;
             use iced::mouse::{Button, Event as M};
             let ev = |m| crate::spaces::pointer_message(iced::Event::Mouse(m));
             assert!(matches!(
@@ -4718,6 +4869,7 @@ mod tests {
 
         #[test]
         fn the_listener_handles_touch_and_a_left_press_too() {
+            use iced::Point;
             use iced::mouse::{Button, Event as M};
             use iced::touch::{Event as T, Finger};
             let p = Point::new(1.0, 2.0);
@@ -4745,88 +4897,6 @@ mod tests {
                 ev(iced::Event::Mouse(M::ButtonPressed(Button::Left))),
                 Some(Message::Spaces(S::PointerPressed))
             ));
-        }
-
-        #[test]
-        fn a_lifted_finger_leaves_no_press_behind_to_start_a_drag_later() {
-            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
-            // A finger goes down on an item and is lifted off it: the item's
-            // own release never comes, the window's does.
-            send(&mut app, S::Press(key("!a:x")));
-            send(&mut app, S::Exit(key("!a:x")));
-            let lifted = crate::spaces::pointer_message(iced::Event::Touch(
-                iced::touch::Event::FingerLifted {
-                    id: iced::touch::Finger(1),
-                    position: Point::new(200.0, 200.0),
-                },
-            ))
-            .expect("a message");
-            let _ = app.update(lifted);
-            // A later mouse move of 50 px starts no drag, and no drop saves.
-            send(&mut app, S::PointerMoved(Point::new(10.0, 10.0)));
-            send(&mut app, S::PointerMoved(Point::new(60.0, 10.0)));
-            assert!(!app.rail_drag.is_active());
-            send(&mut app, S::Over(key("!c:x"), Zone::Before));
-            send(&mut app, S::PointerReleased);
-            assert!(saves(&store).is_empty());
-        }
-
-        #[test]
-        fn a_lost_finger_cancels_a_rail_drag_and_saves_nothing() {
-            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
-            start(&mut app, "!a:x");
-            send(&mut app, S::Over(key("!c:x"), Zone::Before));
-            assert!(app.rail_drag.target().is_some());
-            let lost = crate::spaces::pointer_message(iced::Event::Touch(
-                iced::touch::Event::FingerLost {
-                    id: iced::touch::Finger(1),
-                    position: Point::new(200.0, 200.0),
-                },
-            ))
-            .expect("a message");
-            let _ = app.update(lost);
-            assert!(!app.rail_drag.is_active(), "the drag ended");
-            assert!(!app.list_drag.is_active());
-            // A release that follows has nothing to drop.
-            send(&mut app, S::PointerReleased);
-            assert!(saves(&store).is_empty(), "a cancelled touch dropped");
-        }
-
-        #[test]
-        fn a_press_seen_by_the_window_while_one_is_tracked_cancels_it() {
-            // Its release was missed (outside the window, say): the button is
-            // down again, so what was tracked is stale.
-            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
-            send(&mut app, S::Press(key("!a:x")));
-            send(&mut app, S::PointerPressed);
-            send(&mut app, S::PointerMoved(Point::new(10.0, 10.0)));
-            send(&mut app, S::PointerMoved(Point::new(60.0, 10.0)));
-            assert!(!app.rail_drag.is_active());
-            start(&mut app, "!a:x");
-            send(&mut app, S::Over(key("!c:x"), Zone::Before));
-            send(&mut app, S::PointerPressed);
-            send(&mut app, S::PointerReleased);
-            assert!(saves(&store).is_empty());
-            assert!(!app.rail_drag.is_active());
-        }
-
-        #[test]
-        fn the_same_item_and_zone_is_planned_once_while_the_pointer_moves_in_it() {
-            let (mut app, _store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
-            start(&mut app, "!a:x");
-            let before = crate::rail_drop::plan_runs();
-            for _ in 0..20 {
-                send(&mut app, S::Over(key("!c:x"), Zone::After));
-            }
-            assert_eq!(crate::rail_drop::plan_runs() - before, 1);
-            assert!(app.rail_drag.target().is_some());
-            send(&mut app, S::Over(key("!c:x"), Zone::Before));
-            assert_eq!(crate::rail_drop::plan_runs() - before, 2, "a new zone");
-            // Leaving and coming back shows the target again.
-            send(&mut app, S::Exit(key("!c:x")));
-            assert!(app.rail_drag.target().is_none());
-            send(&mut app, S::Over(key("!c:x"), Zone::Before));
-            assert!(app.rail_drag.target().is_some());
         }
     }
 
@@ -4896,13 +4966,13 @@ mod tests {
             let mut app = app_with_folder();
             let key = RailKey::Folder(1);
             let _ = app.update(Message::Spaces(SpacesMessage::Enter(key.clone())));
-            let _ = app.update(Message::Spaces(SpacesMessage::Press(key.clone())));
+            let _ = app.update(Message::Spaces(SpacesMessage::RailPressed(key.clone())));
             assert_eq!(app.rail_hover, Some(key.clone()));
-            assert!(app.rail_drag.is_active());
+            assert_eq!(app.rail_press, Some(key.clone()));
             // The core no longer reports its spaces: the folder is not drawn.
             let _ = app.update(core(CoreEvent::Spaces(vec![top_space("!other:x")])));
             assert_eq!(app.rail_hover, None);
-            assert!(!app.rail_drag.is_active());
+            assert_eq!(app.rail_press, None);
         }
 
         #[test]
@@ -12022,17 +12092,17 @@ mod tests {
             let _ = app.update(msg(SpacesMessage::Release(s1.clone())));
             assert!(drain(&mut rx).is_empty());
             // Pressed on one item, released over another: no click.
-            let _ = app.update(msg(SpacesMessage::Press(s1.clone())));
+            let _ = app.update(msg(SpacesMessage::RailPressed(s1.clone())));
             let _ = app.update(msg(SpacesMessage::Release(s2.clone())));
             assert!(drain(&mut rx).is_empty());
             // Pressed, left the item, came back: the movement ends the click.
-            let _ = app.update(msg(SpacesMessage::Press(s1.clone())));
+            let _ = app.update(msg(SpacesMessage::RailPressed(s1.clone())));
             let _ = app.update(msg(SpacesMessage::Exit(s1.clone())));
             let _ = app.update(msg(SpacesMessage::Enter(s1.clone())));
             let _ = app.update(msg(SpacesMessage::Release(s1.clone())));
             assert!(drain(&mut rx).is_empty());
             // A click selects, as `Select` did.
-            let _ = app.update(msg(SpacesMessage::Press(s1.clone())));
+            let _ = app.update(msg(SpacesMessage::RailPressed(s1.clone())));
             let _ = app.update(msg(SpacesMessage::Release(s1)));
             let sent = drain(&mut rx);
             let [q] = queries(&sent)[..] else {
@@ -12040,7 +12110,7 @@ mod tests {
             };
             assert_eq!(q.space, Some(RoomId::from("!s1:x")));
             // And a click on Home goes back.
-            let _ = app.update(msg(SpacesMessage::Press(RailKey::Home)));
+            let _ = app.update(msg(SpacesMessage::RailPressed(RailKey::Home)));
             let _ = app.update(msg(SpacesMessage::Release(RailKey::Home)));
             let sent = drain(&mut rx);
             let [q] = queries(&sent)[..] else {

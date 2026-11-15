@@ -281,6 +281,7 @@ Colours come from the theme (`theme::semantic`), never from the mockups:
   - **in the room list:** a room onto a header or between rows of a custom section moves it there (into Starred, a custom section, or back to its default section); a header dropped onto a header reorders sections.
 - **What a drop does:** each drop calls the **same** `SidebarModel` operation as the menu action. A test enforces this: every `DragDrop` maps to an operation that the menu also offers.
 - **No auto-scroll** (iced limit). Targets out of view are reached by the menu, and this goes on the human checkpoint.
+- **Note, 2026-11-15 (sidebar rework plan, `docs/plans/sidebar-rework.md`, Task 5):** the rail's half of this decision is replaced. The rail reorders with sweeten columns (`crates/app/src/rail_reorder.rs`), which only reorder: the "into" zone, the ring and the line are gone, and making, filling and emptying a folder is menu only. Dragging on the rooms list (this decision's second bullet group) is unchanged and still uses `drag.rs`. The same plan makes one exception to rule 3 below ("no new crates"): `sweeten = "=0.14.0"` in `crates/app`.
 
 #### 7. Voice channels in the list
 - A voice room (`is_call_room`) with members draws one `Participant` line per member under it:
@@ -294,7 +295,7 @@ Colours come from the theme (`theme::semantic`), never from the mockups:
 ### Rules for every task (AGENTS.md)
 - **Rule 1:** this plan starts only after the human approves it. Each task starts only after the previous one's acceptance checks pass.
 - **Rule 2:** the iced APIs are cited above. The SDK API is `matrix-sdk-ui 0.19.1`: `SpaceFilter.descendants` (`spaces/mod.rs:784`) and `subscribe_to_space_filters` (`:299`). D3 uses the core's existing `active_memberships` (`call/watcher.rs:530`) and member lookups already used by `RoomMembers`. Any other API is checked in the registry source and cited in PROGRESS.md before use.
-- **Rule 3:** no version changes and no new crates. `serde_json` is already a dependency of both crates. The file-name digest is a hand-written FNV-1a, not a hashing crate.
+- **Rule 3:** no version changes and no new crates. `serde_json` is already a dependency of both crates. The file-name digest is a hand-written FNV-1a, not a hashing crate. (Exception, 2026-11-15: the sidebar rework plan adds `sweeten = "=0.14.0"` to `crates/app` for the rail's reordering; see the note under decision 6.)
 - **Rule 4, the gate before every commit:**
   - `cargo fmt --all`;
   - `cargo clippy --workspace --all-targets -- -D warnings`, and again with `--all-features`;

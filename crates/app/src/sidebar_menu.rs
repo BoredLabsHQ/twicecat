@@ -699,7 +699,7 @@ impl App {
             return Task::none();
         }
         self.rail_hover = None;
-        self.rail_drag.cancel();
+        self.cancel_rail_reorder();
         self.list_drag.cancel();
         self.sidebar_menu = Some(SidebarMenu::Card {
             target,

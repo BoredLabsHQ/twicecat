@@ -522,6 +522,12 @@ existing shortcut keeps its meaning.
   list when the pointer is near an edge, so a target that is out of view
   cannot be reached by dragging. Use the options menu: it works on any item,
   in view or not.
+- **On the rail, dragging only reorders, and it ends when the pointer leaves
+  it.** Folders are made, filled and emptied with the options menu (Move to
+  folder, New folder, Remove from folder). A drag on the rail ends, and saves
+  nothing, with Esc, when the window loses focus, and when the pointer moves
+  out of the rail. The rail's drag follows the mouse only: a finger drag on a
+  touch screen does not reorder it, and the menu does the same move.
 
 ## Known limits of iced 0.14
 
