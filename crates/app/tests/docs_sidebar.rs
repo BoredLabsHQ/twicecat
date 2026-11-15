@@ -375,3 +375,34 @@ fn the_docs_describe_the_discord_category_look_and_its_words() {
         );
     }
 }
+
+#[test]
+fn the_docs_say_voice_follows_text_and_a_collapsed_category_keeps_the_open_room_and_the_call() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "text rooms come first and voice rooms after them",
+        "keep exactly the order you gave them, a voice room first if you put it there",
+        "the room that is open stays drawn under the header",
+        "the voice room of the call this device is in, with the people listed under it",
+        "an unread one too",
+        "still counts all the rooms of the section",
+        "a section with neither room in it shows its header alone",
+        "alt+up and alt+down walk the rooms that are drawn",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "voice after text, and a collapsed category, change no key",
+        "alt+up / alt+down walk the drawn rooms, so they skip the hidden ones and stop at a kept one",
+        "stop at the open room and at the room of this device's call",
+    ] {
+        assert!(
+            access.contains(wanted),
+            "accessibility.md does not say {wanted:?}"
+        );
+    }
+}

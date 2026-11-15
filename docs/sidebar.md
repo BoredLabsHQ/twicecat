@@ -114,6 +114,21 @@ of Twicecat shows them. Nobody else sees your folders and sections, and the
 server is not told about them. The one exception is the Favourites and Low
 priority tags above.
 
+**Voice after text.** In every section whose order you did not choose (Favourites,
+Channels, a sub-space, Direct messages and Low priority), text rooms come first
+and voice rooms after them, each group in the chosen sort. Starred and your own
+sections keep exactly the order you gave them, a voice room first if you put it
+there.
+
+**A collapsed category keeps the open room and your call.** Collapsing a
+section hides its rooms, with two exceptions: the room that is open stays drawn
+under the header, and so does the voice room of the call this device is in,
+with the people listed under it. Every other room is hidden, an unread one
+too, and the header's count still counts all the rooms of the section, the kept
+ones included. A section with neither room in it shows its header alone.
+Alt+Up and Alt+Down walk the rooms that are drawn, so they skip the hidden
+rooms and stop at a kept one.
+
 **Voice channels** list the people in the call under the room (up to eight,
 then "and N more"). The speaking ring and the muted icon are shown only for the
 call this device is in.

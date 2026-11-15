@@ -510,7 +510,9 @@ existing shortcut keeps its meaning.
   default sidebar, or the one made earlier with a pointer, and they still
   reach every drawn room with Ctrl+K and with Alt+Up / Alt+Down and
   Ctrl+Shift+Up / Ctrl+Shift+Down. They cannot expand a section that was
-  collapsed, though Ctrl+K still opens its rooms. Once a name dialog is open
+  collapsed, though Ctrl+K still opens its rooms; Alt+Up / Alt+Down skip the
+  hidden rooms of a collapsed section, but still stop at the open room and at
+  the room of this device's call, which a collapsed section keeps drawn. Once a name dialog is open
   (New folder, New section, Rename), its field, Enter and Esc work from the
   keyboard.
 - **The filter chips are clicks only.** The chips above the room list (All,
@@ -541,6 +543,11 @@ existing shortcut keeps its meaning.
   in capitals and brightens under the pointer. Row heights are unchanged, so
   the scroll position and the Alt+Up / Alt+Down walk are the same. No shortcut
   was added or changed.
+- **Voice after text, and a collapsed category, change no key.** Voice rooms
+  come after text rooms in a section you did not order, and a collapsed section
+  keeps drawing the open room and this device's call room. Alt+Up / Alt+Down
+  walk the drawn rooms, so they skip the hidden ones and stop at a kept one.
+  The rooms stay reachable with Ctrl+K. No shortcut was added or changed.
 - **Rows and headers are pointer-only in the sectioned room list.** A room row
   and a section header there are a box that answers the pointer, not a button,
   so opening a room and collapsing or expanding a header need a click. Buttons

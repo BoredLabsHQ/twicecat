@@ -19,7 +19,7 @@ use twicecat_core::api::{
 };
 
 use crate::calls::CallModel;
-use crate::room_list::{Badge, Sorting, clamp_window, order, row_height};
+use crate::room_list::{Badge, Glyph, Sorting, channel_glyph, clamp_window, order, row_height};
 use crate::state::App;
 use crate::ui::tokens::Density;
 
@@ -178,7 +178,9 @@ struct Bucket<'a> {
 /// space's own ID, which a level 1 space lists among its rooms, is left out.
 /// Every section but a custom one is hidden while empty; an empty custom one
 /// is followed by [`Line::EmptyHint`]. A collapsed section keeps its header,
-/// with the badge of its rooms, and drops its rooms.
+/// with the badge of its rooms, and drops its rooms (but see [`build_open`]).
+/// Inside a section the user does not order, text rooms come first and voice
+/// rooms after them, each group in the chosen order (plan C3).
 pub fn build<'a>(
     space: &'a SpaceView,
     spaces: &'a [SpaceView],
@@ -215,7 +217,28 @@ pub fn build_sorted<'a>(
     calls: Option<&'a CallModel>,
     sorting: Sorting,
 ) -> Vec<Line<'a>> {
-    build_placed(space, spaces, rooms, layout, calls, sorting, true)
+    build_open(space, spaces, rooms, layout, calls, sorting, None)
+}
+
+/// [`build_sorted`] for the list as it is drawn: `selected` is the open
+/// room. A collapsed section still draws it, and the voice room of the call
+/// this device is in with that room's people, after its header; any other room
+/// of the section stays hidden and only counts in the header's badge (plan
+/// C4).
+pub fn build_open<'a>(
+    space: &'a SpaceView,
+    spaces: &'a [SpaceView],
+    rooms: &'a [RoomSummary],
+    layout: Option<&'a SpaceLayout>,
+    calls: Option<&'a CallModel>,
+    sorting: Sorting,
+    selected: Option<&'a RoomId>,
+) -> Vec<Line<'a>> {
+    let placing = Placing {
+        tags: true,
+        selected,
+    };
+    build_placed(space, spaces, rooms, layout, calls, sorting, placing)
 }
 
 /// The lines with no layout and no tags: every room in the section that is
@@ -228,11 +251,32 @@ pub fn build_defaults<'a>(
     spaces: &'a [SpaceView],
     rooms: &'a [RoomSummary],
 ) -> Vec<Line<'a>> {
-    build_placed(space, spaces, rooms, None, None, Sorting::default(), false)
+    let placing = Placing {
+        tags: false,
+        selected: None,
+    };
+    build_placed(
+        space,
+        spaces,
+        rooms,
+        None,
+        None,
+        Sorting::default(),
+        placing,
+    )
 }
 
-/// [`build_sorted`], where `tags` says whether a room's Favourite and Low
-/// priority tags place it (always, except for [`build_defaults`]).
+/// How [`build_placed`] places and draws the rooms.
+#[derive(Clone, Copy)]
+struct Placing<'a> {
+    /// Whether a room's Favourite and Low priority tags place it (always,
+    /// except for [`build_defaults`]).
+    tags: bool,
+    /// The open room, which a collapsed section keeps drawn.
+    selected: Option<&'a RoomId>,
+}
+
+/// [`build_sorted`] with the choices of `placing`.
 fn build_placed<'a>(
     space: &'a SpaceView,
     spaces: &'a [SpaceView],
@@ -240,8 +284,9 @@ fn build_placed<'a>(
     layout: Option<&'a SpaceLayout>,
     calls: Option<&'a CallModel>,
     sorting: Sorting,
-    tags: bool,
+    placing: Placing<'a>,
 ) -> Vec<Line<'a>> {
+    let Placing { tags, selected } = placing;
     #[cfg(test)]
     BUILDS.with(|n| n.set(n.get() + 1));
     let own = &space.id;
@@ -345,9 +390,21 @@ fn build_placed<'a>(
             let picked = order(&refs, sorting.by, sorting.unread_first, false);
             bucket.rooms = picked.into_iter().map(|i| bucket.rooms[i]).collect();
         }
+        if !matches!(bucket.key, SectionKey::Starred | SectionKey::Custom(_)) {
+            // Voice after text (plan C3): a stable partition, so each group
+            // keeps the order the sort gave it.
+            let (voice, text): (Vec<_>, Vec<_>) = bucket
+                .rooms
+                .iter()
+                .partition(|(_, room)| channel_glyph(room) == Glyph::Speaker);
+            bucket.rooms = text.into_iter().chain(voice).copied().collect();
+        }
     }
 
     let collapsed: &[SectionKey] = layout.map_or(&[], |l| l.collapsed.as_slice());
+    let call_room = calls
+        .and_then(|calls| calls.call.as_ref())
+        .map(|call| &call.room_id);
     let mut lines = Vec::new();
     for key in section_order(&buckets, layout) {
         let bucket = &buckets[slot[&key]];
@@ -365,20 +422,32 @@ fn build_placed<'a>(
             badge,
         }));
         if is_collapsed {
+            // It keeps the open room and the room of this device's call,
+            // with its people (plan C4); the badge above counts them all.
+            for (_, room) in &bucket.rooms {
+                if selected == Some(&room.id) || call_room == Some(&room.id) {
+                    push_room(&mut lines, room, calls);
+                }
+            }
             continue;
         }
         if bucket.rooms.is_empty() {
             lines.push(Line::EmptyHint(key));
         } else {
             for (_, room) in &bucket.rooms {
-                lines.push(Line::Room(room));
-                if let Some(calls) = calls.filter(|_| room.is_call_room) {
-                    push_people(&mut lines, room, calls);
-                }
+                push_room(&mut lines, room, calls);
             }
         }
     }
     lines
+}
+
+/// The line of `room`, and under a voice room the people of its call.
+fn push_room<'a>(lines: &mut Vec<Line<'a>>, room: &'a RoomSummary, calls: Option<&'a CallModel>) {
+    lines.push(Line::Room(room));
+    if let Some(calls) = calls.filter(|_| room.is_call_room) {
+        push_people(lines, room, calls);
+    }
 }
 
 /// The people of `room`'s call under its line: at most [`MAX_PEOPLE_SHOWN`]
@@ -620,13 +689,14 @@ impl App {
             .sidebar
             .layout()
             .and_then(|layout| layout.spaces.iter().find(|s| s.space == *id));
-        Some(build_sorted(
+        Some(build_open(
             space,
             self.spaces.spaces(),
             &self.rooms,
             stored,
             Some(&self.calls),
             self.sorting(),
+            self.selected.as_ref(),
         ))
     }
 
@@ -4097,5 +4167,323 @@ mod tests {
             viewport_h: 2000.0,
         });
         assert_eq!(fetches(&drain(&mut rx)), 0);
+    }
+
+    // ---- Discord categories: voice after text, a collapsed category keeps the open room and the call ----
+
+    mod categories {
+        use super::*;
+        use crate::calls::{CallPhase, CurrentCall};
+        use twicecat_core::api::RoomSortChoice;
+
+        /// Space `s` with two text rooms (`b`, `d`) and two voice rooms
+        /// (`a`, `c`), in the list's order d, c, b, a.
+        fn fixture() -> (Vec<SpaceView>, Vec<RoomSummary>) {
+            let voice = |n: &str| {
+                let mut r = room(n);
+                r.is_call_room = true;
+                r
+            };
+            (
+                vec![view("s", 0, &["a", "b", "c", "d"])],
+                vec![room("d"), voice("c"), room("b"), voice("a")],
+            )
+        }
+
+        fn under_sort(
+            layout: Option<&SpaceLayout>,
+            by: RoomSortChoice,
+            unread: bool,
+        ) -> Vec<String> {
+            let (sp, rs) = fixture();
+            let sorting = Sorting {
+                by,
+                unread_first: unread,
+            };
+            lines_of(&build_sorted(&sp[0], &sp, &rs, layout, None, sorting))
+        }
+
+        #[test]
+        fn text_rooms_come_first_in_channels_under_every_sort() {
+            assert_eq!(
+                under_sort(None, RoomSortChoice::Activity, false),
+                ["# Channels", "d", "b", "c", "a"]
+            );
+            assert_eq!(
+                under_sort(None, RoomSortChoice::Name, false),
+                ["# Channels", "b", "d", "a", "c"]
+            );
+            assert_eq!(
+                under_sort(None, RoomSortChoice::Activity, true),
+                ["# Channels", "d", "b", "c", "a"]
+            );
+            // An unread voice room still comes after the text rooms.
+            let (sp, mut rs) = fixture();
+            rs[3].unread_messages = 1;
+            let sorting = Sorting {
+                by: RoomSortChoice::Name,
+                unread_first: true,
+            };
+            let out = lines_of(&build_sorted(&sp[0], &sp, &rs, None, None, sorting));
+            assert_eq!(out, ["# Channels", "b", "d", "a", "c"]);
+        }
+
+        #[test]
+        fn every_section_the_user_does_not_order_puts_voice_after_text() {
+            let (sp, mut rs) = fixture();
+            for r in &mut rs {
+                r.is_favourite = true;
+            }
+            let out = lines_of(&build(&sp[0], &sp, &rs, None));
+            assert_eq!(out, ["# Favourites", "d", "b", "c", "a"]);
+        }
+
+        #[test]
+        fn a_custom_section_keeps_the_users_order_with_a_voice_room_first() {
+            let mut layout = SpaceLayout::new(rid("s"));
+            layout.custom = vec![CustomSection {
+                id: 1,
+                name: label("Mine"),
+                rooms: vec![rid("a"), rid("b"), rid("c")],
+            }];
+            for by in [RoomSortChoice::Activity, RoomSortChoice::Name] {
+                let out = under_sort(Some(&layout), by, true);
+                let at = out.iter().position(|l| l == "# Mine").expect("drawn");
+                assert_eq!(&out[at + 1..at + 4], ["a", "b", "c"], "{by:?}");
+            }
+        }
+
+        #[test]
+        fn starred_keeps_the_users_order_with_a_voice_room_first() {
+            let mut layout = SpaceLayout::new(rid("s"));
+            layout.starred = vec![rid("c"), rid("d")];
+            let out = under_sort(Some(&layout), RoomSortChoice::Name, false);
+            assert_eq!(&out[..3], ["# Starred", "c", "d"]);
+        }
+
+        fn collapsed_layout() -> SpaceLayout {
+            let mut layout = SpaceLayout::new(rid("s"));
+            layout.collapsed = vec![SectionKey::Channels];
+            layout
+        }
+
+        fn open_lines(selected: Option<&RoomId>, calls: Option<&CallModel>) -> Vec<String> {
+            let (sp, rs) = fixture();
+            let layout = collapsed_layout();
+            lines_of(&build_open(
+                &sp[0],
+                &sp,
+                &rs,
+                Some(&layout),
+                calls,
+                Sorting::default(),
+                selected,
+            ))
+        }
+
+        fn in_call(room_n: &str, members: Vec<CallMemberView>) -> CallModel {
+            let mut calls = calls_with(room_n, members);
+            calls.call = Some(CurrentCall::new(rid(room_n), CallPhase::Joining));
+            calls
+        }
+
+        #[test]
+        fn a_collapsed_section_with_the_selected_room_draws_its_header_and_that_room_only() {
+            assert_eq!(open_lines(Some(&rid("b")), None), ["# Channels", "b"]);
+            assert_eq!(open_lines(Some(&rid("a")), None), ["# Channels", "a"]);
+        }
+
+        #[test]
+        fn a_collapsed_section_with_neither_room_draws_the_header_only() {
+            assert_eq!(open_lines(None, None), ["# Channels"]);
+            assert_eq!(open_lines(Some(&rid("elsewhere")), None), ["# Channels"]);
+            // A call that is in another room keeps nothing here.
+            let calls = in_call("elsewhere", vec![cmember("x", None)]);
+            assert_eq!(open_lines(None, Some(&calls)), ["# Channels"]);
+        }
+
+        #[test]
+        fn with_this_devices_call_in_it_a_collapsed_section_draws_the_voice_room_and_its_people() {
+            let calls = in_call("c", vec![cmember("x", Some("Xavier")), cmember("y", None)]);
+            assert_eq!(
+                open_lines(None, Some(&calls)),
+                ["# Channels", "c", "  - Xavier", "  - y"]
+            );
+            // Together with the open room: text before voice, as expanded.
+            assert_eq!(
+                open_lines(Some(&rid("b")), Some(&calls)),
+                ["# Channels", "b", "c", "  - Xavier", "  - y"]
+            );
+            // The open room is the call room: one line, once.
+            assert_eq!(
+                open_lines(Some(&rid("c")), Some(&calls)),
+                ["# Channels", "c", "  - Xavier", "  - y"]
+            );
+        }
+
+        #[test]
+        fn someone_elses_call_keeps_nothing_in_a_collapsed_section() {
+            let calls = calls_with("c", vec![cmember("x", None)]);
+            assert_eq!(open_lines(None, Some(&calls)), ["# Channels"]);
+        }
+
+        #[test]
+        fn the_header_badge_counts_every_room_of_the_section_kept_or_not() {
+            let (sp, mut rs) = fixture();
+            rs[0].unread_notifications = 2; // d, hidden
+            rs[2].unread_notifications = 3; // b, kept
+            let layout = collapsed_layout();
+            let open = rid("b");
+            let lines = build_open(
+                &sp[0],
+                &sp,
+                &rs,
+                Some(&layout),
+                None,
+                Sorting::default(),
+                Some(&open),
+            );
+            let Line::Header(header) = &lines[0] else {
+                panic!("not a header");
+            };
+            assert_eq!(header.badge, Badge::Count(5));
+            assert_eq!(lines_of(&lines), ["# Channels", "b"]);
+        }
+
+        #[test]
+        fn an_unread_room_that_is_not_open_is_not_kept() {
+            // The Q3 default: unread rooms stay hidden and the header counts them.
+            let (sp, mut rs) = fixture();
+            for r in &mut rs {
+                r.unread_messages = 4;
+                r.highlights = 1;
+            }
+            let layout = collapsed_layout();
+            let lines = build_open(
+                &sp[0],
+                &sp,
+                &rs,
+                Some(&layout),
+                None,
+                Sorting::default(),
+                None,
+            );
+            assert_eq!(lines_of(&lines), ["# Channels"]);
+        }
+
+        #[test]
+        fn a_collapsed_custom_section_keeps_the_open_room_in_the_users_order() {
+            let mut layout = SpaceLayout::new(rid("s"));
+            layout.custom = vec![CustomSection {
+                id: 1,
+                name: label("Mine"),
+                rooms: vec![rid("a"), rid("b"), rid("c")],
+            }];
+            layout.collapsed = vec![SectionKey::Custom(1)];
+            let (sp, rs) = fixture();
+            let calls = in_call("a", Vec::new());
+            let open = rid("c");
+            let lines = build_open(
+                &sp[0],
+                &sp,
+                &rs,
+                Some(&layout),
+                Some(&calls),
+                Sorting::default(),
+                Some(&open),
+            );
+            assert_eq!(
+                lines_of(&lines)[..],
+                ["# Channels", "d", "# Mine", "a", "c"],
+                "no hint, a then c as the user ordered them"
+            );
+        }
+
+        #[test]
+        fn kept_rooms_are_ordinary_lines_for_heights_and_spots() {
+            let (sp, rs) = fixture();
+            let layout = collapsed_layout();
+            let open = rid("b");
+            let lines = build_open(
+                &sp[0],
+                &sp,
+                &rs,
+                Some(&layout),
+                None,
+                Sorting::default(),
+                Some(&open),
+            );
+            let offsets = line_offsets(&lines, Density::Comfortable);
+            assert_eq!(offsets.len(), lines.len() + 1);
+            assert_eq!(
+                offsets.last().copied(),
+                Some(HEADER_HEIGHT + row_height(Density::Comfortable))
+            );
+            let spot = spot_of(&lines, &rid("b")).expect("drawn");
+            assert_eq!(
+                (spot.section, spot.rooms),
+                (SectionKey::Channels, vec![rid("b")])
+            );
+            assert!(spot_of(&lines, &rid("d")).is_none(), "hidden");
+        }
+    }
+
+    mod stepping_a_collapsed_category {
+        use super::*;
+        use crate::keys::Shortcut;
+
+        #[test]
+        fn alt_down_skips_the_hidden_rooms_and_reaches_the_kept_one() {
+            let (mut app, _rx) = space_app(None);
+            collapse(&mut app, SectionKey::Channels);
+            // The open room of the collapsed Channels is kept.
+            let _ = app.update(Message::SelectRoom(rid("chan2")));
+            assert_eq!(
+                drawn_names(&app),
+                [
+                    "# Channels",
+                    "chan2",
+                    "# tech",
+                    "t1",
+                    "rustroom",
+                    "t2",
+                    "techdm",
+                    "# voice",
+                    "v1",
+                    "# Direct messages",
+                    "dm1"
+                ]
+            );
+            // The open room is kept: Alt+Down leaves it for the next drawn
+            // room and Alt+Up wraps to the last one.
+            press(&mut app, Shortcut::NextRoom);
+            assert_eq!(app.selected, Some(rid("t1")));
+            // Now chan2 is hidden: the three hidden rooms of Channels are
+            // skipped, and the next one drawn is the first of the next section.
+            let _ = app.update(Message::SelectRoom(rid("dm1")));
+            press(&mut app, Shortcut::NextRoom);
+            assert_eq!(
+                app.selected,
+                Some(rid("t1")),
+                "wraps past the hidden Channels"
+            );
+        }
+
+        #[test]
+        fn alt_up_skips_the_hidden_rooms_and_reaches_the_kept_call_room() {
+            use crate::calls::{CallPhase, CurrentCall};
+            let (mut app, _rx) = space_app(None);
+            collapse(&mut app, SectionKey::Channels);
+            app.calls.call = Some(CurrentCall::new(rid("chan2"), CallPhase::Joining));
+            let _ = app.update(Message::SelectRoom(rid("t1")));
+            press(&mut app, Shortcut::PreviousRoom);
+            assert_eq!(
+                app.selected,
+                Some(rid("chan2")),
+                "chan1 and starred1 are hidden, the call room is not"
+            );
+            press(&mut app, Shortcut::NextRoom);
+            assert_eq!(app.selected, Some(rid("t1")));
+        }
     }
 }

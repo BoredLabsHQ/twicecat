@@ -414,6 +414,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "space-sections-tags",
         "voice-channel",
         "space-categories",
+        "space-categories-collapsed",
         "space-sections-custom",
         "space-sections-dragging",
         "space-sections-dragging-line",
@@ -1694,6 +1695,7 @@ fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes()
         "space-sections-tags",
         "voice-channel",
         "space-categories",
+        "space-categories-collapsed",
         "space-sections-custom",
         "space-sections-dragging",
         "space-sections-dragging-line",
@@ -1838,6 +1840,57 @@ fn space_categories_draw_headers_in_capitals_and_channels_without_previews() {
             .count();
         let expected = usize::from(app.density() == twicecat_app::ui::tokens::Density::Comfortable);
         assert_eq!(previews, expected, "{what}: only the DM row has a preview");
+    }
+}
+
+/// Sidebar rework, Task 12: with every category shut, the open room and the
+/// room of this device's call stay drawn, with the call's people, and no other
+/// room does, in both densities and every test theme.
+#[test]
+fn a_collapsed_category_still_draws_the_open_room_and_the_call() {
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "space-categories-collapsed")
+        .expect("the scenario");
+    for variant in variants(true)
+        .into_iter()
+        .filter(|v| v.list == RoomListChoice::Expanded)
+    {
+        let mut app = (scenario.build)();
+        apply(&mut app, variant);
+        let what = variant.tag();
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let words: Vec<String> = texts(&mut laid, &renderer)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        let count = |w: &str| words.iter().filter(|t| t.as_str() == w).count();
+        for header in [
+            "STARRED",
+            "CHANNELS",
+            "VOICE",
+            "TECH",
+            "HOBBIES",
+            "DIRECT MESSAGES",
+        ] {
+            assert_eq!(count(header), 1, "{what}: header {header}");
+        }
+        assert!(count("General") >= 1, "{what}: the open room is kept");
+        assert!(count("vocal") >= 1, "{what}: the call room is kept");
+        for hidden in [
+            "Random",
+            "Announcements",
+            "coworking",
+            "Roadmap",
+            "Alice Example",
+        ] {
+            assert_eq!(count(hidden), 0, "{what}: {hidden} is hidden");
+        }
+        for person in ["Rhaenyra", "Septimus"] {
+            assert_eq!(count(person), 1, "{what}: {person} is in the call");
+        }
     }
 }
 
