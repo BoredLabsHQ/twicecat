@@ -292,8 +292,9 @@ pub enum Message {
     LogoutRequested,
     /// The user picked a room in the list.
     SelectRoom(RoomId),
-    /// The user picked a tab above the room list.
-    TabSelected(RoomListTab),
+    /// The user clicked a filter chip above the room list. Clicking the
+    /// active chip goes back to **All**.
+    ChipClicked(RoomListTab),
     /// The room list search field changed.
     SearchChanged(String),
     /// The room list scrolled, or its size changed.
@@ -1761,7 +1762,13 @@ impl App {
                     self.send(Command::SelectRoom(id)),
                 ])
             }
-            Message::TabSelected(tab) => {
+            Message::ChipClicked(tab) => {
+                // The active chip is a toggle: clicking it goes back to All.
+                let tab = if tab == self.query.tab {
+                    RoomListTab::All
+                } else {
+                    tab
+                };
                 let query = RoomListQuery {
                     tab,
                     search: self.query.search.clone(),
@@ -5939,7 +5946,7 @@ mod tests {
     fn switching_tabs_keeps_the_open_room_and_its_draft() {
         let (mut app, _rx) = main_app();
         type_in(&mut app, "unsent");
-        let _ = app.update(Message::TabSelected(RoomListTab::People));
+        let _ = app.update(Message::ChipClicked(RoomListTab::People));
         let _ = app.update(core(room_event(&["z"])));
         assert_eq!(app.selected, Some(RoomId::from("!a:x")));
         assert_eq!(app.composer.text(), "unsent");
@@ -12196,7 +12203,7 @@ mod tests {
         #[test]
         fn selecting_a_space_filters_the_list_and_keeps_tab_and_search() {
             let (mut app, mut rx) = spaces_app();
-            let _ = app.update(Message::TabSelected(RoomListTab::People));
+            let _ = app.update(Message::ChipClicked(RoomListTab::People));
             let _ = app.update(Message::SearchChanged("  lo ".into()));
             let _ = drain(&mut rx);
             let _ = app.update(Message::Spaces(SpacesMessage::Select(Some(RoomId::from(
@@ -12236,7 +12243,7 @@ mod tests {
         #[test]
         fn a_space_that_vanishes_resets_the_filter_to_home() {
             let (mut app, mut rx) = spaces_app();
-            let _ = app.update(Message::TabSelected(RoomListTab::Rooms));
+            let _ = app.update(Message::ChipClicked(RoomListTab::Rooms));
             let _ = app.update(Message::Spaces(SpacesMessage::Select(Some(RoomId::from(
                 "!s2:x",
             )))));

@@ -544,7 +544,7 @@ mod tests {
     fn selecting_a_tab_sends_one_query_and_keeps_it() {
         let (mut app, mut rx) = app();
         drain(&mut rx);
-        let _ = app.update(Message::TabSelected(RoomListTab::People));
+        let _ = app.update(Message::ChipClicked(RoomListTab::People));
         let sent = drain(&mut rx);
         assert_eq!(sent.len(), 1, "exactly one command");
         assert!(matches!(
@@ -558,21 +558,73 @@ mod tests {
     fn an_identical_query_is_not_sent_again() {
         let (mut app, mut rx) = app();
         drain(&mut rx);
-        let _ = app.update(Message::TabSelected(RoomListTab::All));
+        let _ = app.update(Message::ChipClicked(RoomListTab::All));
         assert!(
             drain(&mut rx).is_empty(),
             "the default query is already set"
         );
-        let _ = app.update(Message::TabSelected(RoomListTab::Spaces));
-        let _ = app.update(Message::TabSelected(RoomListTab::Spaces));
+        let _ = app.update(Message::ChipClicked(RoomListTab::Spaces));
+        let _ = app.update(Message::SearchChanged(String::new()));
         assert_eq!(queries(&drain(&mut rx)).len(), 1);
+    }
+
+    #[test]
+    fn every_chip_sends_exactly_one_query_with_its_tab() {
+        for tab in crate::screens::room_list_pane::TABS {
+            if tab == RoomListTab::All {
+                continue;
+            }
+            let (mut app, mut rx) = app();
+            drain(&mut rx);
+            let _ = app.update(Message::ChipClicked(tab));
+            let sent = drain(&mut rx);
+            assert_eq!(sent.len(), 1, "{tab:?}: exactly one command");
+            assert!(
+                matches!(&sent[0], Command::SetRoomListQuery(q) if q.tab == tab),
+                "{tab:?}"
+            );
+            assert_eq!(app.query.tab, tab);
+        }
+    }
+
+    #[test]
+    fn clicking_the_active_chip_sends_all_and_keeps_search_and_space() {
+        for tab in crate::screens::room_list_pane::TABS {
+            if tab == RoomListTab::All {
+                continue;
+            }
+            let (mut app, mut rx) = app();
+            let _ = app.update(Message::SearchChanged("li".to_owned()));
+            let _ = app.update(Message::ChipClicked(tab));
+            drain(&mut rx);
+            let _ = app.update(Message::ChipClicked(tab));
+            let sent = drain(&mut rx);
+            assert_eq!(sent.len(), 1, "{tab:?}: exactly one command");
+            assert!(
+                matches!(
+                    &sent[0],
+                    Command::SetRoomListQuery(q) if q.tab == RoomListTab::All && q.search == "li"
+                ),
+                "{tab:?}"
+            );
+            assert_eq!(app.query.tab, RoomListTab::All);
+        }
+    }
+
+    #[test]
+    fn clicking_all_while_all_is_active_sends_nothing() {
+        let (mut app, mut rx) = app();
+        drain(&mut rx);
+        let _ = app.update(Message::ChipClicked(RoomListTab::All));
+        assert!(drain(&mut rx).is_empty());
+        assert_eq!(app.query.tab, RoomListTab::All);
     }
 
     #[test]
     fn typing_in_search_sends_one_query_per_change_with_the_current_tab() {
         let (mut app, mut rx) = app();
         drain(&mut rx);
-        let _ = app.update(Message::TabSelected(RoomListTab::Rooms));
+        let _ = app.update(Message::ChipClicked(RoomListTab::Rooms));
         let _ = app.update(Message::SearchChanged("li".to_owned()));
         let sent = drain(&mut rx);
         let qs = queries(&sent);
@@ -678,7 +730,7 @@ mod tests {
         drain(&mut rx);
         many_rooms(&mut app, 0, 40, 2_000);
         assert_eq!(load_mores(&drain(&mut rx)), 1);
-        let _ = app.update(Message::TabSelected(RoomListTab::People));
+        let _ = app.update(Message::ChipClicked(RoomListTab::People));
         let _ = app.update(rooms_event(vec![ListDiff::Reset {
             values: synthetic_range(0, 40),
         }]));
@@ -1328,6 +1380,26 @@ mod pure_tests {
             assert_eq!(empty_label(tab, "x"), "No match");
         }
         assert_eq!(empty_label(RoomListTab::All, "   "), "No rooms");
+    }
+
+    #[test]
+    fn every_chip_has_a_label_a_title_and_a_hint() {
+        use crate::screens::room_list_pane::{TABS, empty_hint, tab_label};
+        assert_eq!(TABS.len(), 9, "the nine chips of Q11");
+        for tab in TABS {
+            assert!(!tab_label(tab).is_empty(), "{tab:?} label");
+            assert!(!empty_label(tab, "").is_empty(), "{tab:?} title");
+            assert!(
+                !empty_hint(tab, empty_label(tab, "")).is_empty(),
+                "{tab:?} hint"
+            );
+            assert_eq!(empty_label(tab, "x"), "No match", "{tab:?} with a search");
+        }
+        assert_eq!(empty_label(RoomListTab::Unreads, ""), "No unread rooms");
+        // The SDK lists a room marked unread under Mentions too, so the hint
+        // must not claim the opposite.
+        let mentions = empty_hint(RoomListTab::Mentions, "No mentions");
+        assert!(!mentions.to_lowercase().contains("excl"), "{mentions}");
     }
 
     #[test]
