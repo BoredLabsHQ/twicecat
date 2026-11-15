@@ -418,6 +418,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "space-sections-dragging-line",
         "space-sections-dragging-refused",
         "space-sections-dragging-header",
+        "space-sections-dragging-tag",
         "section-menu",
         "verification-requested",
         "verification-emojis",
@@ -1696,6 +1697,7 @@ fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes()
         "space-sections-dragging-line",
         "space-sections-dragging-refused",
         "space-sections-dragging-header",
+        "space-sections-dragging-tag",
     ] {
         let scenario = fixture::scenarios()
             .into_iter()

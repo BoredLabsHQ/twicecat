@@ -559,7 +559,7 @@ impl App {
             return;
         }
         match self.list_verdict(&item, &target) {
-            Verdict::Ops(_) => self.list_drag.hover(Some(target)),
+            Verdict::Ops(_) | Verdict::Tag(..) => self.list_drag.hover(Some(target)),
             Verdict::Refused => self.list_drag.refuse(target),
             Verdict::Nothing => self.list_drag.hover(None),
         }
@@ -570,8 +570,14 @@ impl App {
     /// layout as it was.
     fn list_drop(&mut self, item: &ListKey, target: &Target<ListKey>) -> Task<Message> {
         self.list_hover = None;
-        let Verdict::Ops(ops) = self.list_verdict(item, target) else {
-            return Task::none();
+        let ops = match self.list_verdict(item, target) {
+            Verdict::Ops(ops) => ops,
+            // Kept on the homeserver: the command of the card's entry, and
+            // the layout file is not touched.
+            Verdict::Tag(room_id, tag) => {
+                return self.send(Command::SetRoomTag { room_id, tag });
+            }
+            Verdict::Nothing | Verdict::Refused => return Task::none(),
         };
         match self.sidebar.apply_all_known(ops, &[], &*self.sidebar_store) {
             // The rooms in view changed: their avatars and the pages are due

@@ -839,9 +839,18 @@ fn list_drag_over(
     over: twicecat_app::list_drop::ListKey,
     zone: twicecat_app::drag::Zone,
 ) -> App {
+    drag_over_in(space_sections_custom(), item, over, zone)
+}
+
+/// [`list_drag_over`] in the list of `app`.
+fn drag_over_in(
+    mut app: App,
+    item: twicecat_app::list_drop::ListKey,
+    over: twicecat_app::list_drop::ListKey,
+    zone: twicecat_app::drag::Zone,
+) -> App {
     use twicecat_app::spaces::SpacesMessage;
 
-    let mut app = space_sections_custom();
     for message in [
         SpacesMessage::ListEnter(item.clone()),
         SpacesMessage::ListPress(item),
@@ -869,6 +878,18 @@ fn space_sections_dragging() -> App {
     list_drag_over(
         list_room("general"),
         list_head(SectionKey::Custom(0)),
+        twicecat_app::drag::Zone::Into,
+    )
+}
+
+/// A room of Channels dragged onto the Favourites header of the tags space:
+/// the ring shows, as for a section of the user's own (it gets the tag).
+fn space_sections_dragging_tag() -> App {
+    use twicecat_core::api::SectionKey;
+    drag_over_in(
+        space_sections_tags(),
+        list_room("general"),
+        list_head(SectionKey::Favourites),
         twicecat_app::drag::Zone::Into,
     )
 }
@@ -4165,6 +4186,22 @@ pub fn scenarios() -> Vec<Scenario> {
             true,
             space_sections_dragging_refused,
             |a| in_main(a) && a.list_drag.target().is_none() && a.list_drag.refused().is_some(),
+        ),
+        s(
+            "space-sections-dragging-tag",
+            true,
+            space_sections_dragging_tag,
+            |a| {
+                in_main(a)
+                    && a.sections_shown()
+                    && a.list_drag.target().is_some_and(|t| {
+                        t.zone == twicecat_app::drag::Zone::Into
+                            && t.item
+                                == twicecat_app::list_drop::ListKey::Header(
+                                    twicecat_core::api::SectionKey::Favourites,
+                                )
+                    })
+            },
         ),
         s(
             "space-sections-dragging-header",

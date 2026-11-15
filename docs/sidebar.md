@@ -79,8 +79,8 @@ collapsed header shows the unread or mention count of its rooms.
   Starred, Favourites, one of your own, Low priority, its sub-space, Direct
   messages, Channels. Where the two sections stand and whether they are
   collapsed is still kept on this device only. If a tag cannot be changed, a
-  line above the composer says so. Dragging a room onto these two headers is
-  not built yet: use the menu.
+  line above the composer says so. You can also drag a room onto these two
+  headers (see "You can also drag" below).
 - **Tags can be changed from the flat list too.** Right-click a room in Home, in
   the list under a chip other than All, or in a search result, and its card
   offers the same two tag entries, with the same words, and nothing else: a
@@ -131,7 +131,18 @@ You can also **drag**, in two places:
   Esc, leaving the window or moving the pointer out of the rail ends the drag
   and changes nothing.
 - **In the room list**, a room onto a section header or between the rows of
-  one of your own sections, and a section header onto another header.
+  one of your own sections, and a section header onto another header. Dropping
+  a room onto the Favourites or Low priority header gets that tag, as "Add to
+  favourites" or "Mark as low priority" do, and it is kept on the homeserver
+  (no sidebar file is saved). Dropping a room onto its own section (the one it
+  would be in with no tag, such as Channels, a sub-space or Direct messages)
+  removes the tag it carries, as "Remove from favourites" or "Remove low
+  priority" do. A room already in Favourites dropped on Favourites does
+  nothing, and the same goes for Low priority. A starred room is not allowed on
+  Low priority, and the target is drawn as not allowed: Starred comes first, so
+  use Unstar first. A room that has a tag and that you drag into one of your
+  own sections keeps its tag: the move is saved, but a favourite stays under
+  Favourites (the tag wins), so remove the tag to see it in your section.
 
 Every drop does the same thing as the menu entry of that move; nothing can be
 done only by dragging. A drag does not scroll the list, so use the menu for a
