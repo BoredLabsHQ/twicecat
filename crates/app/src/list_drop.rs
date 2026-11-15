@@ -975,11 +975,6 @@ mod tests {
         assert!(matches!(after[0], Op::MoveRoomToSection { .. }));
     }
 
-    /// The drawn lines of the tests' space with `rec`.
-    fn lines_for(rec: &SpaceLayout) -> (Vec<SpaceView>, Vec<RoomSummary>, SpaceLayout) {
-        (spaces(), rooms(), rec.clone())
-    }
-
     #[test]
     fn a_gap_between_two_rows_is_one_place_and_plan_gives_the_same_verdict_for_both_names() {
         // "Ops" holds c1, c2; "Wide" holds c4, t1, t2 (rows next to each other).
@@ -988,7 +983,7 @@ mod tests {
         // And a collapsed one, whose rooms are kept but not drawn.
         rec.custom.push(custom(3, "Shut", &["d1"]));
         rec.collapsed.push(SectionKey::Custom(3));
-        let (sp, rs, rec) = lines_for(&rec);
+        let (sp, rs) = (spaces(), rooms());
         let lines = build(&sp[0], &sp, &rs, Some(&rec));
         let defaults = build_defaults(&sp[0], &sp, &rs);
         let layout = layout_of(&rec);
@@ -1044,6 +1039,92 @@ mod tests {
             single_gap(&lines, &item, r("c2"), Zone::After),
             (r("c2"), Zone::After),
             "the last row of Ops is followed by a header"
+        );
+    }
+
+    /// A collapsed section draws only the open room and the room of this
+    /// device's call: two kept rows next to each other are one gap too.
+    #[test]
+    fn two_kept_rows_of_a_collapsed_section_are_one_gap() {
+        use crate::calls::{CallModel, CallPhase, CurrentCall};
+        use crate::room_list::Sorting;
+        use crate::sections::build_open;
+        let mut rec = record();
+        rec.custom[0] = custom(0, "Ops", &["c1", "t1", "t2", "c2"]);
+        rec.collapsed.push(SectionKey::Custom(0));
+        let (sp, rs) = (spaces(), rooms());
+        let calls = CallModel {
+            call: Some(CurrentCall::new(rid("t2"), CallPhase::Joining)),
+            ..CallModel::default()
+        };
+        let open = rid("t1");
+        let lines = build_open(
+            &sp[0],
+            &sp,
+            &rs,
+            Some(&rec),
+            Some(&calls),
+            Sorting::default(),
+            Some(&open),
+        );
+        let defaults = build_defaults(&sp[0], &sp, &rs);
+        let layout = layout_of(&rec);
+        let spot = spot_of(&lines, &rid("t1")).expect("the open room is drawn");
+        assert_eq!(spot.rooms, [rid("t1"), rid("t2")], "both kept rows");
+        for item in ["c3", "c4", "d1"].map(r) {
+            let (key, zone) = single_gap(&lines, &item, r("t1"), Zone::After);
+            assert_eq!((key, zone), (r("t2"), Zone::Before));
+            let on = |key: ListKey, zone: Zone| {
+                plan(
+                    &rid("sp"),
+                    &layout,
+                    &lines,
+                    &defaults,
+                    &item,
+                    &Target { item: key, zone },
+                )
+            };
+            assert_eq!(on(r("t1"), Zone::After), on(r("t2"), Zone::Before));
+        }
+    }
+
+    /// A voice room is followed by the people of its call: its bottom half is
+    /// not the gap to the next row, so it keeps After.
+    #[test]
+    fn a_voice_room_followed_by_its_people_keeps_its_bottom_half() {
+        use crate::calls::CallModel;
+        use twicecat_core::api::CallMemberView;
+        let mut rec = record();
+        rec.custom[0] = custom(0, "Ops", &["c1", "t2", "c2"]);
+        let sp = spaces();
+        let mut rs = rooms();
+        for room in &mut rs {
+            room.is_call_room = room.id == rid("t2");
+        }
+        let mut calls = CallModel::default();
+        calls.members.insert(
+            rid("t2"),
+            vec![CallMemberView {
+                user_id: UserId::from("@p:x"),
+                display_name: None,
+                avatar: None,
+            }],
+        );
+        let lines = crate::sections::build_with(&sp[0], &sp, &rs, Some(&rec), Some(&calls));
+        assert!(
+            lines.iter().any(|l| matches!(l, Line::Participant(_))),
+            "the people are drawn"
+        );
+        let item = r("c4");
+        assert_eq!(
+            single_gap(&lines, &item, r("t2"), Zone::After),
+            (r("t2"), Zone::After),
+            "the people follow the room"
+        );
+        // The row before it is still one gap with it.
+        assert_eq!(
+            single_gap(&lines, &item, r("c1"), Zone::After),
+            (r("t2"), Zone::Before)
         );
     }
 

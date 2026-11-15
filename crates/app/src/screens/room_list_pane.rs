@@ -715,6 +715,43 @@ fn mark_style(t: &iced::Theme, mark: Mark, hovered: bool) -> container::Style {
     }
 }
 
+/// What `with_mark` lays over a line for a mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Overlay {
+    /// Nothing.
+    Nothing,
+    /// The line over the top edge.
+    LineAbove,
+    /// The line over the bottom edge.
+    LineBelow,
+    /// The ring of a target around the whole line.
+    Ring,
+    /// The red ring and the words of a refusal around the whole line.
+    RefusedRing,
+}
+
+/// The overlay of `mark`.
+fn overlay_of(mark: Mark) -> Overlay {
+    match mark {
+        Mark::None => Overlay::Nothing,
+        Mark::Before => Overlay::LineAbove,
+        Mark::After => Overlay::LineBelow,
+        Mark::Into => Overlay::Ring,
+        Mark::Refused => Overlay::RefusedRing,
+    }
+}
+
+/// The mark a header hands to `list_area`: the line of a before or after
+/// (nothing else draws it), and nothing for a ring or a refusal, which the
+/// header draws itself (`mark_style` and its "Not allowed" words), so there
+/// is no second ring over it.
+fn header_mark(mark: Mark) -> Mark {
+    match mark {
+        Mark::Before | Mark::After => mark,
+        Mark::None | Mark::Into | Mark::Refused => Mark::None,
+    }
+}
+
 /// `content`, `height` tall, with the line of a before or after mark over its
 /// top or bottom edge. Always a stack, so the widget tree keeps its shape
 /// when a mark comes and goes.
@@ -776,12 +813,12 @@ fn with_mark<'a>(content: Element<'a, Message>, mark: Mark, height: f32) -> Elem
         }
     };
     let mut layers = stack![content].width(Fill).height(Length::Fixed(height));
-    match mark {
-        Mark::Before => layers = layers.push(line(true)),
-        Mark::After => layers = layers.push(line(false)),
-        Mark::Into => layers = layers.push(ring(false)),
-        Mark::Refused => layers = layers.push(ring(true)),
-        Mark::None => {}
+    match overlay_of(mark) {
+        Overlay::LineAbove => layers = layers.push(line(true)),
+        Overlay::LineBelow => layers = layers.push(line(false)),
+        Overlay::Ring => layers = layers.push(ring(false)),
+        Overlay::RefusedRing => layers = layers.push(ring(true)),
+        Overlay::Nothing => {}
     }
     layers.into()
 }
@@ -921,10 +958,7 @@ fn section_header<'a>(app: &App, header: &Header<'a>, density: Density) -> Eleme
     // The header draws its own ring above: `list_area` adds no ring over it,
     // only the line of a before or after mark.
     let cue = ListCue {
-        mark: match cue.mark {
-            Mark::Before | Mark::After => cue.mark,
-            Mark::None | Mark::Into | Mark::Refused => Mark::None,
-        },
+        mark: header_mark(cue.mark),
         ..cue
     };
     list_area(line.into(), key, cue, height, open)
@@ -1714,6 +1748,63 @@ fn pill<'a>(label: String, tone: Tone) -> Element<'a, Message> {
 
 #[cfg(test)]
 mod tests {
+    const MARKS: [Mark; 5] = [
+        Mark::None,
+        Mark::Before,
+        Mark::After,
+        Mark::Into,
+        Mark::Refused,
+    ];
+
+    #[test]
+    fn a_header_hands_on_the_line_of_a_before_or_after_and_nothing_else() {
+        let got = MARKS.map(header_mark);
+        assert_eq!(
+            got,
+            [
+                Mark::None,
+                Mark::Before,
+                Mark::After,
+                Mark::None,
+                Mark::None
+            ]
+        );
+    }
+
+    /// What each kind of line draws for each mark: a room row has its overlay
+    /// from `with_mark` alone; a header has the line from `with_mark` and its
+    /// ring or refusal from its own style, never both over each other.
+    #[test]
+    fn each_kind_of_line_draws_each_mark_once() {
+        use Overlay::{LineAbove, LineBelow, Nothing, RefusedRing, Ring};
+        let row = MARKS.map(overlay_of);
+        assert_eq!(row, [Nothing, LineAbove, LineBelow, Ring, RefusedRing]);
+        // A header: the overlay of `with_mark` plus its own ring (Into and
+        // Refused only, see `mark_style`).
+        let own_ring = |mark: Mark| matches!(mark, Mark::Into | Mark::Refused);
+        let header: Vec<(Overlay, bool)> = MARKS
+            .iter()
+            .map(|m| (overlay_of(header_mark(*m)), own_ring(*m)))
+            .collect();
+        assert_eq!(
+            header,
+            [
+                (Nothing, false),
+                (LineAbove, false),
+                (LineBelow, false),
+                (Nothing, true),
+                (Nothing, true)
+            ]
+        );
+        // Every mark shows something on both kinds of line, exactly once.
+        for (m, (over, ring)) in MARKS.iter().zip(&header).skip(1) {
+            assert!(
+                (*over != Nothing) ^ *ring,
+                "{m:?} is drawn once on a header"
+            );
+        }
+    }
+
     use super::*;
 
     fn env(avatars: &Avatars) -> RowEnv<'_> {
