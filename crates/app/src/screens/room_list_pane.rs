@@ -1335,6 +1335,29 @@ const fn voice_badge_size(density: Density) -> f32 {
     if shows_preview(density) { 16.0 } else { 14.0 }
 }
 
+/// What the row behind a channel's avatar looks like: selected, under the
+/// pointer, or plain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lit {
+    /// The list's own background.
+    Plain,
+    /// The pointer is over the row (or it is dragged).
+    Hovered,
+    /// The room is open.
+    Selected,
+}
+
+/// The fill of the speaker badge's circle: the colour of the row behind it
+/// (as [`row_box_style`] paints it), so the circle never shows as a disc.
+fn badge_fill(theme: &iced::Theme, lit: Lit) -> Color {
+    let sem = theme::semantic(theme);
+    match lit {
+        Lit::Plain => theme.palette().background,
+        Lit::Hovered => sem.message_hover,
+        Lit::Selected => sem.selection,
+    }
+}
+
 /// A room's avatar (its image, or its first letter) and, for a voice room,
 /// the small speaker at its bottom right corner: a filled circle in the
 /// list's background colour behind the icon, so it reads on an image and on a
@@ -1345,6 +1368,7 @@ fn channel_avatar<'a>(
     name: &str,
     avatars: &Avatars,
     density: Density,
+    lit: Lit,
 ) -> Element<'a, Message> {
     let size = channel_avatar_size(density);
     let avatar = avatar_view(room, name, avatars, size);
@@ -1359,10 +1383,10 @@ fn channel_avatar<'a>(
     )
     .center_x(side)
     .center_y(side)
-    .style(|t: &iced::Theme| container::Style {
-        background: Some(Background::Color(t.palette().background)),
+    .style(move |t: &iced::Theme| container::Style {
+        background: Some(Background::Color(badge_fill(t, lit))),
         text_color: Some(t.palette().text),
-        border: border::rounded(16.0)
+        border: border::rounded(side / 2.0)
             .color(theme::semantic(t).border)
             .width(1.0),
         ..container::Style::default()
@@ -1417,7 +1441,14 @@ fn channel_row<'a>(
     let name = row_name(&room.name);
     let emphasis = channel_emphasis(room, mode);
     let marks = channel_marks(room, mode);
-    let glyph = channel_avatar(room, &name, env.avatars, env.density);
+    let lit = if selected {
+        Lit::Selected
+    } else if cue.hovered || cue.dragged {
+        Lit::Hovered
+    } else {
+        Lit::Plain
+    };
+    let glyph = channel_avatar(room, &name, env.avatars, env.density, lit);
     let weight = if emphasis == Emphasis::Unread {
         fonts::BODY_SEMIBOLD
     } else {
@@ -2283,5 +2314,30 @@ mod tests {
             longest_marks(&marks)
         );
         assert_eq!(header_label("Channels"), "CHANNELS");
+    }
+
+    #[test]
+    fn the_speaker_badge_reads_at_3_to_1_on_every_row_background_in_every_theme() {
+        for theme in theme::test_themes() {
+            let name = theme.to_string();
+            let icon = theme.palette().text;
+            for lit in [Lit::Plain, Lit::Hovered, Lit::Selected] {
+                let fill = badge_fill(&theme, lit);
+                let ratio = theme::contrast(icon, fill);
+                assert!(ratio >= 3.0, "{name} {lit:?}: the speaker {ratio:.2}");
+                // The same check on a colour pulled most of the way to the
+                // circle must fail, so the check bites.
+                let worse = Color::from_rgb(
+                    icon.r + (fill.r - icon.r) * 0.9,
+                    icon.g + (fill.g - icon.g) * 0.9,
+                    icon.b + (fill.b - icon.b) * 0.9,
+                );
+                assert!(theme::contrast(worse, fill) < 3.0, "{name} {lit:?}: probe");
+                // The ring is told from the fill (a rim, not a second sign:
+                // the speaker's contrast above is what carries the meaning,
+                // so the ring has no 3:1 requirement).
+                assert_ne!(theme::semantic(&theme).border, fill, "{name} {lit:?}");
+            }
+        }
     }
 }

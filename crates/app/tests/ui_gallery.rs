@@ -1684,7 +1684,7 @@ fn a_closed_parent_stands_for_its_selected_sub_space_and_an_open_one_does_not() 
 
 #[test]
 fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes() {
-    use twicecat_app::screens::room_list_pane::SCROLLBAR_GUTTER;
+    use twicecat_app::screens::room_list_pane::{SCROLLBAR_GUTTER, channel_avatar_size};
     use twicecat_app::sections::{
         COMPACT_HEADER_HEIGHT, HEADER_HEIGHT, Line, line_height, line_offsets,
     };
@@ -1775,23 +1775,33 @@ fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes()
                             "{at}: {leaf:?} sticks out of {rect:?}"
                         );
                     }
-                    // A voice room's speaker is drawn over its avatar's corner
-                    // on purpose: that one pair may touch (the speaker is a
-                    // narrow leaf to the right of the avatar's letter), and
-                    // nothing else may.
+                    // A voice room's speaker is drawn over its avatar's
+                    // corner on purpose. Tree order is the edge slot (a pill
+                    // or bar under 5 px wide), the avatar's letter, then the
+                    // speaker. Only that one pair may overlap, and only when
+                    // the speaker lies inside the bottom right quadrant of the
+                    // avatar's slot (a square of `channel_avatar_size`
+                    // centred on the letter); every other pair is checked.
                     let voice = matches!(line, Line::Room(room) if room.is_call_room);
-                    let corner = |avatar: &Rectangle, speaker: &Rectangle| {
-                        voice
-                            && speaker.width <= 8.0
-                            && avatar.x < speaker.x
-                            && avatar.width <= 40.0
-                    };
+                    let letter = leaves.iter().position(|l| l.width > 5.0).unwrap_or(0);
+                    let mut allowed = None;
+                    if voice {
+                        let slot = channel_avatar_size(density);
+                        let (l, sp) = (leaves[letter], leaves[letter + 1]);
+                        let (cx, cy) = (l.x + l.width / 2.0, l.y + l.height / 2.0);
+                        assert!(
+                            sp.x >= cx - 0.5
+                                && sp.y >= cy - 0.5
+                                && sp.x + sp.width <= cx + slot / 2.0 + 0.5
+                                && sp.y + sp.height <= cy + slot / 2.0 + 0.5,
+                            "{at}: the speaker {sp:?} is not in the avatar's bottom right"
+                        );
+                        allowed = Some((letter, letter + 1));
+                    }
                     for (a, first) in leaves.iter().enumerate() {
-                        for second in &leaves[a + 1..] {
+                        for (b, second) in leaves.iter().enumerate().skip(a + 1) {
                             assert!(
-                                !overlap(first, second)
-                                    || corner(first, second)
-                                    || corner(second, first),
+                                !overlap(first, second) || allowed == Some((a, b)),
                                 "{at}: {first:?} overlaps {second:?}"
                             );
                         }
@@ -1803,9 +1813,9 @@ fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes()
 }
 
 /// Sidebar rework, Task 11: a space's list is drawn as categories. Capitals
-/// on the headers, a "#" before every text channel, the speaker before a voice
-/// one, and neither a preview nor a time on a channel row, in both densities
-/// and every test theme.
+/// on the headers, no "#" (every channel has its avatar, a voice room with a
+/// speaker at its corner), and neither a preview nor a time on a channel row,
+/// in both densities and every test theme.
 #[test]
 fn space_categories_draw_headers_in_capitals_and_channels_without_previews() {
     use twicecat_app::ui::icons::Icon;
