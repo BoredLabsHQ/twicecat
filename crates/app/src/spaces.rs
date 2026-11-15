@@ -16,7 +16,7 @@ use std::fmt;
 use iced::{Point, Subscription, Task, mouse, touch};
 use twicecat_core::api::{
     Command, RailEntry, RoomId, RoomListQuery, RoomSummary, SectionKey, SidebarLayout,
-    SpaceUnreadView, SpaceView, UnreadCountsView,
+    SpaceUnreadView, SpaceView, UnreadCountsView, UserId,
 };
 
 use crate::drag::{Outcome, Target, Zone};
@@ -27,6 +27,7 @@ use crate::rail_reorder::{self, RailColumn, RailReorder, ReorderEvent};
 use crate::sections::{Header, Line};
 use crate::sidebar::{Op as SidebarOp, SidebarState};
 use crate::state::{App, Message};
+use crate::view_store::ViewAnswer;
 
 /// Most spaces kept; the sidebar is not a place for thousands of buttons.
 pub const MAX_SPACES: usize = 200;
@@ -391,7 +392,103 @@ pub enum SpacesMessage {
     PointerCancelled,
 }
 
+/// Where the restore of the remembered space stands (Task 11d). `Debug`
+/// hides the ID.
+#[derive(Clone, PartialEq, Eq, Default)]
+pub(crate) enum ViewRestore {
+    /// Nobody is logged in.
+    #[default]
+    Idle,
+    /// The remembered space is being read.
+    Loading,
+    /// Read: select it as soon as the list of spaces holds it, unless the
+    /// user picks something first.
+    Waiting(RoomId),
+    /// Nothing more to do: restored, nothing was kept, or the user chose.
+    Done,
+}
+
+impl fmt::Debug for ViewRestore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Idle => "Idle",
+            Self::Loading => "Loading",
+            Self::Waiting(_) => "Waiting(<redacted>)",
+            Self::Done => "Done",
+        })
+    }
+}
+
 impl App {
+    /// Starts reading what `account` remembered.
+    pub(crate) fn load_view(&mut self, account: &UserId) -> Task<Message> {
+        self.view_restore = ViewRestore::Loading;
+        self.view_store.load(account).map(Message::ViewLoaded)
+    }
+
+    /// The remembered space arrived: wait for it to be in the list.
+    pub(crate) fn on_view_loaded(&mut self, answer: ViewAnswer) -> Task<Message> {
+        if self.user_id.as_ref() != Some(&answer.account)
+            || self.view_restore != ViewRestore::Loading
+        {
+            // Another account's answer, or the user chose in the meantime.
+            return Task::none();
+        }
+        self.view_restore = match answer.space {
+            Some(space) => ViewRestore::Waiting(space),
+            None => ViewRestore::Done,
+        };
+        self.restore_view()
+    }
+
+    /// Selects the remembered space once the list of spaces holds it. It is
+    /// not saved (it is what was saved). A space that is gone is never
+    /// selected, and nothing says so.
+    pub(crate) fn restore_view(&mut self) -> Task<Message> {
+        let ViewRestore::Waiting(space) = &self.view_restore else {
+            return Task::none();
+        };
+        if !self.spaces.contains(space) {
+            return Task::none();
+        }
+        let space = space.clone();
+        self.view_restore = ViewRestore::Done;
+        self.select_space(Some(space))
+    }
+
+    /// The user chose a space, or Home (`None`): it is selected, and
+    /// remembered once when that changes what is remembered. The user's choice
+    /// ends the restore, so it is never overridden.
+    pub(crate) fn pick_space(&mut self, space: Option<RoomId>) -> Task<Message> {
+        let pending = matches!(
+            self.view_restore,
+            ViewRestore::Loading | ViewRestore::Waiting(_)
+        );
+        let before = self.query.space.clone();
+        let select = self.select_space(space.clone());
+        if self.view_restore != ViewRestore::Idle {
+            self.view_restore = ViewRestore::Done;
+        }
+        let chosen = self.query.space == space;
+        let (Some(user), true) = (self.user_id.clone(), chosen) else {
+            return select;
+        };
+        if self.query.space == before && !pending {
+            return select;
+        }
+        let save = self.view_store.save(&user, space).discard();
+        Task::batch([select, save])
+    }
+
+    /// Drops what was remembered for the logged-in account (an explicit
+    /// logout).
+    pub(crate) fn forget_view(&mut self) -> Task<Message> {
+        match self.user_id.clone() {
+            Some(user) => self.view_store.remove(&user).discard(),
+            None => Task::none(),
+        }
+    }
+
     /// A space button, or **Home** (`None`): the room list is filtered to the
     /// space, keeping the tab and the search. An unknown space is refused.
     pub(crate) fn select_space(&mut self, space: Option<RoomId>) -> Task<Message> {
@@ -410,7 +507,7 @@ impl App {
     /// on one item with no leaving in between.
     pub(crate) fn on_rail(&mut self, message: SpacesMessage) -> Task<Message> {
         match message {
-            SpacesMessage::Select(space) => self.select_space(space),
+            SpacesMessage::Select(space) => self.pick_space(space),
             SpacesMessage::ToggleTree(id) => {
                 self.set_tree(&id, None);
                 Task::none()
@@ -785,8 +882,8 @@ impl App {
     /// A click on an item of the rail.
     fn rail_click(&mut self, key: RailKey) -> Task<Message> {
         match key {
-            RailKey::Home => self.select_space(None),
-            RailKey::Space(id) => self.select_space(Some(id)),
+            RailKey::Home => self.pick_space(None),
+            RailKey::Space(id) => self.pick_space(Some(id)),
             // Refused only with no layout loaded, when no folder shows.
             RailKey::Folder(id) => self
                 .apply_sidebar(SidebarOp::ToggleFolder(id))
@@ -883,7 +980,8 @@ impl App {
             Some(id) if !self.spaces.contains(id) => self.select_space(None),
             _ => Task::none(),
         };
-        Task::batch([fetch, reset])
+        let restore = self.restore_view();
+        Task::batch([fetch, reset, restore])
     }
 }
 

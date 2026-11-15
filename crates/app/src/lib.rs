@@ -52,6 +52,7 @@ pub mod upload;
 pub mod verification;
 pub mod video;
 pub mod video_settings;
+pub mod view_store;
 
 pub use bridge::{Bridge, BridgeEvent, EventsSlot};
 pub use state::{App, CommandSink, Message, Screen, Startup};
