@@ -3137,6 +3137,99 @@ mod tests {
             assert_eq!(record(&app).custom.len(), MAX_CUSTOM_SECTIONS);
         }
 
+        fn list_card_open(app: &App) -> bool {
+            matches!(
+                &app.sidebar_menu,
+                Some(SidebarMenu::Card {
+                    target: Target::List(_),
+                    ..
+                })
+            )
+        }
+
+        /// The card of the empty space has "New section" and nothing else, and
+        /// the entry is the headers' one: the same dialog, op, save and result.
+        #[test]
+        fn the_empty_space_card_offers_new_section_only_and_does_what_the_header_entry_does() {
+            let (mut app, store, _rx) = menu_app();
+            send(&mut app, M::OpenList);
+            assert!(list_card_open(&app));
+            assert_eq!(
+                crate::sidebar_menu::entries(&Target::List(rid("sp")), false),
+                [Entry::NewSection]
+            );
+            // Another entry does nothing.
+            for stray in [Entry::MoveUp, Entry::Star, Entry::Delete, Entry::Collapse] {
+                entry(&mut app, stray);
+                assert!(list_card_open(&app), "{stray:?}");
+            }
+            assert_eq!(saves(&store), 0);
+            entry(&mut app, Entry::NewSection);
+            assert!(matches!(
+                &app.sidebar_menu,
+                Some(SidebarMenu::Name(d)) if matches!(d.purpose, Purpose::NewSection { room: None, .. })
+            ));
+            name(&mut app, "Later");
+            assert!(app.sidebar_menu.is_none());
+            assert_eq!(saves(&store), 1, "saved once");
+            let by_list = record(&app);
+            // The same as the header's card.
+            let (mut other, store2, _rx2) = menu_app();
+            send(&mut other, M::OpenSection(SectionKey::Channels));
+            entry(&mut other, Entry::NewSection);
+            name(&mut other, "Later");
+            assert_eq!(saves(&store2), 1);
+            assert_eq!(by_list, record(&other));
+            assert_eq!(drawn_names(&app), drawn_names(&other));
+            // The same name rules and limits: a bad name keeps the dialog.
+            send(&mut app, M::OpenList);
+            entry(&mut app, Entry::NewSection);
+            name(&mut app, &"x".repeat(33));
+            assert!(matches!(
+                &app.sidebar_menu,
+                Some(SidebarMenu::Name(d)) if d.error.is_some()
+            ));
+            assert_eq!(saves(&store), 1);
+        }
+
+        #[test]
+        fn the_empty_space_card_opens_only_in_a_sectioned_list_and_closes_with_it() {
+            // Home, a search, a chip other than All, the narrow rail: no card.
+            let (mut app, _store, _rx) = home_app();
+            send(&mut app, M::OpenList);
+            assert!(app.sidebar_menu.is_none(), "Home");
+            let (mut app, _store, _rx) = menu_app();
+            let _ = app.update(Message::SearchChanged("chan".to_owned()));
+            send(&mut app, M::OpenList);
+            assert!(app.sidebar_menu.is_none(), "a search");
+            let (mut app, _store, _rx) = menu_app();
+            let _ = app.update(Message::ChipClicked(RoomListTab::Unreads));
+            send(&mut app, M::OpenList);
+            assert!(app.sidebar_menu.is_none(), "a chip");
+            let (mut app, _store, _rx) = menu_app();
+            app.ui_settings.room_list = RoomListChoice::Rail;
+            send(&mut app, M::OpenList);
+            assert!(app.sidebar_menu.is_none(), "the rail");
+            // Open, then the list turns flat: the card closes.
+            let (mut app, _store, _rx) = menu_app();
+            send(&mut app, M::OpenList);
+            assert!(list_card_open(&app));
+            let _ = app.update(Message::Spaces(SpacesMessage::Select(None)));
+            assert!(app.sidebar_menu.is_none());
+            // Esc closes it.
+            let (mut app, _store, _rx) = menu_app();
+            send(&mut app, M::OpenList);
+            let _ = app.update(Message::Shortcut {
+                shortcut: Shortcut::Escape,
+                captured: false,
+            });
+            assert!(app.sidebar_menu.is_none());
+            // Not over another card.
+            send(&mut app, M::OpenRoom(rid("chan1")));
+            send(&mut app, M::OpenList);
+            assert!(!list_card_open(&app), "the room card stays");
+        }
+
         #[test]
         fn esc_closes_the_card_and_a_card_for_a_room_that_left_closes_itself() {
             let (mut app, _store, _rx) = menu_app();

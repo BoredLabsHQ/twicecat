@@ -504,7 +504,7 @@ fn windowed_list(app: &App) -> Element<'_, Message> {
             flat_room_row(room_row(room, &env, selected, mode, call), room)
         }
     });
-    scroller(top, rows, bottom)
+    scroller(top, rows, bottom, None)
 }
 
 /// A row of the flat list with its options: a right-click opens the room's
@@ -526,10 +526,12 @@ fn scroller<'a>(
     top: f32,
     rows: impl IntoIterator<Item = Element<'a, Message>>,
     bottom: f32,
+    tail: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let content = column![space().height(top)]
         .extend(rows)
         .push(space().height(bottom))
+        .extend(tail)
         .padding(iced::Padding {
             right: SCROLLBAR_GUTTER,
             ..iced::Padding::ZERO
@@ -542,6 +544,29 @@ fn scroller<'a>(
         })
         .height(Fill)
         .into()
+}
+
+/// How tall the free space under the last line of the sectioned list is: the
+/// rest of the viewport when the lines are shorter than it, and at least one
+/// row, so there is always some to right-click.
+pub fn filler_height(content: f32, viewport: f32, row: f32) -> f32 {
+    (viewport - content).max(row)
+}
+
+/// The free space under the sectioned list: a right-click on it asks for the
+/// card with "New section". It is below the spacer, so it never stands for a
+/// line; it takes no left press and is no drop target, and a wheel turn is not
+/// taken by it. A row, a header and their buttons are inside their own areas,
+/// which take the right-click first (iced's `mouse_area` lets its content
+/// capture before it acts).
+fn list_filler<'a>(content: f32, viewport: f32, row: f32) -> Element<'a, Message> {
+    mouse_area(
+        space()
+            .width(Fill)
+            .height(filler_height(content, viewport, row)),
+    )
+    .on_right_press(Message::SidebarMenu(SidebarMenuMessage::OpenList))
+    .into()
 }
 
 /// The sectioned list (a space is selected): headers, rooms and hints, each
@@ -610,7 +635,12 @@ fn sectioned_list<'a>(app: &'a App, lines: &[Line<'a>]) -> Element<'a, Message> 
             area.into()
         }
     });
-    scroller(top, rows, bottom)
+    let filler = list_filler(
+        offsets.last().copied().unwrap_or(0.0),
+        app.list_viewport_h,
+        row_height(density),
+    );
+    scroller(top, rows, bottom, Some(filler))
 }
 
 /// Thickness of the line that shows where a drop would put the dragged item.
@@ -1964,6 +1994,14 @@ fn pill<'a>(label: String, tone: Tone) -> Element<'a, Message> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_free_space_is_the_rest_of_the_viewport_and_at_least_one_row() {
+        assert_eq!(filler_height(100.0, 600.0, 56.0), 500.0);
+        assert_eq!(filler_height(590.0, 600.0, 56.0), 56.0);
+        assert_eq!(filler_height(2000.0, 600.0, 56.0), 56.0);
+        assert_eq!(filler_height(0.0, 0.0, 56.0), 56.0, "no viewport known yet");
+    }
+
     const MARKS: [Mark; 5] = [
         Mark::None,
         Mark::Before,

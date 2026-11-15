@@ -582,6 +582,12 @@ existing shortcut keeps its meaning.
   section of your own stays under Favourites (the tag wins), so a room can be
   where the card says and not where it was dropped; the card's words say which
   tag it carries. No shortcut was added or changed.
+- **A right-click on the empty space of a space's list is a pointer-only
+  convenience.** It opens a card with "New section" alone, which is also an
+  entry of the card of every section header and room row, so nothing can be
+  done only there. Like the other cards it needs a pointer, and it is not in
+  Home, the flat list, a search or the narrow rail. No shortcut was added or
+  changed.
 - **The card of a row in the flat list is pointer-only too.** A right-click on
   a room in Home, under a chip other than All, or in a search result opens a
   card with the two tag entries only, worded after the room's tags. Like the

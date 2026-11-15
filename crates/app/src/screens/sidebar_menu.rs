@@ -80,7 +80,9 @@ fn title_of(app: &App, items: &[RailItem<'_>], target: &Target) -> String {
                 |name| name_or_placeholder(name, MAX_NAME_CHARS),
             ),
         // These cards have their own (`section_card` and `room_card`).
-        Target::Section { .. } | Target::Room { .. } | Target::FlatRoom(_) => String::new(),
+        Target::Section { .. } | Target::Room { .. } | Target::FlatRoom(_) | Target::List(_) => {
+            String::new()
+        }
     }
 }
 
@@ -95,7 +97,28 @@ fn card<'a>(
         Target::Section { key, .. } => section_card(app, key, error, window_height),
         Target::Room { space, room } => room_card(app, space, room, error, window_height),
         Target::FlatRoom(room) => flat_room_card(app, room, error, window_height),
+        Target::List(space) => list_card(app, space, error, window_height),
     }
+}
+
+/// The card of the empty space of a space's list: "New section" alone.
+fn list_card<'a>(
+    app: &'a App,
+    space: &RoomId,
+    error: Option<&'static str>,
+    window_height: f32,
+) -> Element<'a, Message> {
+    let title = app
+        .spaces
+        .spaces()
+        .iter()
+        .find(|s| s.id == *space)
+        .map_or_else(|| "Space".to_owned(), space_name);
+    let mut body: Column<'a, Message> = Column::new().spacing(tokens::S);
+    for entry in entries(&Target::List(space.clone()), false) {
+        body = body.push(entry_button(entry, true));
+    }
+    frame(title, body, error, window_height)
 }
 
 /// The frame all cards share: the title with its close button, the body, and

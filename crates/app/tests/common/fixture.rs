@@ -948,6 +948,17 @@ fn space_sections_dragging_header() -> App {
     )
 }
 
+/// The card of the empty space of a space's list (sidebar rework, Task 11c):
+/// the collapsed sections list, so there is free space under the last line,
+/// with "New section" as the only entry.
+fn space_sections_empty_card() -> App {
+    use twicecat_app::sidebar_menu::SidebarMenuMessage;
+
+    let mut app = space_sections(true);
+    press(&mut app, Message::SidebarMenu(SidebarMenuMessage::OpenList));
+    app
+}
+
 /// The options card of a room that sits in a section of the user's own.
 fn section_menu() -> App {
     use twicecat_app::sidebar_menu::SidebarMenuMessage;
@@ -4349,6 +4360,22 @@ pub fn scenarios() -> Vec<Scenario> {
                         Some(twicecat_app::list_drop::ListKey::Header(_))
                     )
                     && a.list_drag.target().is_some()
+            },
+        ),
+        s(
+            "space-sections-empty-card",
+            true,
+            space_sections_empty_card,
+            |a| {
+                in_main(a)
+                    && a.sections_shown()
+                    && matches!(
+                        &a.sidebar_menu,
+                        Some(twicecat_app::sidebar_menu::SidebarMenu::Card {
+                            target: twicecat_app::sidebar_menu::Target::List(_),
+                            ..
+                        })
+                    )
             },
         ),
         s("section-menu", true, section_menu, |a| {

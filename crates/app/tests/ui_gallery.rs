@@ -423,6 +423,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "space-sections-dragging-tag",
         "space-sections-dragging-ghost",
         "section-menu",
+        "space-sections-empty-card",
         "verification-requested",
         "verification-emojis",
         "verification-done",
@@ -529,7 +530,7 @@ fn ctrl_wheel_over_the_status_bar_never_logs_out() {
     let mut laid = Laid::new(&app, &renderer, WIDE);
     laid.settle(&renderer, WIDE);
     let mut messages: Vec<Message> = Vec::new();
-    let mut deliver = |laid: &mut Laid<'_>, event: Event, at: Point| {
+    let mut deliver = |laid: &mut Laid<'_>, event: Event, at: iced::Point| {
         let mut shell = Shell::new(&mut messages);
         laid.element.as_widget_mut().update(
             &mut laid.tree,
@@ -1732,7 +1733,15 @@ fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes()
                 let lines = app.section_lines().expect("sections show");
                 let density = app.density();
                 let offsets = line_offsets(&lines, density);
-                let (rows, content_width) = list_rows(&laid);
+                let (mut rows, content_width) = list_rows(&laid);
+                // The last child is the free space under the lines (Task
+                // 11c): at least one row tall, and no line.
+                let filler = rows.pop().expect("the free space").0;
+                assert!(
+                    filler.height + 0.5 >= twicecat_app::room_list::row_height(density),
+                    "{what}: the free space is {} high",
+                    filler.height
+                );
                 // The list is short enough to be built whole.
                 assert_eq!(rows.len(), lines.len(), "{what}: every line is built");
                 let mut y = rows[0].0.y;
@@ -2146,7 +2155,7 @@ fn ctrl_wheel_over_the_room_header_never_changes_the_notification_mode() {
         let mut laid = Laid::new(&app, &renderer, size);
         laid.settle(&renderer, size);
         let mut messages: Vec<Message> = Vec::new();
-        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: Point| {
+        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: iced::Point| {
             let mut shell = Shell::new(&mut messages);
             laid.element.as_widget_mut().update(
                 &mut laid.tree,
@@ -2196,7 +2205,9 @@ fn ctrl_wheel_over_the_options_cards_never_picks_a_folder_or_a_section() {
         ("rail-menu", 1280.0),
         ("rail-menu", 720.0),
         ("section-menu", 1280.0),
+        ("space-sections-empty-card", 1280.0),
         ("section-menu", 720.0),
+        ("space-sections-empty-card", 720.0),
         ("room-list-sort", 1280.0),
         ("room-list-sort", 720.0),
         ("room-list-card", 1280.0),
@@ -2213,7 +2224,7 @@ fn ctrl_wheel_over_the_options_cards_never_picks_a_folder_or_a_section() {
         let mut laid = Laid::new(&app, &renderer, size);
         laid.settle(&renderer, size);
         let mut messages: Vec<Message> = Vec::new();
-        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: Point| {
+        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: iced::Point| {
             let mut shell = Shell::new(&mut messages);
             laid.element.as_widget_mut().update(
                 &mut laid.tree,
@@ -2418,6 +2429,138 @@ fn the_flat_card_scenario_shows_only_the_tags_in_every_theme_and_density() {
             }
         }
     }
+}
+
+/// A right-click through the real widgets on the free space under a space's
+/// list asks for the card with "New section"; on a row or a header it asks
+/// for theirs and never also for this one; a wheel turn over the free space is
+/// not taken, so the list scrolls.
+#[test]
+fn a_right_click_on_the_free_space_of_the_sectioned_list_asks_for_its_card_only_there() {
+    use twicecat_app::sidebar_menu::SidebarMenuMessage;
+    let renderer = renderer();
+    let size = WIDE;
+    let build = |name: &str| {
+        fixture::scenarios()
+            .into_iter()
+            .find(|s| s.name == name)
+            .map(|s| (s.build)())
+            .expect("the scenario")
+    };
+    let deliver =
+        |laid: &mut Laid<'_>, at: iced::Point, events: &[Event]| -> (Vec<Message>, bool) {
+            let mut messages: Vec<Message> = Vec::new();
+            let mut captured = false;
+            for event in events {
+                let mut shell = Shell::new(&mut messages);
+                laid.element.as_widget_mut().update(
+                    &mut laid.tree,
+                    event,
+                    Layout::new(&laid.node),
+                    mouse::Cursor::Available(at),
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut shell,
+                    &Rectangle::with_size(size),
+                );
+                captured |= shell.is_event_captured();
+            }
+            (messages, captured)
+        };
+    let right_click = |laid: &mut Laid<'_>, at: iced::Point| {
+        deliver(
+            laid,
+            at,
+            &[
+                Event::Mouse(mouse::Event::CursorMoved { position: at }),
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)),
+            ],
+        )
+        .0
+    };
+    let count = |sent: &[Message], f: &dyn Fn(&SidebarMenuMessage) -> bool| {
+        sent.iter()
+            .filter(|m| matches!(m, Message::SidebarMenu(inner) if f(inner)))
+            .count()
+    };
+    let is_list = |m: &SidebarMenuMessage| matches!(m, SidebarMenuMessage::OpenList);
+    // A tall window, so the list ends above the bottom: free space under its
+    // last line.
+    let size = Size::new(1280.0, 1500.0);
+    let app = build("space-sections-collapsed");
+    let mut laid = Laid::new(&app, &renderer, size);
+    laid.settle(&renderer, size);
+    let lowest = texts(&mut laid, &renderer)
+        .into_iter()
+        .filter(|(_, r)| r.x < 320.0 && r.y > 150.0 && r.y < 1400.0)
+        .map(|(_, r)| r.y + r.height)
+        .fold(0.0_f32, f32::max);
+    // Walk down from the last text: the first right-click that asks for the
+    // list's card is the free space, and nothing above it asks for it.
+    let mut free = None;
+    let mut y = lowest - 40.0;
+    while y < 1400.0 {
+        let at = iced::Point::new(150.0, y);
+        let sent = right_click(&mut laid, at);
+        if count(&sent, &is_list) == 1 {
+            free = Some(at);
+            break;
+        }
+        y += 4.0;
+    }
+    let free = free.expect("a point of the free space under the last line");
+    assert!(free.y > lowest - 40.0, "{} under {lowest}", free.y);
+    let free = iced::Point::new(free.x, free.y + 8.0);
+    let sent = right_click(&mut laid, free);
+    assert_eq!(count(&sent, &is_list), 1, "{sent:?}");
+    assert_eq!(count(&sent, &|_| true), 1, "nothing else: {sent:?}");
+    // A left click there asks for nothing.
+    let (sent, _) = deliver(
+        &mut laid,
+        free,
+        &[
+            Event::Mouse(mouse::Event::CursorMoved { position: free }),
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ],
+    );
+    assert!(sent.is_empty(), "{sent:?}");
+    // The wheel is not taken by it.
+    let (sent, captured) = deliver(
+        &mut laid,
+        free,
+        &[Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+        })],
+    );
+    assert!(!captured && sent.is_empty(), "{sent:?}");
+    // A header and a row: their own card, never this one too.
+    let app = build("space-sections");
+    let mut laid = Laid::new(&app, &renderer, size);
+    laid.settle(&renderer, size);
+    let all = texts(&mut laid, &renderer);
+    let at = |name: &str| {
+        all.iter()
+            .find(|(t, r)| t == name && r.x < 320.0)
+            .unwrap_or_else(|| panic!("{name} is in the list"))
+            .1
+            .center()
+    };
+    let sent = right_click(&mut laid, at("CHANNELS"));
+    assert_eq!(
+        count(&sent, &|m| matches!(m, SidebarMenuMessage::OpenSection(_))),
+        1,
+        "{sent:?}"
+    );
+    assert_eq!(count(&sent, &is_list), 0, "{sent:?}");
+    let sent = right_click(&mut laid, at("General"));
+    assert_eq!(
+        count(&sent, &|m| matches!(m, SidebarMenuMessage::OpenRoom(_))),
+        1,
+        "{sent:?}"
+    );
+    assert_eq!(count(&sent, &is_list), 0, "{sent:?}");
 }
 
 /// A right-click on a flat row through the real widgets: it asks for the
@@ -2685,7 +2828,7 @@ fn ctrl_wheel_over_the_menus_of_the_settings_and_call_screens_changes_nothing() 
         let mut laid = Laid::new(app, &renderer, WIDE);
         laid.settle(&renderer, WIDE);
         let mut messages: Vec<Message> = Vec::new();
-        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: Point| {
+        let mut deliver = |laid: &mut Laid<'_>, event: Event, at: iced::Point| {
             let mut shell = Shell::new(&mut messages);
             laid.element.as_widget_mut().update(
                 &mut laid.tree,
@@ -5649,7 +5792,7 @@ mod dialogs {
     }
 
     /// `(scenario, card width, what the close button in the header sends)`.
-    const CARDS: [(&str, f32, &str); 13] = [
+    const CARDS: [(&str, f32, &str); 14] = [
         ("create-room", 460.0, "Rooms(CloseDialog)"),
         ("join-room", 460.0, "Rooms(CloseDialog)"),
         ("start-dm", 460.0, "Rooms(CloseDialog)"),
@@ -5661,6 +5804,7 @@ mod dialogs {
         ("rail-menu", 380.0, "SidebarMenu(Close)"),
         ("rail-folder-name", 380.0, "SidebarMenu(Close)"),
         ("section-menu", 380.0, "SidebarMenu(Close)"),
+        ("space-sections-empty-card", 380.0, "SidebarMenu(Close)"),
         ("room-list-sort", 380.0, "SidebarMenu(Close)"),
         ("room-list-card", 380.0, "SidebarMenu(Close)"),
     ];
@@ -5709,6 +5853,7 @@ mod dialogs {
             "rail-menu",
             "rail-folder-name",
             "section-menu",
+            "space-sections-empty-card",
             "room-list-sort",
             "room-list-card",
         ];
@@ -5721,6 +5866,7 @@ mod dialogs {
                     n if n.starts_with("room-") || n.starts_with("members") => 520.0,
                     n if n.starts_with("upload") => 520.0,
                     n if n.starts_with("rail-") || n.starts_with("section-") => 380.0,
+                    "space-sections-empty-card" => 380.0,
                     _ => 460.0,
                 };
                 let card = card_rect(&laid, width);
@@ -5964,6 +6110,7 @@ mod dialogs {
             "rail-menu",
             "rail-folder-name",
             "section-menu",
+            "space-sections-empty-card",
             "room-list-sort",
             "room-list-card",
         ] {

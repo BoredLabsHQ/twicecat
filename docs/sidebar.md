@@ -141,7 +141,12 @@ Everything can be done through the **options menus**:
 
 - **right-click** a space, a folder, a room or a section header, or
 - press the **"⋯"** button at the right of a section header (or on the open
-  room's row).
+  room's row), or
+- **right-click the empty space** under the last line of a space's list (scroll
+  to the end of the list if it fills the window): a small card with **New
+  section** alone, the same entry as on the other cards, with the same name
+  rules and limits. It exists only in a space's sectioned list, not in Home,
+  under a chip other than All, in a search result or in the narrow rail.
 
 The menu is a card in the middle of the window with the entries Move up, Move
 down, Move to folder (which also offers a new folder), Remove from folder,
