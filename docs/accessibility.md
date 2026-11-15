@@ -532,11 +532,11 @@ existing shortcut keeps its meaning.
   Ctrl+K still finds every room. The list is a menu that Ctrl + wheel (the
   zoom gesture) cannot change. No shortcut was added or changed.
 - **A channel row says what it is by shape and words, not by colour or weight
-  alone.** In a space's list every room has its picture or first letter, and a voice
-  room has a small speaker icon at the corner of it (plus the call count while
-  someone is in its call); the speaker icon is the only mark of an empty voice
-  room. A room set to Mute carries the word
-  "Muted", an invite the word "Invite", and a badge shows the count or a dot.
+  alone.** In a space's list every room has its picture or first letter, and a
+  voice room has a small speaker icon at the corner of it (plus the call count
+  while someone is in its call); the speaker icon is the only mark of an empty
+  voice room. A room set to Mute carries the word "Muted", an invite the word
+  "Invite", and a badge shows the count or a dot.
   An unread name is bold and in the text colour (at least 4.5:1 against the row
   in every theme), a read name and a header are muted (at least 3:1), and a read
   or muted name is never brighter than an unread one. The bar at the left edge
