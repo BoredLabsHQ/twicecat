@@ -3817,7 +3817,7 @@ mod tests {
         /// next is one target, and one row shows the line.
         #[test]
         fn a_gap_between_two_rows_is_one_target_and_one_line() {
-            let (mut app, store, _rx) = arranged();
+            let (mut app, _store, _rx) = arranged();
             // "Ops" holds chan1 and t2, in that order.
             assert!(
                 app.apply_sidebar(Op::MoveRoomToSection {
@@ -3829,7 +3829,6 @@ mod tests {
             );
             let order: Vec<RoomId> = record(&app).custom[0].rooms.clone();
             assert_eq!(order.len(), 3);
-            let _ = store;
             start(&mut app, &room("t1"));
             send(
                 &mut app,
