@@ -588,6 +588,10 @@ existing shortcut keeps its meaning.
   done only there. Like the other cards it needs a pointer, and it is not in
   Home, the flat list, a search or the narrow rail. No shortcut was added or
   changed.
+- **Reopening on the selected space needs no input.** Twicecat remembers the
+  space you had selected on this device and selects it again at the next
+  start; nothing about it is a control, and no shortcut was added or changed.
+  Ctrl+K and the room-stepping keys work from there as before.
 - **The card of a row in the flat list is pointer-only too.** A right-click on
   a room in Home, under a chip other than All, or in a search result opens a
   card with the two tag entries only, worded after the room's tags. Like the

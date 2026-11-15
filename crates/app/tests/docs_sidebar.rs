@@ -558,3 +558,30 @@ fn the_docs_say_the_empty_space_of_a_space_list_offers_new_section_and_is_pointe
         "accessibility.md does not say it"
     );
 }
+
+#[test]
+fn the_docs_say_the_selected_space_is_remembered_on_this_device_per_account_and_dropped_at_logout()
+{
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "reopens on **the space you had selected**",
+        "the room you had open, the filter chip and the scroll position are not kept",
+        "on this device only**, per account",
+        "`view-<digest>.json`",
+        "never sent to your homeserver",
+        "opens on home without saying anything",
+        "logging out of the account **discards** it",
+        "a session that only expired keeps it",
+        "another account on the same device never reads it",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    assert!(
+        access.contains("reopening on the selected space needs no input"),
+        "accessibility.md does not say it"
+    );
+}

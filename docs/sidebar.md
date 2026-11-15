@@ -263,6 +263,20 @@ folder is new and empty each time, so nothing is kept from one run to the next.
 - If a file cannot be read at all (it is damaged), it is set aside as
   `sidebar-<digest>.json.bad` and the default sidebar is shown.
 
+### The space you had selected
+
+Twicecat reopens on **the space you had selected** (or Home) when you quit
+it: that, and only that. The room you had open, the filter chip and the scroll
+position are not kept. It is kept **on this device only**, per account, in a
+second small file named `view-<digest>.json` in the same folder (the account's
+user ID and the space's ID, nothing else), and it is never sent to your
+homeserver. If that space is no longer in your list, Twicecat opens on Home
+without saying anything, and a space you click yourself before the list has
+arrived is never replaced. This second file is separate from the layout file
+above: logging out of the account **discards** it, so the next login starts on
+Home, while a session that only expired keeps it. Another account on the same
+device never reads it.
+
 ## Starting over
 
 - **Reset sidebar layout** in **Settings, Appearance**: press **Reset sidebar

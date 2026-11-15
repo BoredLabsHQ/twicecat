@@ -3,13 +3,19 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::api::sidebar::is_valid_user_id;
 use crate::api::sidebar::limits::MAX_SIDEBAR_BYTES;
+use crate::api::sidebar::{is_valid_room_id, is_valid_user_id};
 use crate::api::{
     CustomSection, DensityChoice, FolderLayout, RailEntry, RoomId, RoomListChoice, RoomSortChoice,
     SectionKey, SidebarLabel, SidebarLayout, SidebarRead, SpaceLayout, ThemeChoice, ThemeName,
     UiSettings, UpdateCheckChoice, UserId,
 };
+
+/// Largest view file read (4 KiB); anything bigger is ignored.
+pub const MAX_VIEW_BYTES: u64 = 4 * 1024;
+
+/// The version of the view file this build writes and reads.
+const VIEW_VERSION: u64 = 1;
 
 /// Largest settings file read (64 KiB); anything bigger is treated as corrupt.
 const MAX_SETTINGS_BYTES: u64 = 64 * 1024;
@@ -748,6 +754,97 @@ impl DataPaths {
         }
     }
 
+    /// `<root>/view-<digest>.json`: what the app remembers of where the
+    /// user was in one account (the selected space), see
+    /// [`Self::read_view_space`]. A separate file from the sidebar layout, so
+    /// an older Twicecat that knows neither leaves both alone. `<digest>` is
+    /// the same FNV-1a hash of the user ID as the sidebar file's.
+    pub fn view_file(&self, account: &UserId) -> PathBuf {
+        let digest = fnv1a_64(account.as_str().as_bytes());
+        self.root.join(format!("view-{digest:016x}.json"))
+    }
+
+    /// The space `account` had selected when the app last ran, or `None`
+    /// (Home, no file, or a file that is unusable).
+    ///
+    /// The file must be a regular file of at most [`MAX_VIEW_BYTES`], a JSON
+    /// object with `"version": 1`, the `account` it was written for, and a
+    /// `space` that is a valid room ID or null. Anything else gives `None`.
+    /// A file that is not JSON (or not an object) is renamed `.bad`; a newer
+    /// version is left untouched. No other file is read, and reading never
+    /// creates one.
+    pub fn read_view_space(&self, account: &UserId) -> Option<RoomId> {
+        if !is_valid_user_id(account.as_str()) {
+            return None;
+        }
+        let path = self.view_file(account);
+        let bytes = read_capped_regular_file(&path, MAX_VIEW_BYTES)?;
+        let value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(value) if value.is_object() => value,
+            _ => {
+                let mut bad = path.clone().into_os_string();
+                bad.push(".bad");
+                // Best effort: if it fails the file is ignored all the same.
+                let _ = std::fs::rename(&path, bad);
+                return None;
+            }
+        };
+        if value.get("version").and_then(serde_json::Value::as_u64) != Some(VIEW_VERSION) {
+            return None;
+        }
+        if value.get("account").and_then(serde_json::Value::as_str) != Some(account.as_str()) {
+            return None;
+        }
+        let id = value.get("space")?.as_str()?;
+        is_valid_room_id(id).then(|| RoomId::from(id))
+    }
+
+    /// Remembers `space` (`None` for Home) for `account`: atomically (a
+    /// temporary file with mode 0o600 on Unix, then a rename). Refuses an
+    /// invalid account or room ID, and a file saved by a newer Twicecat
+    /// (left as it is).
+    pub fn write_view_space(
+        &self,
+        account: &UserId,
+        space: Option<&RoomId>,
+    ) -> std::io::Result<()> {
+        use std::io::{Error, ErrorKind};
+
+        if !is_valid_user_id(account.as_str())
+            || space.is_some_and(|s| !is_valid_room_id(s.as_str()))
+        {
+            return Err(Error::new(ErrorKind::InvalidInput, "invalid ID"));
+        }
+        if let Some(bytes) = read_capped_regular_file(&self.view_file(account), MAX_VIEW_BYTES)
+            && serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| v.get("version").and_then(serde_json::Value::as_u64))
+                .is_some_and(|version| version > VIEW_VERSION)
+        {
+            return Err(Error::new(ErrorKind::PermissionDenied, "a newer file"));
+        }
+        let json = serde_json::json!({
+            "version": VIEW_VERSION,
+            "account": account.as_str(),
+            "space": space.map(RoomId::as_str),
+        });
+        let name = self
+            .view_file(account)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "no file name"))?;
+        self.write_private(&name, json.to_string().as_bytes())
+    }
+
+    /// Removes `account`'s remembered view (at an explicit logout). A missing
+    /// file is `Ok`; no other account's file is touched.
+    pub fn remove_view(&self, account: &UserId) -> std::io::Result<()> {
+        match std::fs::remove_file(self.view_file(account)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
     fn write_private(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
         use std::io::Write as _;
 
@@ -1450,6 +1547,145 @@ mod tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    // ---- the remembered view (selected space), per account ----
+
+    fn view_root() -> (tempfile::TempDir, DataPaths) {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = DataPaths::at(tmp.path().join("root"));
+        (tmp, p)
+    }
+
+    fn who(id: &str) -> UserId {
+        UserId::from(id)
+    }
+
+    #[test]
+    fn a_remembered_space_round_trips_and_home_is_none() {
+        let (_t, p) = view_root();
+        let a = who("@a:x");
+        assert_eq!(p.read_view_space(&a), None, "no file");
+        p.write_view_space(&a, Some(&RoomId::from("!space:x")))
+            .unwrap();
+        assert_eq!(p.read_view_space(&a), Some(RoomId::from("!space:x")));
+        p.write_view_space(&a, None).unwrap();
+        assert_eq!(p.read_view_space(&a), None, "Home");
+        // The file names no ID in its name.
+        let name = p.view_file(&a);
+        assert!(!name.to_string_lossy().contains("@a"));
+    }
+
+    #[test]
+    fn another_accounts_file_is_not_read_and_the_account_is_checked_inside() {
+        let (_t, p) = view_root();
+        let (a, b) = (who("@a:x"), who("@b:x"));
+        p.write_view_space(&a, Some(&RoomId::from("!one:x")))
+            .unwrap();
+        assert_eq!(p.read_view_space(&b), None);
+        p.write_view_space(&b, Some(&RoomId::from("!two:x")))
+            .unwrap();
+        assert_eq!(p.read_view_space(&a), Some(RoomId::from("!one:x")));
+        // A file copied under another account's name names the wrong account.
+        std::fs::copy(p.view_file(&a), p.view_file(&who("@c:x"))).unwrap();
+        assert_eq!(p.read_view_space(&who("@c:x")), None);
+    }
+
+    #[test]
+    fn a_corrupt_oversized_or_wrong_version_file_gives_none_and_touches_no_other_file() {
+        let (_t, p) = view_root();
+        let a = who("@a:x");
+        std::fs::create_dir_all(p.root()).unwrap();
+        // Another file of the root stays as it is.
+        let sidebar = p.sidebar_file(&a);
+        std::fs::write(&sidebar, b"{\"keep\":1}").unwrap();
+        let file = p.view_file(&a);
+        let account = a.as_str();
+        for (what, bytes) in [
+            ("not json", b"not json".to_vec()),
+            ("an array", b"[1]".to_vec()),
+            (
+                "a newer version",
+                format!(r#"{{"version":2,"account":"{account}","space":"!s:x"}}"#).into_bytes(),
+            ),
+            (
+                "no version",
+                format!(r#"{{"account":"{account}","space":"!s:x"}}"#).into_bytes(),
+            ),
+            (
+                "a bad id",
+                format!(r#"{{"version":1,"account":"{account}","space":"not an id"}}"#)
+                    .into_bytes(),
+            ),
+            (
+                "a long id",
+                format!(
+                    r#"{{"version":1,"account":"{account}","space":"!{}:x"}}"#,
+                    "a".repeat(1000)
+                )
+                .into_bytes(),
+            ),
+            ("oversized", {
+                let mut big =
+                    format!(r#"{{"version":1,"account":"{account}","pad":""#).into_bytes();
+                big.resize(MAX_VIEW_BYTES as usize + 10, b'a');
+                big.extend_from_slice(b"\"}");
+                big
+            }),
+        ] {
+            std::fs::write(&file, &bytes).unwrap();
+            assert_eq!(p.read_view_space(&a), None, "{what}");
+            assert_eq!(std::fs::read(&sidebar).unwrap(), b"{\"keep\":1}", "{what}");
+        }
+        // A corrupt one is set aside, and a write after it works.
+        std::fs::write(&file, b"not json").unwrap();
+        assert_eq!(p.read_view_space(&a), None);
+        assert!(!file.exists(), "set aside as .bad");
+        p.write_view_space(&a, Some(&RoomId::from("!s:x"))).unwrap();
+        assert_eq!(p.read_view_space(&a), Some(RoomId::from("!s:x")));
+    }
+
+    #[test]
+    fn a_newer_view_file_is_not_overwritten_and_a_bad_id_is_not_written() {
+        let (_t, p) = view_root();
+        let a = who("@a:x");
+        std::fs::create_dir_all(p.root()).unwrap();
+        let newer = format!(r#"{{"version":2,"account":"{}","x":1}}"#, a.as_str());
+        std::fs::write(p.view_file(&a), &newer).unwrap();
+        assert!(p.write_view_space(&a, Some(&RoomId::from("!s:x"))).is_err());
+        assert_eq!(std::fs::read_to_string(p.view_file(&a)).unwrap(), newer);
+        let (_t2, q) = view_root();
+        assert!(q.write_view_space(&a, Some(&RoomId::from("nope"))).is_err());
+        assert!(!q.view_file(&a).exists());
+        assert!(q.write_view_space(&who("bad"), None).is_err());
+    }
+
+    #[test]
+    fn removing_the_view_file_removes_only_that_accounts_and_a_missing_one_is_ok() {
+        let (_t, p) = view_root();
+        let (a, b) = (who("@a:x"), who("@b:x"));
+        p.remove_view(&a).unwrap();
+        p.write_view_space(&a, Some(&RoomId::from("!one:x")))
+            .unwrap();
+        p.write_view_space(&b, Some(&RoomId::from("!two:x")))
+            .unwrap();
+        p.remove_view(&a).unwrap();
+        assert_eq!(p.read_view_space(&a), None);
+        assert_eq!(p.read_view_space(&b), Some(RoomId::from("!two:x")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_view_file_is_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let (_t, p) = view_root();
+        let a = who("@a:x");
+        p.write_view_space(&a, None).unwrap();
+        let mode = std::fs::metadata(p.view_file(&a))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

@@ -2109,6 +2109,216 @@ mod tests {
         lines_of(&app.section_lines().expect("sections show"))
     }
 
+    // ---- reopening on the space that was selected (Task 11d) ----
+
+    mod view_restore {
+        use super::*;
+        use crate::view_store::{Call, MemoryView, ViewAnswer};
+
+        fn login(app: &mut App, user: &str) {
+            feed(
+                app,
+                CoreEvent::LoggedIn {
+                    user_id: UserId::from(user),
+                    device_id: DeviceId::from("D"),
+                    restored: true,
+                },
+            );
+        }
+
+        /// A started app with `store` as its view store, logged in as `user`
+        /// (the load is asked for; the answer is fed by `answer`).
+        fn started(store: &MemoryView, user: &str) -> (App, mpsc::Receiver<Command>) {
+            let (mut app, rx) = app();
+            app.set_view_store(Box::new(store.clone()));
+            login(&mut app, user);
+            (app, rx)
+        }
+
+        /// The answer of the store for `user`, as the load would give it.
+        fn answer(app: &mut App, store: &MemoryView, user: &str) {
+            let space = store.kept_for(user);
+            let _ = app.update(Message::ViewLoaded(ViewAnswer {
+                account: UserId::from(user),
+                space,
+            }));
+        }
+
+        fn two_spaces() -> Vec<SpaceView> {
+            let mut all = spaces();
+            all.push(view("other", 0, &[]));
+            all
+        }
+
+        fn arrive(app: &mut App) {
+            feed(app, CoreEvent::Spaces(two_spaces()));
+        }
+
+        fn pick(app: &mut App, space: Option<&str>) {
+            let _ = app.update(Message::Spaces(SpacesMessage::Select(space.map(rid))));
+        }
+
+        #[test]
+        fn the_remembered_space_is_selected_after_the_spaces_arrive_and_nothing_is_saved() {
+            // The answer first, then the spaces; and the other way round.
+            for answer_first in [true, false] {
+                let store = MemoryView::default();
+                store.keep("@a:x", Some("!sp:x"));
+                let (mut app, _rx) = started(&store, "@a:x");
+                assert!(store.calls().contains(&Call::Load(UserId::from("@a:x"))));
+                if answer_first {
+                    answer(&mut app, &store, "@a:x");
+                    assert_eq!(app.query.space, None, "the spaces are not here yet");
+                    arrive(&mut app);
+                } else {
+                    arrive(&mut app);
+                    assert_eq!(app.query.space, None);
+                    answer(&mut app, &store, "@a:x");
+                }
+                assert_eq!(app.query.space, Some(rid("sp")), "{answer_first}");
+                assert_eq!(store.saves(), 0, "a restore saves nothing");
+                // The next list of spaces changes nothing.
+                arrive(&mut app);
+                assert_eq!(store.saves(), 0);
+            }
+        }
+
+        #[test]
+        fn a_space_that_is_gone_or_an_id_that_is_not_one_is_ignored_silently() {
+            let store = MemoryView::default();
+            store.keep("@a:x", Some("!gone:x"));
+            let (mut app, _rx) = started(&store, "@a:x");
+            answer(&mut app, &store, "@a:x");
+            arrive(&mut app);
+            assert_eq!(app.query.space, None);
+            assert!(app.notice.is_none());
+            assert_eq!(store.saves(), 0);
+            // An answer that is not an ID names no space of the list.
+            let (mut app, _rx) = started(&store, "@a:x");
+            let _ = app.update(Message::ViewLoaded(ViewAnswer {
+                account: UserId::from("@a:x"),
+                space: Some(RoomId::from("not an id")),
+            }));
+            arrive(&mut app);
+            assert_eq!(app.query.space, None);
+        }
+
+        #[test]
+        fn a_choice_of_the_user_before_the_answer_or_the_spaces_is_never_overridden() {
+            // The spaces are here, the answer is late: the click wins.
+            let store = MemoryView::default();
+            store.keep("@a:x", Some("!sp:x"));
+            let (mut app, _rx) = started(&store, "@a:x");
+            arrive(&mut app);
+            pick(&mut app, Some("other"));
+            answer(&mut app, &store, "@a:x");
+            arrive(&mut app);
+            assert_eq!(app.query.space, Some(rid("other")));
+            // Home is a choice too, made while the answer waits for the spaces.
+            let store = MemoryView::default();
+            store.keep("@a:x", Some("!sp:x"));
+            let (mut app, _rx) = started(&store, "@a:x");
+            answer(&mut app, &store, "@a:x");
+            pick(&mut app, None);
+            arrive(&mut app);
+            assert_eq!(app.query.space, None, "Home stays");
+            assert_eq!(store.kept_for("@a:x"), None, "and it is what is remembered");
+        }
+
+        #[test]
+        fn a_choice_is_saved_once_when_it_changes_and_home_is_remembered_as_none() {
+            let store = MemoryView::default();
+            let (mut app, _rx) = started(&store, "@a:x");
+            answer(&mut app, &store, "@a:x");
+            arrive(&mut app);
+            assert_eq!(store.saves(), 0, "nothing saved on load");
+            pick(&mut app, Some("other"));
+            pick(&mut app, Some("other"));
+            assert_eq!(store.saves(), 1, "the same choice again saves nothing");
+            assert_eq!(store.kept_for("@a:x"), Some(rid("other")));
+            pick(&mut app, None);
+            assert_eq!(store.saves(), 2);
+            assert_eq!(store.kept_for("@a:x"), None);
+            pick(&mut app, None);
+            assert_eq!(store.saves(), 2);
+            // A space the list does not hold is refused and not remembered.
+            pick(&mut app, Some("!unknown:x"));
+            assert_eq!(store.saves(), 2);
+            // Events and frames save nothing.
+            arrive(&mut app);
+            assert_eq!(store.saves(), 2);
+        }
+
+        #[test]
+        fn the_next_start_reopens_on_it() {
+            let store = MemoryView::default();
+            let (mut app, _rx) = started(&store, "@a:x");
+            answer(&mut app, &store, "@a:x");
+            arrive(&mut app);
+            pick(&mut app, Some("other"));
+            drop(app);
+            let (mut next, _rx) = started(&store, "@a:x");
+            arrive(&mut next);
+            answer(&mut next, &store, "@a:x");
+            assert_eq!(next.query.space, Some(rid("other")));
+            assert_eq!(store.saves(), 1);
+        }
+
+        #[test]
+        fn an_explicit_logout_drops_it_and_an_expired_session_keeps_it() {
+            let store = MemoryView::default();
+            store.keep("@a:x", Some("!sp:x"));
+            let (mut app, _rx) = started(&store, "@a:x");
+            feed(&mut app, CoreEvent::SessionExpired);
+            assert!(!store.calls().iter().any(|c| matches!(c, Call::Remove(_))));
+            assert_eq!(store.kept_for("@a:x"), Some(rid("sp")));
+            login(&mut app, "@a:x");
+            feed(&mut app, CoreEvent::LoggedOut);
+            assert_eq!(
+                store.calls().last(),
+                Some(&Call::Remove(UserId::from("@a:x")))
+            );
+            assert_eq!(store.kept_for("@a:x"), None);
+            // After it nothing is restored for the next login.
+            login(&mut app, "@a:x");
+            answer(&mut app, &store, "@a:x");
+            arrive(&mut app);
+            assert_eq!(app.query.space, None);
+        }
+
+        #[test]
+        fn two_accounts_never_see_each_others_space() {
+            let store = MemoryView::default();
+            store.keep("@a:x", Some("!sp:x"));
+            store.keep("@b:x", Some("!other:x"));
+            let (mut app, _rx) = started(&store, "@b:x");
+            // A late answer for the other account is ignored.
+            answer(&mut app, &store, "@a:x");
+            arrive(&mut app);
+            assert_eq!(app.query.space, None);
+            answer(&mut app, &store, "@b:x");
+            assert_eq!(app.query.space, Some(rid("other")));
+            // Its choice is saved under its own name only.
+            pick(&mut app, None);
+            assert_eq!(store.kept_for("@a:x"), Some(rid("sp")));
+            assert_eq!(store.kept_for("@b:x"), None);
+            // Logging out as b leaves a's file.
+            feed(&mut app, CoreEvent::LoggedOut);
+            assert_eq!(store.kept_for("@a:x"), Some(rid("sp")));
+        }
+
+        #[test]
+        fn debug_hides_the_account_and_the_space() {
+            let answer = Message::ViewLoaded(ViewAnswer {
+                account: UserId::from("@secret:x"),
+                space: Some(RoomId::from("!secretspace:x")),
+            });
+            assert!(!format!("{answer:?}").contains("secret"));
+            let waiting = crate::spaces::ViewRestore::Waiting(RoomId::from("!secretspace:x"));
+            assert!(!format!("{waiting:?}").contains("secret"));
+        }
+    }
+
     // ---- when sections show ----
 
     #[test]

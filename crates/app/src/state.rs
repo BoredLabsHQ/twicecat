@@ -57,6 +57,7 @@ use crate::timeline::{self, Effects, TimelineView};
 use crate::tray::{self, NoTrayFactory, SystemTrayFactory, TrayAction, TrayFactory, TrayModel};
 use crate::upload::{self, Outcome, UploadModel, UploadPaths};
 use crate::verification::{VerificationMessage, VerificationModel};
+use crate::view_store::{NoViewStore, ViewAnswer, ViewStore};
 
 /// How many users' trust the app keeps: the selected peer, and a stale one or
 /// two from watchers the core replaced.
@@ -210,6 +211,9 @@ pub enum Message {
     /// A sidebar layout was read for an account (the answer to the load a
     /// login starts). Its `Debug` hides the account and shows counts only.
     SidebarLoaded(SidebarAnswer),
+    /// The space remembered for an account was read (the answer to the load
+    /// a login starts). Its `Debug` hides the account and the space.
+    ViewLoaded(ViewAnswer),
     /// The options card of the spaces rail and its name dialog.
     SidebarMenu(SidebarMenuMessage),
     /// The system theme mode, at boot or after a change.
@@ -559,6 +563,10 @@ pub struct App {
     /// The logged-in account's sidebar layout (the rail shows its order and folders).
     pub sidebar: SidebarModel,
     pub(crate) sidebar_store: Box<dyn SidebarStore>,
+    /// Where the selected space is remembered (Task 11d).
+    pub(crate) view_store: Box<dyn ViewStore>,
+    /// Where the restore of the remembered space stands.
+    pub(crate) view_restore: crate::spaces::ViewRestore,
     /// The spaces the user is in (the sidebar).
     pub spaces: SpacesModel,
     /// The options card or the name dialog of the rail, when one is open.
@@ -752,6 +760,8 @@ impl App {
             settings_store: Box::new(NoSettingsStore),
             sidebar: SidebarModel::default(),
             sidebar_store: Box::new(NoSidebarStore),
+            view_store: Box::new(NoViewStore),
+            view_restore: crate::spaces::ViewRestore::default(),
             spaces: SpacesModel::default(),
             sidebar_menu: None,
             rail_hover: None,
@@ -837,6 +847,7 @@ impl App {
             let task = Task::batch([task, app.start_update_checks()]);
             app.set_settings_store(Box::new(store.clone()));
             app.set_sidebar_store(Box::new(sidebar_store.clone()));
+            app.set_view_store(Box::new(crate::view_store::DiskView::new(paths.clone())));
             app.data_paths = paths.clone();
             // The first read of the themes folder runs off the UI thread; the
             // window shows Twicecat until it is done.
@@ -879,6 +890,11 @@ impl App {
     /// Replaces where the sidebar layout is kept (tests use a fake).
     pub fn set_sidebar_store(&mut self, store: Box<dyn SidebarStore>) {
         self.sidebar_store = store;
+    }
+
+    /// Replaces where the selected space is remembered (tests use a fake).
+    pub fn set_view_store(&mut self, store: Box<dyn ViewStore>) {
+        self.view_store = store;
     }
 
     /// Does a change of the sidebar layout and saves it. Refused (and nothing
@@ -1588,6 +1604,7 @@ impl App {
                 self.clear_stale_rail_keys();
                 Task::none()
             }
+            Message::ViewLoaded(answer) => self.on_view_loaded(answer),
             Message::Crash(message) => self.on_crash(message),
             Message::Verification(message) => self.on_verification(message),
             Message::Sessions(message) => self.on_sessions(message),
@@ -1869,6 +1886,13 @@ impl App {
                         Message::SidebarLoaded(SidebarAnswer::new(account.clone(), load))
                     });
                 task = Task::batch([task, load]);
+                // The space this account had selected last time, unless this
+                // is the same login again.
+                if self.user_id.as_ref() != Some(&user_id)
+                    || self.view_restore == crate::spaces::ViewRestore::Idle
+                {
+                    task = Task::batch([task, self.load_view(&user_id)]);
+                }
                 // Another account with no logout in between: nothing of the
                 // old one's rail (open trees, hover) carries over.
                 if self.user_id.as_ref() != Some(&user_id) {
@@ -1899,7 +1923,12 @@ impl App {
                 self.end_login_attempt();
                 self.screen = Screen::Login;
             }
-            CoreEvent::LoggedOut => task = self.back_to_login("You were logged out."),
+            CoreEvent::LoggedOut => {
+                // An explicit logout drops what was remembered for the
+                // account (a session that only expired keeps it).
+                let forget = self.forget_view();
+                task = Task::batch([self.back_to_login("You were logged out."), forget]);
+            }
             CoreEvent::SessionExpired => {
                 task = self.back_to_login("Your session expired. Please log in again.");
             }
@@ -2849,6 +2878,7 @@ impl App {
         self.sidebar_menu = None;
         // Memory only: no sidebar file is touched at logout.
         self.sidebar.unload();
+        self.view_restore = crate::spaces::ViewRestore::Idle;
         self.forget_threads();
         // Nothing of the old account outlives it: the switcher (its rooms),
         // a room still to open, the search, tab and space (the core keeps
