@@ -4501,6 +4501,20 @@ Three reviews (core messaging and sync, calls and audio, app UI) found the bugs 
 - **Checks (`CC=clang-22 CXX=clang++-22`):** fmt, clippy with and without `--all-features`, `cargo test --workspace` (3,049 passed, 0 failed, 187 ignored), `cargo check --workspace --lib --bins --locked`, the four scripts, `cargo deny check`.
 - **Open:** the Starred row case of a custom-section room: a room dropped on a Starred row stars it, as the header does.
 
+### Step 10c: one drop position between two rows, not two (sbr.10c)
+- **Report:** "when you want to move a channel between two others, there are two possibilities, below the top one and above the lower one; there should be only one".
+- **Cause (read in the code):** `halves` gave `(A, After)` in the lower half of a row and `(B, Before)` in the upper half of the next; `with_mark` drew the line at the bottom of A or the top of B, so one gap had two targets and two lines (a jump when the pointer crossed the boundary).
+- **Changed (app):**
+  - `list_drop::single_gap`: the bottom half of a room row followed (in the drawn lines) by a room row of the same section of the user's own, and the bottom half of a header followed by another header, are named `(next, Before)`; everything else keeps its zone (the first row's top half, the last row's bottom half, a row followed by a voice room's people or another section). `plan` is untouched.
+  - `spaces.rs` `list_over` applies it to the drawn lines before the target is evaluated, so the hover, the mark and the drop all use the one target.
+  - `screens/room_list_pane.rs`: while checking the headers I found that Step 10b's "no double ring on a header" change had also dropped the before/after line of a header being reordered (it passed `Mark::None` to the area). Fixed: a header's area keeps `Before`/`After` and drops only `Into`/`Refused`. The 10b ring and "Not allowed" cues are unchanged.
+  - Header to header: the same code path, so the same rule (two headers with nothing between them, for example two collapsed sections, are one gap); a header with rows under it keeps its bottom half.
+  - `docs/sidebar.md` ("You can also drag"): the gap is one place and one line.
+- **Tests:** `list_drop::tests::a_gap_between_two_rows_is_one_place_and_plan_gives_the_same_verdict_for_both_names` (every adjacent pair of drawn rows, for every dragged room including the neighbours themselves, with a collapsed section of kept rooms: `plan(After A) == plan(Before B)`; first and last rows keep their halves), `two_headers_with_no_row_between_them_are_one_gap_too`, and `sections::tests::dragging::a_gap_between_two_rows_is_one_target_and_one_line` (both halves give the same `Target`, only one row carries it, first and last keep theirs, the drop lands between the two). They were written together with the code, not first; the mutation below shows they fail without it.
+- **Mutation (recorded, reverted):** skipping the normalisation (`single_gap` returning its input) fails all three tests above.
+- **Gallery:** `space-sections-dragging*` pass (layout and overlap, every test theme, both densities). `-line` and `-header` use a Before zone, which is unchanged; the header PNG shows its line again (see the 10b fix above). Not re-opened.
+- **Checks (`CC=clang-22 CXX=clang++-22`):** fmt, clippy with and without `--all-features`, `cargo test --workspace`, check `--locked`, the four scripts, `cargo deny check`.
+
 ## Sidebar rework human checkpoint
 - [ ] **(Task 5) The rail's drag in a real window** (Linux Wayland and X11, Windows, macOS; none of this can be seen headlessly, the gallery is tiny-skia and has no pointer):
   - how the drag feels: the lifted item (1.05 scale), the others sliding aside, the ghost where it came from, in every shipped theme and both densities; whether the settling after the drop looks right or jumps;
@@ -4535,3 +4549,4 @@ What cannot be verified headlessly (all of it is on the items above):
 - real pointer drags and hover;
 - tag round trips with Element.
 - [ ] **(Task 10b) Dragging a room onto a ROW of Channels (or Direct messages, a sub-space, Favourites, Low priority, Starred) in a real window:** a room from one of your own sections dropped on a row of Channels goes back to Channels; the whole row shows a ring while the pointer is over it (not a line), and a room that may not go there (a DM on a Channels row) shows the red ring and "Not allowed" on the row. Is the cue on a row readable in every theme, and enough? The order inside the section stays the sort's.
+- [ ] **(Task 10c) Drag a channel between two others in a real window** (a section of your own, every theme): one line shows in the gap, and it does not jump or flicker when the pointer crosses the boundary between the two rows; the first row's top half and the last row's bottom half still show a line; two collapsed sections next to each other show one line between them when a section header is dragged.

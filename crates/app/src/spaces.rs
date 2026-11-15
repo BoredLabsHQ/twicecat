@@ -564,6 +564,14 @@ impl App {
             (ListKey::Room(_), ListKey::Room(near)) if self.in_built_in_section(near) => Zone::Into,
             _ => zone,
         };
+        // A gap between two rows (or two headers) is one place, named from
+        // the line after it: the bottom half of one and the top half of the
+        // next are the same target, so the line is drawn once and never moves
+        // when the pointer crosses the boundary.
+        let (key, zone) = match self.section_lines() {
+            Some(lines) => list_drop::single_gap(&lines, &item, key, zone),
+            None => (key, zone),
+        };
         let target = Target { item: key, zone };
         if self.list_drag.seen(&target) {
             return;

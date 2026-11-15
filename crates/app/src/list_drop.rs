@@ -114,6 +114,41 @@ pub fn halves(y: f32, height: f32) -> Zone {
     }
 }
 
+/// The one place a drop in a gap between two drawn lines is named by. The
+/// pointer in the bottom half of a line and in the top half of the next one
+/// is the same place in the list, so both give the next line, `Before`: a room
+/// row after a room row of the same section of the user's own, and a header
+/// after a header (a section with nothing under its header). Anything else
+/// (the first row, the last row, a row followed by a voice room's people or
+/// by another section) keeps `zone`. `plan` gives the same verdict for both
+/// names of a gap.
+pub fn single_gap(lines: &[Line<'_>], item: &ListKey, key: ListKey, zone: Zone) -> (ListKey, Zone) {
+    if zone != Zone::After {
+        return (key, zone);
+    }
+    let at = lines.iter().position(|line| match (line, &key) {
+        (Line::Room(room), ListKey::Room(id)) => room.id == *id,
+        (Line::Header(header), ListKey::Header(k)) => header.key == *k,
+        _ => false,
+    });
+    let next = at.and_then(|i| lines.get(i + 1));
+    match (item, &key, next) {
+        (ListKey::Room(_), ListKey::Room(a), Some(Line::Room(b))) => {
+            let (Some(here), Some(there)) = (spot_of(lines, a), spot_of(lines, &b.id)) else {
+                return (key, zone);
+            };
+            if here.section == there.section && matches!(here.section, SectionKey::Custom(_)) {
+                return (ListKey::Room(b.id.clone()), Zone::Before);
+            }
+            (key, zone)
+        }
+        (ListKey::Header(_), ListKey::Header(_), Some(Line::Header(next))) => {
+            (ListKey::Header(next.key.clone()), Zone::Before)
+        }
+        _ => (key, zone),
+    }
+}
+
 /// Works out dropping `item` on `target` in `space`'s sectioned list.
 /// `lines` are the lines drawn, and `defaults` the same rooms placed with
 /// no layout (every room in its default section).
@@ -453,6 +488,10 @@ mod tests {
             &item,
             &Target { item: target, zone },
         )
+    }
+
+    fn r_id(id: &RoomId) -> ListKey {
+        ListKey::Room(id.clone())
     }
 
     fn r(n: &str) -> ListKey {
@@ -934,6 +973,112 @@ mod tests {
         let after = ops(planned(&rec, r("t1"), r("c2"), Zone::After));
         assert_eq!(after.len(), 1);
         assert!(matches!(after[0], Op::MoveRoomToSection { .. }));
+    }
+
+    /// The drawn lines of the tests' space with `rec`.
+    fn lines_for(rec: &SpaceLayout) -> (Vec<SpaceView>, Vec<RoomSummary>, SpaceLayout) {
+        (spaces(), rooms(), rec.clone())
+    }
+
+    #[test]
+    fn a_gap_between_two_rows_is_one_place_and_plan_gives_the_same_verdict_for_both_names() {
+        // "Ops" holds c1, c2; "Wide" holds c4, t1, t2 (rows next to each other).
+        let mut rec = record();
+        rec.custom.push(custom(2, "Wide", &["c4", "t1", "t2"]));
+        // And a collapsed one, whose rooms are kept but not drawn.
+        rec.custom.push(custom(3, "Shut", &["d1"]));
+        rec.collapsed.push(SectionKey::Custom(3));
+        let (sp, rs, rec) = lines_for(&rec);
+        let lines = build(&sp[0], &sp, &rs, Some(&rec));
+        let defaults = build_defaults(&sp[0], &sp, &rs);
+        let layout = layout_of(&rec);
+        let on = |item: &ListKey, key: ListKey, zone: Zone| {
+            plan(
+                &rid("sp"),
+                &layout,
+                &lines,
+                &defaults,
+                item,
+                &Target { item: key, zone },
+            )
+        };
+        let all: Vec<ListKey> = ["c1", "c2", "c3", "c4", "t1", "t2", "d1"]
+            .iter()
+            .map(|n| r(n))
+            .collect();
+        let mut pairs = 0;
+        for window in lines.windows(2) {
+            let (Line::Room(a), Line::Room(b)) = (&window[0], &window[1]) else {
+                continue;
+            };
+            for item in &all {
+                let (key, zone) = single_gap(&lines, item, r_id(&a.id), Zone::After);
+                let same_section = matches!(
+                    (spot_of(&lines, &a.id), spot_of(&lines, &b.id)),
+                    (Some(x), Some(y)) if x.section == y.section
+                        && matches!(x.section, SectionKey::Custom(_))
+                );
+                if !same_section {
+                    assert_eq!((key, zone), (r_id(&a.id), Zone::After), "kept");
+                    continue;
+                }
+                pairs += 1;
+                assert_eq!((key.clone(), zone), (r_id(&b.id), Zone::Before));
+                assert_eq!(
+                    on(item, r_id(&a.id), Zone::After),
+                    on(item, r_id(&b.id), Zone::Before),
+                    "after {} is before {}",
+                    a.name,
+                    b.name
+                );
+            }
+        }
+        assert!(pairs >= 8, "the sweep covered the pairs ({pairs})");
+        // The first row's top half and the last row's bottom half stay.
+        let item = r("c4");
+        assert_eq!(
+            single_gap(&lines, &item, r("c1"), Zone::Before),
+            (r("c1"), Zone::Before)
+        );
+        assert_eq!(
+            single_gap(&lines, &item, r("c2"), Zone::After),
+            (r("c2"), Zone::After),
+            "the last row of Ops is followed by a header"
+        );
+    }
+
+    #[test]
+    fn two_headers_with_no_row_between_them_are_one_gap_too() {
+        use SectionKey::Custom;
+        // "Ops" collapsed and "Empty" collapsed: nothing between the headers.
+        let mut rec = record();
+        rec.collapsed = vec![Custom(0), Custom(1)];
+        let sp = spaces();
+        let rs = rooms();
+        let lines = build(&sp[0], &sp, &rs, Some(&rec));
+        let defaults = build_defaults(&sp[0], &sp, &rs);
+        let layout = layout_of(&rec);
+        let item = h(SectionKey::Direct);
+        assert_eq!(
+            single_gap(&lines, &item, h(Custom(0)), Zone::After),
+            (h(Custom(1)), Zone::Before)
+        );
+        let on = |key: SectionKey, zone: Zone| {
+            plan(
+                &rid("sp"),
+                &layout,
+                &lines,
+                &defaults,
+                &item,
+                &Target { item: h(key), zone },
+            )
+        };
+        assert_eq!(on(Custom(0), Zone::After), on(Custom(1), Zone::Before));
+        // A header with rows under it keeps its bottom half.
+        assert_eq!(
+            single_gap(&lines, &item, h(SectionKey::Starred), Zone::After),
+            (h(SectionKey::Starred), Zone::After)
+        );
     }
 
     /// Every operation a drop gives is one that a card of Task 9 produces.

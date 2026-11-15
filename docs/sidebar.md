@@ -182,7 +182,9 @@ You can also **drag**, in two places:
   row of a built-in section works like dropping it on that section's header
   (the whole row shows the same ring, or "Not allowed"), and the sort, not
   the drop, decides where it stands. Between the rows of a section of your own
-  the drop still puts the room before or after the row.
+  the drop puts the room before or after a row, and the gap between two rows
+  is one place: one line is drawn there, and it does not move while the pointer
+  crosses from the lower half of one row to the upper half of the next.
 
   Some drops have a result you cannot see at once:
 

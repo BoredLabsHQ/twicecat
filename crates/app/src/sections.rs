@@ -3813,6 +3813,80 @@ mod tests {
             assert_eq!(saves(&store), saved);
         }
 
+        /// The pointer in the bottom half of a row and in the top half of the
+        /// next is one target, and one row shows the line.
+        #[test]
+        fn a_gap_between_two_rows_is_one_target_and_one_line() {
+            let (mut app, store, _rx) = arranged();
+            // "Ops" holds chan1 and t2, in that order.
+            assert!(
+                app.apply_sidebar(Op::MoveRoomToSection {
+                    space: rid("sp"),
+                    room: rid("chan2"),
+                    section: 0
+                })
+                .is_ok()
+            );
+            let order: Vec<RoomId> = record(&app).custom[0].rooms.clone();
+            assert_eq!(order.len(), 3);
+            let _ = store;
+            start(&mut app, &room("t1"));
+            send(
+                &mut app,
+                S::ListOver(ListKey::Room(order[0].clone()), Zone::After),
+            );
+            let low = app.list_drag.target().cloned().expect("a target");
+            send(
+                &mut app,
+                S::ListOver(ListKey::Room(order[1].clone()), Zone::Before),
+            );
+            let high = app.list_drag.target().cloned().expect("a target");
+            assert_eq!(low, high, "the same target from both halves");
+            assert_eq!(
+                (low.item.clone(), low.zone),
+                (ListKey::Room(order[1].clone()), Zone::Before)
+            );
+            // Only one row of the list carries the mark.
+            let marked = |app: &App| {
+                order
+                    .iter()
+                    .filter(|id| {
+                        app.list_drag
+                            .target()
+                            .is_some_and(|t| t.item == ListKey::Room((*id).clone()))
+                    })
+                    .count()
+            };
+            assert_eq!(marked(&app), 1);
+            // The first row keeps its top half, the last its bottom half.
+            send(
+                &mut app,
+                S::ListOver(ListKey::Room(order[0].clone()), Zone::Before),
+            );
+            assert_eq!(
+                app.list_drag.target().map(|t| (t.item.clone(), t.zone)),
+                Some((ListKey::Room(order[0].clone()), Zone::Before))
+            );
+            send(
+                &mut app,
+                S::ListOver(ListKey::Room(order[2].clone()), Zone::After),
+            );
+            assert_eq!(
+                app.list_drag.target().map(|t| (t.item.clone(), t.zone)),
+                Some((ListKey::Room(order[2].clone()), Zone::After))
+            );
+            // Letting go in the gap puts the room between the two.
+            send(
+                &mut app,
+                S::ListOver(ListKey::Room(order[0].clone()), Zone::After),
+            );
+            send(&mut app, S::PointerReleased);
+            let now = record(&app).custom[0].rooms.clone();
+            assert_eq!(now[0], order[0]);
+            assert_eq!(now[1], rid("t1"));
+            assert_eq!(now[2], order[1]);
+        }
+
         #[test]
         fn a_press_and_release_with_no_movement_is_still_a_click() {
             let (mut app, store, mut rx) = arranged();
