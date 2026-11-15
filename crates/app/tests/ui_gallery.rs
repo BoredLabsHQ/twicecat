@@ -70,6 +70,9 @@ fn apply(app: &mut App, variant: Variant) {
     settings.advanced_settings = app.ui_settings.advanced_settings;
     // The scenario's answer to the update question (its bar or none).
     settings.update_check = app.ui_settings.update_check;
+    // The sort a scenario chose (the Sort card's).
+    settings.room_sort = app.ui_settings.room_sort;
+    settings.unread_first = app.ui_settings.unread_first;
     // A scenario that picked a theme of its own keeps it; the theme variants
     // only replace Twicecat and Daylight.
     if let Some(own) = app.ui_settings.theme_name
@@ -404,6 +407,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "rail-menu",
         "rail-folder-name",
         "room-list-chips",
+        "room-list-sort",
         "space-sections",
         "space-sections-collapsed",
         "voice-channel",
@@ -1880,6 +1884,8 @@ fn ctrl_wheel_over_the_options_cards_never_picks_a_folder_or_a_section() {
         ("rail-menu", 720.0),
         ("section-menu", 1280.0),
         ("section-menu", 720.0),
+        ("room-list-sort", 1280.0),
+        ("room-list-sort", 720.0),
     ] {
         let size = Size::new(width, 800.0);
         let mut app = fixture::scenarios()
@@ -1927,6 +1933,101 @@ fn ctrl_wheel_over_the_options_cards_never_picks_a_folder_or_a_section() {
             "Ctrl + wheel acted on the {scenario} card at {width}"
         );
     }
+}
+
+/// The `room-list-sort` scenario (sidebar rework, Task 8): the card is open
+/// over the list in A to Z with the unread rooms first, in every theme and
+/// density, at both widths. The card fits the window, its words do not touch,
+/// and the expanded list reads Design review (a mention), Lounge (a
+/// notification), Build alerts and Stand-up (unread, marked), then the rest
+/// A to Z.
+#[test]
+fn the_sort_scenario_shows_the_card_over_a_to_z_with_unreads_first() {
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "room-list-sort")
+        .expect("the scenario");
+    let expected = [
+        "Design review",
+        "Lounge",
+        "Build alerts",
+        "Stand-up",
+        "Alice Example",
+        "Bob Example",
+        "Book club",
+        "Garden club",
+        "Kitchen",
+        "Open house",
+        "Photos",
+        "Reading list",
+        "Travel",
+        "Voice hangout",
+    ];
+    let mut app = (scenario.build)();
+    let mut checked = 0;
+    for variant in variants(true) {
+        apply(&mut app, variant);
+        for size in SIZES {
+            app.window_width = size.width;
+            let what = format!("{} at {}", variant.tag(), size.width);
+            let mut laid = Laid::new(&app, &renderer, size);
+            laid.settle(&renderer, size);
+            let card = dialogs::card_rect(&laid, 380.0);
+            assert!(
+                card.x >= 0.0 && card.x + card.width <= size.width,
+                "{what}: {card:?}"
+            );
+            assert!(
+                card.y >= -0.5 && card.y + card.height <= size.height + 0.5,
+                "{what}: {card:?}"
+            );
+            let shown = texts(&mut laid, &renderer);
+            let in_card: Vec<&(String, Rectangle)> = shown
+                .iter()
+                .filter(|(_, r)| card.contains(r.center()))
+                .collect();
+            for words in ["Sort rooms", "Order", "Unreads first"] {
+                assert!(
+                    in_card.iter().any(|(t, _)| t == words),
+                    "{what}: no \"{words}\" in the card"
+                );
+            }
+            for (a, ra) in &in_card {
+                assert!(
+                    ra.x >= card.x && ra.x + ra.width <= card.x + card.width + 0.5,
+                    "{what}: {a:?} {ra:?} runs out of the card"
+                );
+                for (b, rb) in &in_card {
+                    assert!(
+                        std::ptr::eq(a, b) || a == b || !overlap(ra, rb),
+                        "{what}: {a:?} overlaps {b:?}"
+                    );
+                }
+            }
+            if variant.list == RoomListChoice::Expanded && size.width >= 800.0 {
+                // The list's own names are left of the card.
+                let ys: Vec<f32> = expected
+                    .iter()
+                    .map(|name| {
+                        shown
+                            .iter()
+                            .find(|(t, r)| t == name && r.x < 320.0)
+                            .unwrap_or_else(|| panic!("{what}: no row {name}"))
+                            .1
+                            .y
+                    })
+                    .collect();
+                assert!(
+                    ys.windows(2).all(|w| w[0] < w[1]),
+                    "{what}: the rows are not in the sorted order: {ys:?}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    // Every theme at both densities, in the expanded list, at the wide size.
+    assert_eq!(checked, variants(false).len(), "the expanded variants read");
 }
 
 #[test]
@@ -4968,7 +5069,11 @@ mod dialogs {
 
     pub(super) fn dialog_app(name: &str, size: Size) -> App {
         let mut app = scenario_app(name);
-        app.set_ui_settings(variants(false)[0].settings());
+        let mut settings = variants(false)[0].settings();
+        // The sort a scenario chose (the Sort card's).
+        settings.room_sort = app.ui_settings.room_sort;
+        settings.unread_first = app.ui_settings.unread_first;
+        app.set_ui_settings(settings);
         app.window_width = size.width;
         app
     }
@@ -4994,7 +5099,7 @@ mod dialogs {
     }
 
     /// `(scenario, card width, what the close button in the header sends)`.
-    const CARDS: [(&str, f32, &str); 11] = [
+    const CARDS: [(&str, f32, &str); 12] = [
         ("create-room", 460.0, "Rooms(CloseDialog)"),
         ("join-room", 460.0, "Rooms(CloseDialog)"),
         ("start-dm", 460.0, "Rooms(CloseDialog)"),
@@ -5006,6 +5111,7 @@ mod dialogs {
         ("rail-menu", 380.0, "SidebarMenu(Close)"),
         ("rail-folder-name", 380.0, "SidebarMenu(Close)"),
         ("section-menu", 380.0, "SidebarMenu(Close)"),
+        ("room-list-sort", 380.0, "SidebarMenu(Close)"),
     ];
 
     #[test]
@@ -5052,12 +5158,14 @@ mod dialogs {
             "rail-menu",
             "rail-folder-name",
             "section-menu",
+            "room-list-sort",
         ];
         for name in names {
             for size in [WIDE, NARROW, SHORT] {
                 let app = dialog_app(name, size);
                 let laid = Laid::new(&app, &renderer, size);
                 let width = match name {
+                    "room-list-sort" => 380.0,
                     n if n.starts_with("room-") || n.starts_with("members") => 520.0,
                     n if n.starts_with("upload") => 520.0,
                     n if n.starts_with("rail-") || n.starts_with("section-") => 380.0,
@@ -5304,6 +5412,7 @@ mod dialogs {
             "rail-menu",
             "rail-folder-name",
             "section-menu",
+            "room-list-sort",
         ] {
             let app = dialog_app(name, WIDE);
             let mut laid = Laid::new(&app, &renderer, WIDE);

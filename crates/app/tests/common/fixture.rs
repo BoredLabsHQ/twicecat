@@ -1381,6 +1381,25 @@ fn room_list_chips() -> App {
     app
 }
 
+/// The Sort card open with A to Z and "Unreads first" chosen, over the list
+/// in that order (sidebar rework, Task 8).
+fn room_list_sort() -> App {
+    use twicecat_app::sidebar_menu::SidebarMenuMessage;
+    use twicecat_core::api::RoomSortChoice;
+
+    let mut app = main_no_room();
+    press(&mut app, Message::SidebarMenu(SidebarMenuMessage::OpenSort));
+    press(
+        &mut app,
+        Message::SidebarMenu(SidebarMenuMessage::SetSort(RoomSortChoice::Name)),
+    );
+    press(
+        &mut app,
+        Message::SidebarMenu(SidebarMenuMessage::UnreadFirst(true)),
+    );
+    app
+}
+
 /// A room list built to crowd its rows: long names and previews (`body`),
 /// big counts, and a room with every tag there is (voice, invite, muted,
 /// ringing, a mention count).
@@ -4111,6 +4130,16 @@ pub fn scenarios() -> Vec<Scenario> {
             in_main(a)
                 && a.query.tab == twicecat_core::api::RoomListTab::Unreads
                 && a.selected.is_none()
+        }),
+        s("room-list-sort", true, room_list_sort, |a| {
+            in_main(a)
+                && a.selected.is_none()
+                && a.sidebar_menu == Some(twicecat_app::sidebar_menu::SidebarMenu::Sort)
+                && a.sorting()
+                    == twicecat_app::room_list::Sorting {
+                        by: twicecat_core::api::RoomSortChoice::Name,
+                        unread_first: true,
+                    }
         }),
         s("main-empty-room", true, main_empty_room, |a| {
             in_main(a) && a.selected.is_some() && a.timeline.items.is_empty()

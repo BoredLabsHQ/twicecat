@@ -41,6 +41,24 @@ those Matrix tags, so a room favourited in another Matrix client such as
 Element shows under Favourites. Each chip has its own line when nothing
 matches, such as "No unread rooms".
 
+**Sort** is a button at the right of the search field (it is not drawn when the
+room list is collapsed to its narrow rail). It opens a card with
+two choices: **Order**, which is Activity (the newest activity first; the
+default) or A to Z (by the room's name, ignoring upper and lower case, and then
+by its ID), and **Unreads first** (off by default), which puts the rooms with a
+mention first, then those with unread notifications, then those with unread
+messages or marked as unread, and keeps the order inside each group. A change
+applies at once, is kept on this device in the settings file (not in the
+sidebar file), and is still there after a restart. It applies to the flat list
+and to every section whose order you did not make: Starred and the sections of
+your own keep the order you gave them, whatever the sort. In the flat list with
+the All chip, rooms you marked as low priority come after all the others, in
+the chosen order. With A to Z or Unreads first Twicecat loads every page of
+your rooms, so that a room from a later page lands in its place; a very long
+list can take a moment to settle. Alt+Up and Alt+Down, and Ctrl+Shift+Up and
+Ctrl+Shift+Down, walk the rooms in the order shown. No keyboard shortcut was
+added for the sort.
+
 **The room list of a space**, drawn as sections you can collapse and expand:
 Starred, Channels (the space's own rooms), one section per sub-space, and
 Direct messages. A collapsed header shows the unread or mention count of its

@@ -2395,8 +2395,10 @@ impl App {
                 len,
                 room_list::OVERSCAN_ROWS,
             );
-            self.rooms[range]
-                .iter()
+            // The rows as shown: in the sort's order.
+            let order = self.flat_order();
+            range
+                .map(|at| &self.rooms[order.as_ref().map_or(at, |order| order[at])])
                 .filter_map(|room| room.avatar.clone())
                 .collect()
         };
@@ -2415,9 +2417,10 @@ impl App {
         if self.load_more_at == Some(len) {
             return Task::none();
         }
-        if self.sections_shown() {
-            // Sections need every room to be placed, so the pages are asked
-            // for one after the other, wherever the viewport is.
+        if self.sections_shown() || self.flat_loads_all() {
+            // Sections need every room to be placed, and a sorted flat list
+            // every room to be in order, so the pages are asked for one
+            // after the other, wherever the viewport is.
             if !sections::must_load_all(len, self.total_rooms) {
                 return Task::none();
             }

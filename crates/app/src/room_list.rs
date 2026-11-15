@@ -6,8 +6,11 @@
 
 use std::ops::Range;
 
-use twicecat_core::api::{ListDiff, RoomId, RoomListChoice, RoomListTab, RoomSummary};
+use twicecat_core::api::{
+    ListDiff, RoomId, RoomListChoice, RoomListTab, RoomSortChoice, RoomSummary,
+};
 
+use crate::state::App;
 use crate::text_safety::{MAX_NAME_CHARS, name_or_placeholder, one_line_capped};
 use crate::ui::tokens::Density;
 
@@ -145,6 +148,135 @@ pub fn badge_for(room: &RoomSummary) -> Badge {
     }
 }
 
+/// How the rooms are ordered where the user has not ordered them: the
+/// settings' sort and "Unreads first" (plan L2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sorting {
+    /// Activity (the SDK's order) or A to Z.
+    pub by: RoomSortChoice,
+    /// Highlights, notifications and unread rooms before the rest.
+    pub unread_first: bool,
+}
+
+impl Sorting {
+    /// Whether this leaves the SDK's order as it is.
+    pub fn is_default(self) -> bool {
+        self == Self::default()
+    }
+}
+
+/// The order to show `rooms` in, as indices into `rooms` (plan L2, L3).
+///
+/// A stable sort on, in turn: with `low_last`, whether the room is tagged low
+/// priority; with `unread_first`, its [`badge_for`] class (highlight,
+/// notification, unread or marked, none); and with [`RoomSortChoice::Name`],
+/// its cleaned name ([`row_name`]) in lower case, then its ID. Everything else
+/// keeps the order it came in, so [`RoomSortChoice::Activity`] with no flag is
+/// the identity.
+///
+/// ```
+/// use twicecat_app::room_list::order;
+/// use twicecat_core::api::{RoomId, RoomSortChoice, RoomSummary};
+/// let rooms = [
+///     RoomSummary::new(RoomId::from("!2:x"), "b".into()),
+///     RoomSummary::new(RoomId::from("!1:x"), "A".into()),
+/// ];
+/// assert_eq!(order(&rooms, RoomSortChoice::Name, false, false), [1, 0]);
+/// assert_eq!(order(&rooms, RoomSortChoice::Activity, false, false), [0, 1]);
+/// ```
+pub fn order<R: std::borrow::Borrow<RoomSummary>>(
+    rooms: &[R],
+    sort: RoomSortChoice,
+    unread_first: bool,
+    low_last: bool,
+) -> Vec<usize> {
+    use std::cmp::Ordering;
+
+    let mut out: Vec<usize> = (0..rooms.len()).collect();
+    if sort == RoomSortChoice::Activity && !unread_first && !low_last {
+        return out;
+    }
+    // The lower-cased names are built once, not on every comparison.
+    let names: Vec<String> = if sort == RoomSortChoice::Name {
+        rooms
+            .iter()
+            .map(|r| row_name(&r.borrow().name).to_lowercase())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let class = |room: &RoomSummary| match badge_for(room) {
+        Badge::Highlight(_) => 0u8,
+        Badge::Count(_) => 1,
+        Badge::Dot => 2,
+        Badge::None => 3,
+    };
+    // `sort_by` is stable: rooms that tie keep the order they came in.
+    out.sort_by(|&a, &b| {
+        let (ra, rb) = (rooms[a].borrow(), rooms[b].borrow());
+        let mut cmp = Ordering::Equal;
+        if low_last {
+            cmp = ra.is_low_priority.cmp(&rb.is_low_priority);
+        }
+        if unread_first {
+            cmp = cmp.then_with(|| class(ra).cmp(&class(rb)));
+        }
+        if sort == RoomSortChoice::Name {
+            cmp = cmp
+                .then_with(|| names[a].cmp(&names[b]))
+                .then_with(|| ra.id.cmp(&rb.id));
+        }
+        cmp
+    });
+    out
+}
+
+/// A sort as an entry of the Sort card's list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortOption(pub RoomSortChoice);
+
+impl SortOption {
+    /// Both sorts, in menu order.
+    pub const ALL: [Self; 2] = [Self(RoomSortChoice::Activity), Self(RoomSortChoice::Name)];
+}
+
+impl std::fmt::Display for SortOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            RoomSortChoice::Activity => "Activity",
+            RoomSortChoice::Name => "A to Z",
+        })
+    }
+}
+
+impl App {
+    /// The order the flat list is shown in, as indices into `self.rooms`:
+    /// the settings' sort, "Unreads first", and with the All chip the rooms
+    /// tagged low priority last (plan L2, L3). `None` while that is the
+    /// list's own order.
+    pub fn flat_order(&self) -> Option<Vec<usize>> {
+        let sorting = self.sorting();
+        let low_last = self.query.tab == RoomListTab::All;
+        let has_low = low_last && self.rooms.iter().any(|room| room.is_low_priority);
+        if sorting.is_default() && !has_low {
+            return None;
+        }
+        Some(order(
+            &self.rooms,
+            sorting.by,
+            sorting.unread_first,
+            low_last,
+        ))
+    }
+
+    /// Whether the flat list needs every room loaded to be in order: with a
+    /// sort other than the default, a room on a later page could belong at
+    /// the top.
+    pub(crate) fn flat_loads_all(&self) -> bool {
+        !self.sorting().is_default()
+    }
+}
+
 /// Whether the next page of rooms should be requested: the last built row is
 /// within [`LOAD_MORE_MARGIN`] rows of the end and the server has more rooms
 /// than are loaded (plan Q8).
@@ -194,6 +326,157 @@ pub fn empty_label(tab: RoomListTab, search: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    mod order {
+        use super::super::{Sorting, order};
+        use twicecat_core::api::{RoomId, RoomSortChoice, RoomSummary};
+
+        fn named(id: &str, name: &str) -> RoomSummary {
+            RoomSummary::new(RoomId::from(id), name.to_owned())
+        }
+
+        fn picked<'a>(rooms: &'a [RoomSummary], order: &[usize]) -> Vec<&'a str> {
+            order.iter().map(|&i| rooms[i].name.as_str()).collect()
+        }
+
+        #[test]
+        fn activity_with_no_flag_is_the_identity() {
+            let rooms = [named("!3:x", "c"), named("!1:x", "a"), named("!2:x", "b")];
+            assert_eq!(
+                order(&rooms, RoomSortChoice::Activity, false, false),
+                vec![0, 1, 2]
+            );
+            assert!(Sorting::default().is_default());
+        }
+
+        #[test]
+        fn name_ignores_case_and_then_goes_by_the_id() {
+            let rooms = [
+                named("!9:x", "banana"),
+                named("!2:x", "a"),
+                named("!1:x", "A"),
+                named("!5:x", "Apple"),
+                named("!4:x", "cherry"),
+            ];
+            let out = order(&rooms, RoomSortChoice::Name, false, false);
+            // "a" and "A" tie on the name, so the lower ID comes first.
+            assert_eq!(
+                picked(&rooms, &out),
+                ["A", "a", "Apple", "banana", "cherry"]
+            );
+        }
+
+        #[test]
+        fn name_sorts_by_the_cleaned_name() {
+            // A control character and surrounding blanks are not part of the
+            // name that is shown; a blank name shows as a placeholder.
+            let rooms = [
+                named("!1:x", "  zed"),
+                named("!2:x", "a\u{7}b"),
+                named("!3:x", "Alpha"),
+            ];
+            let out = order(&rooms, RoomSortChoice::Name, false, false);
+            let cleaned: Vec<String> = out
+                .iter()
+                .map(|&i| crate::room_list::row_name(&rooms[i].name).to_lowercase())
+                .collect();
+            let mut sorted = cleaned.clone();
+            sorted.sort();
+            assert_eq!(cleaned, sorted);
+        }
+
+        fn flagged() -> Vec<RoomSummary> {
+            let mut quiet1 = named("!01:x", "quiet1");
+            let mut dot = named("!02:x", "dot");
+            dot.unread_messages = 3;
+            let mut mark = named("!03:x", "marked");
+            mark.marked_unread = true;
+            let mut count = named("!04:x", "count");
+            count.unread_notifications = 2;
+            count.unread_messages = 2;
+            let mut hl = named("!05:x", "highlight");
+            hl.highlights = 1;
+            hl.unread_notifications = 1;
+            let quiet2 = named("!06:x", "quiet2");
+            let mut hl2 = named("!07:x", "highlight2");
+            hl2.highlights = 4;
+            quiet1.is_dm = false;
+            vec![quiet1, dot, mark, count, hl, quiet2, hl2]
+        }
+
+        #[test]
+        fn unread_first_ranks_highlight_notification_unread_then_the_rest() {
+            let rooms = flagged();
+            let out = order(&rooms, RoomSortChoice::Activity, true, false);
+            assert_eq!(
+                picked(&rooms, &out),
+                [
+                    "highlight",
+                    "highlight2",
+                    "count",
+                    "dot",
+                    "marked",
+                    "quiet1",
+                    "quiet2"
+                ]
+            );
+        }
+
+        #[test]
+        fn unread_first_keeps_the_order_within_each_group() {
+            // 200 rooms in 4 groups: a sort that is not stable moves rooms of
+            // one group among themselves.
+            let rooms: Vec<RoomSummary> = (0..200)
+                .map(|n| {
+                    let mut r = named(&format!("!{n:03}:x"), &format!("r{n}"));
+                    match n % 4 {
+                        0 => r.highlights = 1,
+                        1 => r.unread_notifications = 1,
+                        2 => r.unread_messages = 1,
+                        _ => {}
+                    }
+                    r
+                })
+                .collect();
+            let out = order(&rooms, RoomSortChoice::Activity, true, false);
+            let mut want: Vec<usize> = Vec::new();
+            for group in 0..4 {
+                want.extend((0..200).filter(|n| n % 4 == group));
+            }
+            assert_eq!(out, want);
+        }
+
+        #[test]
+        fn low_last_puts_low_priority_rooms_at_the_end_keeping_their_order() {
+            let mut rooms = vec![
+                named("!1:x", "a"),
+                named("!2:x", "b"),
+                named("!3:x", "c"),
+                named("!4:x", "d"),
+            ];
+            rooms[0].is_low_priority = true;
+            rooms[2].is_low_priority = true;
+            let out = order(&rooms, RoomSortChoice::Activity, false, true);
+            assert_eq!(picked(&rooms, &out), ["b", "d", "a", "c"]);
+            // Off: nothing moves.
+            assert_eq!(
+                order(&rooms, RoomSortChoice::Activity, false, false),
+                vec![0, 1, 2, 3]
+            );
+            // In the chosen sort, and after the unread rooms.
+            rooms[3].unread_messages = 1;
+            rooms[0].unread_messages = 1;
+            let out = order(&rooms, RoomSortChoice::Name, true, true);
+            assert_eq!(picked(&rooms, &out), ["d", "b", "a", "c"]);
+        }
+
+        #[test]
+        fn it_works_over_references_too() {
+            let rooms = [named("!2:x", "b"), named("!1:x", "a")];
+            let refs: Vec<&RoomSummary> = rooms.iter().collect();
+            assert_eq!(order(&refs, RoomSortChoice::Name, false, false), [1, 0]);
+        }
+    }
+
     use std::time::{Duration, Instant};
 
     use tokio::sync::mpsc;

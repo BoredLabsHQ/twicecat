@@ -16,6 +16,12 @@
 //! user's sections, then "New section..."). A room has one place per space:
 //! Starred, one section of the user's own, or its default section.
 //!
+//! The **Sort** button of the room list opens a card of the same family
+//! (`SidebarMenu::Sort`, drawn by `room_list_pane::sort_card`): the order of
+//! the rooms and "Unreads first" (sidebar rework, L2). It changes the
+//! settings, not the layout, so it needs no sidebar file and is open on every
+//! sidebar state; Esc closes it like the others.
+//!
 //! Every entry maps to one [`SidebarOp`] ([`op_for`] and [`App::pick_folder`]);
 //! the drag and drop of a later task calls the same operations. No keyboard
 //! chord opens the card: iced 0.14 gives buttons and `mouse_area`s no keyboard
@@ -29,10 +35,11 @@ use std::fmt;
 
 use iced::Task;
 use twicecat_core::api::{
-    CustomSection, RailEntry, RoomId, SectionKey, SidebarLabel, SidebarLabelError,
+    CustomSection, RailEntry, RoomId, RoomSortChoice, SectionKey, SidebarLabel, SidebarLabelError,
 };
 
 use crate::keys::Shortcut;
+use crate::room_list::Sorting;
 use crate::sections::{Spot, drawn_sections, spot_of};
 use crate::sidebar::{Dir, FolderTarget, Op as SidebarOp, SidebarState};
 use crate::spaces::{RailItem, RailKey};
@@ -165,6 +172,9 @@ pub enum SidebarMenu {
         /// Why the last action was refused ("The sidebar layout is full").
         error: Option<&'static str>,
     },
+    /// The Sort card of the room list (plan L2): the settings, not an item
+    /// of the layout, so it needs no sidebar file.
+    Sort,
     /// The name dialog.
     Name(NameDialog),
 }
@@ -177,6 +187,7 @@ impl fmt::Debug for SidebarMenu {
                 .field("target", target)
                 .field("error", error)
                 .finish(),
+            Self::Sort => f.write_str("Sort"),
             Self::Name(dialog) => f.debug_tuple("Name").field(dialog).finish(),
         }
     }
@@ -322,6 +333,12 @@ pub enum SidebarMenuMessage {
     /// A right-click, or the "⋯" button, on a room row of the
     /// sectioned list.
     OpenRoom(RoomId),
+    /// The **Sort** button of the room list.
+    OpenSort,
+    /// A choice of the Sort card's list: Activity or A to Z.
+    SetSort(RoomSortChoice),
+    /// The Sort card's "Unreads first" switch.
+    UnreadFirst(bool),
     /// The close button, Cancel.
     Close,
     /// The Esc key, with the card or the dialog the topmost layer.
@@ -344,6 +361,9 @@ impl fmt::Debug for SidebarMenuMessage {
             Self::Open(key) => f.debug_tuple("Open").field(key).finish(),
             Self::OpenSection(key) => f.debug_tuple("OpenSection").field(key).finish(),
             Self::OpenRoom(_) => f.write_str("OpenRoom(<redacted>)"),
+            Self::OpenSort => f.write_str("OpenSort"),
+            Self::SetSort(sort) => f.debug_tuple("SetSort").field(sort).finish(),
+            Self::UnreadFirst(on) => f.debug_tuple("UnreadFirst").field(on).finish(),
             Self::Close => f.write_str("Close"),
             Self::Escape => f.write_str("Escape"),
             Self::Entry(entry) => f.debug_tuple("Entry").field(entry).finish(),
@@ -678,6 +698,21 @@ impl App {
             SidebarMenuMessage::Open(key) => self.open_sidebar_menu(&key),
             SidebarMenuMessage::OpenSection(key) => self.open_section_menu(key),
             SidebarMenuMessage::OpenRoom(room) => self.open_room_menu(room),
+            SidebarMenuMessage::OpenSort => self.open_sort_card(),
+            SidebarMenuMessage::SetSort(by) => {
+                let sorting = Sorting {
+                    by,
+                    ..self.sorting()
+                };
+                self.set_sorting(sorting)
+            }
+            SidebarMenuMessage::UnreadFirst(unread_first) => {
+                let sorting = Sorting {
+                    unread_first,
+                    ..self.sorting()
+                };
+                self.set_sorting(sorting)
+            }
             SidebarMenuMessage::Close | SidebarMenuMessage::Escape => {
                 self.sidebar_menu = None;
                 Task::none()
@@ -723,6 +758,39 @@ impl App {
             error: None,
         });
         Task::none()
+    }
+
+    /// The **Sort** button: opens the Sort card, on the main screen with no
+    /// other layer over it.
+    fn open_sort_card(&mut self) -> Task<Message> {
+        if self.screen != Screen::Main || self.any_overlay_open() || self.sidebar_menu.is_some() {
+            return Task::none();
+        }
+        self.list_drag.cancel();
+        self.cancel_rail_reorder();
+        self.sidebar_menu = Some(SidebarMenu::Sort);
+        Task::none()
+    }
+
+    /// The sort the settings ask for, where the user has not ordered the
+    /// rooms.
+    pub fn sorting(&self) -> Sorting {
+        Sorting {
+            by: self.ui_settings.room_sort,
+            unread_first: self.ui_settings.unread_first,
+        }
+    }
+
+    /// Keeps a new sort in the settings: one save, and the paging that a
+    /// sorted flat list needs. The card stays open, so both choices can be
+    /// made. Choosing what is already chosen does nothing.
+    fn set_sorting(&mut self, sorting: Sorting) -> Task<Message> {
+        if self.sidebar_menu != Some(SidebarMenu::Sort) || sorting == self.sorting() {
+            return Task::none();
+        }
+        self.ui_settings.room_sort = sorting.by;
+        self.ui_settings.unread_first = sorting.unread_first;
+        Task::batch([self.save_local(), self.after_list_change()])
     }
 
     /// Whether a card for the sectioned list can open now: on the main
@@ -978,7 +1046,7 @@ impl App {
         match &mut self.sidebar_menu {
             Some(SidebarMenu::Card { error, .. }) => *error = Some(line),
             Some(SidebarMenu::Name(dialog)) => dialog.error = Some(line),
-            None => {}
+            Some(SidebarMenu::Sort) | None => {}
         }
     }
 
@@ -1018,6 +1086,8 @@ impl App {
             return;
         };
         let gone = match menu {
+            // About the settings: nothing it names can go away.
+            SidebarMenu::Sort => false,
             SidebarMenu::Card { target, .. } => self.target_gone(target),
             SidebarMenu::Name(dialog) => match &dialog.purpose {
                 Purpose::NewFolder(space) => self.target_gone(&Target::Space(space.clone())),

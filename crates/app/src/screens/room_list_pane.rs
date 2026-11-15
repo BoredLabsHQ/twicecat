@@ -14,8 +14,8 @@ use chrono::{Local, TimeZone};
 use iced::widget::text::Wrapping;
 use iced::widget::tooltip::{Position, Tooltip};
 use iced::widget::{
-    Column, button, column, container, image, mouse_area, row, scrollable, space, stack, text,
-    text_input,
+    Column, button, checkbox, column, container, image, mouse_area, pick_list, row, scrollable,
+    space, stack, text, text_input,
 };
 use iced::{Background, Color, Element, Fill, Length, border, mouse};
 use twicecat_core::api::{
@@ -29,8 +29,8 @@ use crate::drag::Zone;
 use crate::list_drop::{self, ListKey};
 use crate::notifications::muted_mark;
 use crate::room_list::{
-    Badge, OVERSCAN_ROWS, RAIL_ROW_HEIGHT, badge_for, empty_label, preview_line, row_height,
-    row_name, spacer_heights, visible_range,
+    Badge, OVERSCAN_ROWS, RAIL_ROW_HEIGHT, SortOption, badge_for, empty_label, preview_line,
+    row_height, row_name, spacer_heights, visible_range,
 };
 use crate::rooms::RoomsMessage;
 use crate::screens::{call, main_view};
@@ -315,6 +315,51 @@ pub fn chips<'a>(active: RoomListTab) -> Element<'a, Message> {
     .into()
 }
 
+/// The words under the Sort card's choices: which rooms the sort leaves
+/// alone.
+pub const SORT_NOTE: &str = "Starred rooms and the sections you made keep your own order.";
+
+/// The Sort card (plan L2): the order of the rooms, and "Unreads first". The
+/// list is a `pick_list` inside [`kit::menu`], so Ctrl + wheel (the zoom
+/// gesture) cannot change the sort. Every choice is kept at once; the card
+/// stays open for the next one.
+pub fn sort_card(app: &App, window_height: f32) -> Element<'_, Message> {
+    let close = || Message::SidebarMenu(SidebarMenuMessage::Close);
+    let body = column![
+        kit::field(
+            "Order",
+            kit::menu(
+                pick_list(
+                    SortOption::ALL,
+                    Some(SortOption(app.ui_settings.room_sort)),
+                    |option: SortOption| Message::SidebarMenu(SidebarMenuMessage::SetSort(
+                        option.0
+                    )),
+                )
+                .style(kit::menu_style)
+                .width(Fill),
+            ),
+        ),
+        checkbox(app.ui_settings.unread_first)
+            .style(kit::checkbox_style)
+            .label("Unreads first")
+            .on_toggle(|on| Message::SidebarMenu(SidebarMenuMessage::UnreadFirst(on))),
+        kit::words(SORT_NOTE)
+            .size(tokens::CAPTION)
+            .style(kit::muted),
+    ]
+    .spacing(tokens::M);
+    kit::dialog(
+        kit::dialog_header("Sort rooms", close()),
+        body.into(),
+        Some(kit::dialog_footer(vec![
+            kit::secondary_button("Close", Some(close())).into(),
+        ])),
+        crate::screens::sidebar_menu::CARD_WIDTH,
+        window_height,
+    )
+}
+
 /// The search field with a search icon and, once there is text, a button
 /// that clears it. The clear slot is a space while empty, so the field keeps
 /// its place and its focus.
@@ -337,10 +382,20 @@ fn search_field(app: &App) -> Element<'_, Message> {
             .on_input(Message::SearchChanged)
             .padding(tokens::S),
         clear,
+        sort_button(),
     ]
     .spacing(tokens::S)
     .align_y(iced::Center)
     .into()
+}
+
+/// **Sort**, which opens the Sort card.
+fn sort_button<'a>() -> Element<'a, Message> {
+    button(text("Sort").size(tokens::CAPTION).wrapping(Wrapping::None))
+        .on_press(Message::SidebarMenu(SidebarMenuMessage::OpenSort))
+        .padding([tokens::XS, tokens::S])
+        .style(kit::secondary_style)
+        .into()
 }
 
 /// The rail's search: a button that expands the list, where the field is.
@@ -436,7 +491,10 @@ fn windowed_list(app: &App) -> Element<'_, Message> {
         density: app.density(),
         now_ms: u64::try_from(Local::now().timestamp_millis()).unwrap_or(0),
     };
-    let rows = app.rooms[range].iter().map(|room| {
+    // The rows as shown: in the sort's order.
+    let order = app.flat_order();
+    let rows = range.map(|at| &app.rooms[order.as_ref().map_or(at, |order| order[at])]);
+    let rows = rows.map(|room| {
         let selected = app.selected.as_ref() == Some(&room.id);
         let mode = app.effective_room_mode(&room.id);
         let call = app.calls.pill(&room.id);
