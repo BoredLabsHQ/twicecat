@@ -1841,6 +1841,46 @@ fn space_categories_draw_headers_in_capitals_and_channels_without_previews() {
     }
 }
 
+/// A channel row laid out alone is as tall as a row of the list in each
+/// density, and its glyph slot has its width (sidebar rework, Task 11).
+#[test]
+fn a_channel_row_alone_is_row_height_tall_with_its_glyph_slot() {
+    use twicecat_app::room_list::row_height;
+    use twicecat_app::screens::room_list_pane::{CHANNEL_GLYPH_SLOT, channel_row_alone};
+    use twicecat_app::ui::tokens::Density;
+    use twicecat_core::api::{RoomId, RoomSummary};
+    let renderer = renderer();
+    let mut room = RoomSummary::new(RoomId::from("!r:x"), "General".to_owned());
+    room.unread_messages = 2;
+    for density in [Density::Comfortable, Density::Compact] {
+        for call in [false, true] {
+            for selected in [false, true] {
+                room.is_call_room = call;
+                let mut element = channel_row_alone(&room, density, selected, None);
+                let mut tree = Tree::new(element.as_widget());
+                let node = element.as_widget_mut().layout(
+                    &mut tree,
+                    &renderer,
+                    &Limits::new(Size::ZERO, Size::new(288.0, 400.0)),
+                );
+                let what = format!("{density:?} call={call} selected={selected}");
+                assert!(
+                    (node.bounds().height - row_height(density)).abs() < 0.5,
+                    "{what}: {} high",
+                    node.bounds().height
+                );
+                // [edge, body]; body -> the line; the line's first child.
+                let glyph = &node.children()[1].children()[0].children()[0];
+                assert!(
+                    (glyph.bounds().width - CHANNEL_GLYPH_SLOT).abs() < 0.5,
+                    "{what}: glyph slot {} wide",
+                    glyph.bounds().width
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_big_sectioned_space_builds_only_the_lines_in_view() {
     use twicecat_core::api::{RoomId, RoomSummary};

@@ -362,7 +362,9 @@ fn the_docs_describe_the_discord_category_look_and_its_words() {
     }
     let access = flat(&accessibility_sidebar_section());
     for wanted in [
-        "a channel row says what it is in words, not only in colour or weight",
+        "a channel row says what it is by shape and words, not by colour or weight alone",
+        "the speaker icon is the only mark of an empty voice room",
+        "never brighter than an unread one",
         "at least 4.5:1 against the row in every theme",
         "a read name and a header are muted (at least 3:1)",
         "row heights are unchanged",
