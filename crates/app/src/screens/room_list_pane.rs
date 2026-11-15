@@ -834,7 +834,7 @@ fn section_header<'a>(app: &App, header: &Header<'a>, density: Density) -> Eleme
             .width(Length::Fixed(14.0))
             .wrapping(Wrapping::None),
         container(
-            text(row_name(header.name).to_uppercase())
+            text(header_label(header.name))
                 .size(tokens::CAPTION)
                 .font(fonts::BODY_SEMIBOLD)
                 .style(name_style)
@@ -1129,16 +1129,57 @@ fn room_row_in<'a>(
 }
 
 /// The colour of a channel row's name (plan C2): the text colour when
-/// unread, the muted colour when read, and the muted colour pulled toward the
-/// background, as far as it keeps 3:1 on every background a row has, when the
-/// room is in Mute mode.
+/// unread; the muted colour when read, pulled toward the background only as
+/// far as needed for it never to outshine the text colour on any background a
+/// row has (the muted colour of a theme with grey text is brighter than its
+/// text); and, in Mute mode, that colour dimmed further, as far as it keeps
+/// 3:1 on every background a row has.
 pub(crate) fn channel_name_color(theme: &iced::Theme, emphasis: Emphasis) -> Color {
-    let sem = theme::semantic(theme);
     match emphasis {
         Emphasis::Unread => theme.palette().text,
-        Emphasis::Read => sem.muted,
-        Emphasis::Muted => dimmed(theme, sem.muted),
+        Emphasis::Read => read_color(theme),
+        Emphasis::Muted => dimmed(theme, read_color(theme)),
     }
+}
+
+/// The backgrounds a row's name can sit on: the list's, the hover and the
+/// selection.
+fn row_grounds(theme: &iced::Theme) -> [Color; 3] {
+    let sem = theme::semantic(theme);
+    [theme.palette().background, sem.message_hover, sem.selection]
+}
+
+/// `color` moved `t` of the way to the list's background.
+fn toward_background(theme: &iced::Theme, color: Color, t: f32) -> Color {
+    let back = theme.palette().background;
+    Color::from_rgb(
+        color.r + (back.r - color.r) * t,
+        color.g + (back.g - color.g) * t,
+        color.b + (back.b - color.b) * t,
+    )
+}
+
+/// The muted colour, mixed toward the background in 5 % steps until its
+/// contrast on every row background is no more than the text colour's.
+fn read_color(theme: &iced::Theme) -> Color {
+    let muted = theme::semantic(theme).muted;
+    let text = theme.palette().text;
+    let grounds = row_grounds(theme);
+    (0..=20u8)
+        .map(|step| toward_background(theme, muted, f32::from(step) / 20.0))
+        .find(|c| {
+            grounds
+                .iter()
+                .all(|g| theme::contrast(*c, *g) <= theme::contrast(text, *g))
+        })
+        .unwrap_or(muted)
+}
+
+/// The words of a category header: the name in capitals, then cleaned and
+/// capped, so what is drawn is within the cap and the combining-mark limit
+/// whatever the capitals did to the length (plan C1).
+pub(crate) fn header_label(name: &str) -> String {
+    row_name(&name.to_uppercase())
 }
 
 /// The colour of a category header's name: muted, the text colour under the
@@ -1155,19 +1196,10 @@ pub(crate) fn header_name_color(theme: &iced::Theme, hovered: bool) -> Color {
 /// furthest that still reads at [`DIM_CONTRAST`] on the list, the hover and
 /// the selection. `color` itself when no step does.
 fn dimmed(theme: &iced::Theme, color: Color) -> Color {
-    let sem = theme::semantic(theme);
-    let back = theme.palette().background;
-    let grounds = [back, sem.message_hover, sem.selection];
+    let grounds = row_grounds(theme);
     (1..=8u8)
         .rev()
-        .map(|step| {
-            let t = f32::from(step) / 20.0;
-            Color::from_rgb(
-                color.r + (back.r - color.r) * t,
-                color.g + (back.g - color.g) * t,
-                color.b + (back.b - color.b) * t,
-            )
-        })
+        .map(|step| toward_background(theme, color, f32::from(step) / 20.0))
         .find(|mixed| {
             grounds
                 .iter()
@@ -1176,8 +1208,8 @@ fn dimmed(theme: &iced::Theme, color: Color) -> Color {
         .unwrap_or(color)
 }
 
-/// The least contrast a dimmed (muted-mode) name keeps: a little over the 3:1
-/// that a read name must reach, so the dimming never turns a name unreadable.
+/// The least contrast a dimmed (muted-mode) name keeps: the 3:1 that a read
+/// name must reach, so the dimming never turns a name unreadable.
 const DIM_CONTRAST: f32 = 3.0;
 
 /// What a channel row shows at its right, besides the name.
@@ -1212,7 +1244,7 @@ const CHANNEL_EDGE: f32 = 4.0;
 
 /// Width of the glyph slot of a channel row: the "#", the speaker or the
 /// avatar.
-const CHANNEL_GLYPH_SLOT: f32 = 20.0;
+pub const CHANNEL_GLYPH_SLOT: f32 = 20.0;
 
 /// The 4 x 8 px pill at the list's left edge of an unread channel, or the
 /// 3 px accent bar of the selected one, in a slot that is always the same
@@ -1316,6 +1348,30 @@ fn channel_row<'a>(
     row![channel_edge(selected, emphasis), body]
         .height(Length::Fixed(height))
         .into()
+}
+
+/// A channel row on its own, for the layout tests: no pointer cue, no
+/// avatars loaded.
+pub fn channel_row_alone<'a>(
+    room: &'a RoomSummary,
+    density: Density,
+    selected: bool,
+    mode: Option<RoomNotificationModeView>,
+) -> Element<'a, Message> {
+    let avatars = Avatars::default();
+    let env = RowEnv {
+        avatars: &avatars,
+        density,
+        now_ms: 0,
+    };
+    let cue = ListCue {
+        mark: Mark::None,
+        cursor: mouse::Interaction::Grab,
+        dragging: false,
+        hovered: false,
+        dragged: false,
+    };
+    channel_row(room, &env, selected, mode, None, cue)
 }
 
 /// The look of a row that is a box, not a button: the selection colour while
@@ -1891,6 +1947,19 @@ mod tests {
                     let ratio = theme::contrast(channel_name_color(&theme, emphasis), back);
                     assert!(ratio >= 3.0, "{name}: a {emphasis:?} name {ratio:.2}");
                 }
+                // A read name never outshines an unread one, nor a muted one a
+                // read one (Faint's muted colour is brighter than its text).
+                let read = theme::contrast(channel_name_color(&theme, Emphasis::Read), back);
+                let muted = theme::contrast(channel_name_color(&theme, Emphasis::Muted), back);
+                let unread = theme::contrast(unread, back);
+                assert!(
+                    read <= unread + 0.005,
+                    "{name}: read {read:.2} > unread {unread:.2}"
+                );
+                assert!(
+                    muted <= read + 0.005,
+                    "{name}: muted {muted:.2} > read {read:.2}"
+                );
                 let ratio = theme::contrast(header_name_color(&theme, false), back);
                 assert!(ratio >= 3.0, "{name}: a header {ratio:.2}");
                 let ratio = theme::contrast(header_name_color(&theme, true), back);
@@ -2012,5 +2081,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_header_that_grows_in_capitals_is_still_within_the_cap_and_the_mark_limit() {
+        use crate::text_safety::{MAX_COMBINING_MARKS, MAX_NAME_CHARS};
+        let longest_marks = |text: &str| {
+            let (mut run, mut most) = (0, 0);
+            for c in text.chars() {
+                if ('\u{0300}'..='\u{036F}').contains(&c) {
+                    run += 1;
+                    most = most.max(run);
+                } else {
+                    run = 0;
+                }
+            }
+            most
+        };
+        // "ß" becomes "SS": 200 of them are 400 letters in capitals.
+        let wide = header_label(&"ß".repeat(200));
+        assert!(
+            wide.chars().count() <= MAX_NAME_CHARS,
+            "{}",
+            wide.chars().count()
+        );
+        // "ΐ" becomes a capital with two marks, on top of four of its own.
+        let marks = header_label(&format!("ΐ{}", "\u{0301}".repeat(4)));
+        assert!(
+            longest_marks(&marks) <= MAX_COMBINING_MARKS,
+            "{}",
+            longest_marks(&marks)
+        );
+        assert_eq!(header_label("Channels"), "CHANNELS");
     }
 }
