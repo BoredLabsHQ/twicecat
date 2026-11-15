@@ -453,8 +453,8 @@ fn the_docs_describe_the_discord_category_look_and_its_words() {
     let sidebar = flat(&doc("sidebar.md"));
     for wanted in [
         "a header is the section's name in capitals",
-        "a \"#\" before a text room",
-        "the speaker before a voice room",
+        "the room's picture before its name, or its first letter",
+        "a small speaker at the bottom right corner of the picture on a voice room",
         "no message preview and no time",
         "as tall as before in both densities",
         "a room set to mute has its name dimmed even when it has unread messages",

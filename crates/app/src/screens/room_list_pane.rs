@@ -29,9 +29,8 @@ use crate::drag::Zone;
 use crate::list_drop::{self, ListKey};
 use crate::notifications::muted_mark;
 use crate::room_list::{
-    Badge, Emphasis, Glyph, OVERSCAN_ROWS, RAIL_ROW_HEIGHT, SortOption, badge_for,
-    channel_emphasis, channel_glyph, empty_label, preview_line, row_height, row_name,
-    spacer_heights, visible_range,
+    Badge, Emphasis, OVERSCAN_ROWS, RAIL_ROW_HEIGHT, SortOption, badge_for, channel_emphasis,
+    empty_label, preview_line, row_height, row_name, spacer_heights, visible_range, voice_badge,
 };
 use crate::rooms::RoomsMessage;
 use crate::screens::{call, main_view};
@@ -1321,9 +1320,60 @@ pub(crate) fn channel_marks(
 /// selection's accent bar.
 const CHANNEL_EDGE: f32 = 4.0;
 
-/// Width of the glyph slot of a channel row: the "#", the speaker or the
-/// avatar.
-pub const CHANNEL_GLYPH_SLOT: f32 = 20.0;
+/// The size of a channel row's avatar: the flat list's slot in each density,
+/// so a room looks the same in both lists.
+pub const fn channel_avatar_size(density: Density) -> f32 {
+    if shows_preview(density) {
+        AVATAR_SLOT
+    } else {
+        COMPACT_AVATAR_SLOT
+    }
+}
+
+/// The side of the speaker badge on a voice room's avatar.
+const fn voice_badge_size(density: Density) -> f32 {
+    if shows_preview(density) { 16.0 } else { 14.0 }
+}
+
+/// A room's avatar (its image, or its first letter) and, for a voice room,
+/// the small speaker at its bottom right corner: a filled circle in the
+/// list's background colour behind the icon, so it reads on an image and on a
+/// letter alike. The badge sits inside the avatar's square, so the slot and
+/// the row height do not change.
+fn channel_avatar<'a>(
+    room: &RoomSummary,
+    name: &str,
+    avatars: &Avatars,
+    density: Density,
+) -> Element<'a, Message> {
+    let size = channel_avatar_size(density);
+    let avatar = avatar_view(room, name, avatars, size);
+    if !voice_badge(room) {
+        return container(avatar).width(size).height(size).into();
+    }
+    let side = voice_badge_size(density);
+    let badge = container(
+        text(Icon::Speaker.glyph())
+            .size(side - 6.0)
+            .wrapping(Wrapping::None),
+    )
+    .center_x(side)
+    .center_y(side)
+    .style(|t: &iced::Theme| container::Style {
+        background: Some(Background::Color(t.palette().background)),
+        text_color: Some(t.palette().text),
+        border: border::rounded(16.0)
+            .color(theme::semantic(t).border)
+            .width(1.0),
+        ..container::Style::default()
+    });
+    let corner = container(badge)
+        .width(size)
+        .height(size)
+        .align_right(size)
+        .align_bottom(size);
+    stack![avatar, corner].width(size).height(size).into()
+}
 
 /// The 4 x 8 px pill at the list's left edge of an unread channel, or the
 /// 3 px accent bar of the selected one, in a slot that is always the same
@@ -1350,8 +1400,9 @@ fn channel_edge<'a>(selected: bool, emphasis: Emphasis) -> Element<'a, Message> 
     .into()
 }
 
-/// One row of a space's list: a glyph (a "#", the speaker of a voice room, a
-/// person's avatar), the name, and the marks. No preview and no time. An
+/// One row of a space's list: the room's avatar (its first letter without an
+/// image; a voice room has a small speaker at its corner), the name, and the
+/// marks. No preview and no time. An
 /// unread room's name is semibold in the text colour with the pill at the
 /// left edge, a read one's is muted, and a muted room's is dimmed. The row is
 /// as tall as [`room_row`], so the windowing is the same (plan C2).
@@ -1366,31 +1417,14 @@ fn channel_row<'a>(
     let name = row_name(&room.name);
     let emphasis = channel_emphasis(room, mode);
     let marks = channel_marks(room, mode);
-    let glyph: Element<'a, Message> = match channel_glyph(room) {
-        Glyph::Hash => text("#")
-            .size(tokens::BODY)
-            .font(fonts::BODY)
-            .wrapping(Wrapping::None)
-            .style(move |t: &iced::Theme| text::Style {
-                color: Some(channel_name_color(t, emphasis)),
-            })
-            .into(),
-        Glyph::Speaker => text(Icon::Speaker.glyph())
-            .size(tokens::BODY)
-            .wrapping(Wrapping::None)
-            .style(move |t: &iced::Theme| text::Style {
-                color: Some(channel_name_color(t, emphasis)),
-            })
-            .into(),
-        Glyph::Avatar => avatar_view(room, &name, env.avatars, CHANNEL_GLYPH_SLOT),
-    };
+    let glyph = channel_avatar(room, &name, env.avatars, env.density);
     let weight = if emphasis == Emphasis::Unread {
         fonts::BODY_SEMIBOLD
     } else {
         fonts::BODY
     };
     let mut line = row![
-        container(glyph).width(CHANNEL_GLYPH_SLOT),
+        glyph,
         container(
             text(name)
                 .size(tokens::BODY)

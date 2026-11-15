@@ -1775,10 +1775,23 @@ fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes()
                             "{at}: {leaf:?} sticks out of {rect:?}"
                         );
                     }
+                    // A voice room's speaker is drawn over its avatar's corner
+                    // on purpose: that one pair may touch (the speaker is a
+                    // narrow leaf to the right of the avatar's letter), and
+                    // nothing else may.
+                    let voice = matches!(line, Line::Room(room) if room.is_call_room);
+                    let corner = |avatar: &Rectangle, speaker: &Rectangle| {
+                        voice
+                            && speaker.width <= 8.0
+                            && avatar.x < speaker.x
+                            && avatar.width <= 40.0
+                    };
                     for (a, first) in leaves.iter().enumerate() {
                         for second in &leaves[a + 1..] {
                             assert!(
-                                !overlap(first, second),
+                                !overlap(first, second)
+                                    || corner(first, second)
+                                    || corner(second, first),
                                 "{at}: {first:?} overlaps {second:?}"
                             );
                         }
@@ -1820,7 +1833,7 @@ fn space_categories_draw_headers_in_capitals_and_channels_without_previews() {
         }
         assert_eq!(count("Channels"), 0, "{what}: no header in mixed case");
         // General, Random and Announcements; the voice rooms have the speaker.
-        assert_eq!(count("#"), 3, "{what}: a hash per text channel");
+        assert_eq!(count("#"), 0, "{what}: no hash: a channel has its avatar");
         assert!(
             count(Icon::Speaker.glyph()) >= 2,
             "{what}: a speaker per voice room"
@@ -1899,7 +1912,7 @@ fn a_collapsed_category_still_draws_the_open_room_and_the_call() {
 #[test]
 fn a_channel_row_alone_is_row_height_tall_with_its_glyph_slot() {
     use twicecat_app::room_list::row_height;
-    use twicecat_app::screens::room_list_pane::{CHANNEL_GLYPH_SLOT, channel_row_alone};
+    use twicecat_app::screens::room_list_pane::{channel_avatar_size, channel_row_alone};
     use twicecat_app::ui::tokens::Density;
     use twicecat_core::api::{RoomId, RoomSummary};
     let renderer = renderer();
@@ -1925,12 +1938,58 @@ fn a_channel_row_alone_is_row_height_tall_with_its_glyph_slot() {
                 // [edge, body]; body -> the line; the line's first child.
                 let glyph = &node.children()[1].children()[0].children()[0];
                 assert!(
-                    (glyph.bounds().width - CHANNEL_GLYPH_SLOT).abs() < 0.5,
+                    (glyph.bounds().width - channel_avatar_size(density)).abs() < 0.5,
                     "{what}: glyph slot {} wide",
                     glyph.bounds().width
                 );
             }
         }
+    }
+}
+
+/// A channel row draws the room's avatar (its first letter without an
+/// image) and no "#"; a voice room adds the speaker at the avatar's corner and
+/// a DM has none (sidebar rework, Task 11b).
+#[test]
+fn a_channel_row_draws_the_avatar_and_a_speaker_only_on_a_voice_room() {
+    use twicecat_app::screens::room_list_pane::channel_row_alone;
+    use twicecat_app::ui::icons::Icon;
+    use twicecat_app::ui::tokens::Density;
+    use twicecat_core::api::{RoomId, RoomSummary};
+    let renderer = renderer();
+    let words = |room: &RoomSummary, density: Density| -> Vec<String> {
+        let mut element = channel_row_alone(room, density, false, None);
+        let mut tree = Tree::new(element.as_widget());
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &Limits::new(Size::ZERO, Size::new(288.0, 400.0)),
+        );
+        let mut op = Texts(Vec::new());
+        element
+            .as_widget_mut()
+            .operate(&mut tree, Layout::new(&node), &renderer, &mut op);
+        op.0.into_iter().map(|(t, _)| t).collect()
+    };
+    let text_room = RoomSummary::new(RoomId::from("!t:x"), "Garden".to_owned());
+    let mut voice = RoomSummary::new(RoomId::from("!v:x"), "Lounge".to_owned());
+    voice.is_call_room = true;
+    let mut dm = RoomSummary::new(RoomId::from("!d:x"), "Alice Example".to_owned());
+    dm.is_dm = true;
+    for density in [Density::Comfortable, Density::Compact] {
+        let speaker = Icon::Speaker.glyph();
+        let has = |w: &[String], t: &str| w.iter().any(|x| x == t);
+        let w = words(&text_room, density);
+        assert!(has(&w, "G") && has(&w, "Garden"), "{density:?}: {w:?}");
+        assert!(!has(&w, "#") && !has(&w, speaker), "{density:?}: {w:?}");
+        let w = words(&voice, density);
+        assert!(has(&w, "L") && has(&w, "Lounge"), "{density:?}: {w:?}");
+        assert!(has(&w, speaker) && !has(&w, "#"), "{density:?}: {w:?}");
+        let w = words(&dm, density);
+        assert!(
+            has(&w, "AE") && !has(&w, speaker) && !has(&w, "#"),
+            "{density:?}: {w:?}"
+        );
     }
 }
 

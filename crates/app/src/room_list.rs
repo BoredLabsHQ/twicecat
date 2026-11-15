@@ -149,26 +149,11 @@ pub fn badge_for(room: &RoomSummary) -> Badge {
     }
 }
 
-/// What a channel row of a space draws before the name (plan C2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Glyph {
-    /// A text room: a "#".
-    Hash,
-    /// A voice (call) room: the speaker icon.
-    Speaker,
-    /// A direct message: the person's avatar.
-    Avatar,
-}
-
-/// The glyph of `room` in a channel row.
-pub fn channel_glyph(room: &RoomSummary) -> Glyph {
-    if room.is_call_room {
-        Glyph::Speaker
-    } else if room.is_dm {
-        Glyph::Avatar
-    } else {
-        Glyph::Hash
-    }
+/// Whether a channel row draws the small speaker at the corner of its
+/// avatar: a voice (call) room does. Every row has the room's avatar (or its
+/// first letter), a direct message included, and no other mark.
+pub fn voice_badge(room: &RoomSummary) -> bool {
+    room.is_call_room
 }
 
 /// How a channel row's name is drawn (plan C2).
@@ -1603,20 +1588,18 @@ mod pure_tests {
     // ---- channel rows (sidebar rework, Task 11) ----
 
     #[test]
-    fn a_channels_glyph_is_a_speaker_for_a_call_room_an_avatar_for_a_dm_else_a_hash() {
+    fn only_a_call_room_has_the_speaker_badge_on_its_avatar() {
         let mut r = summary();
-        assert_eq!(channel_glyph(&r), Glyph::Hash);
+        assert!(!voice_badge(&r));
         r.is_call_room = true;
-        assert_eq!(channel_glyph(&r), Glyph::Speaker);
+        assert!(voice_badge(&r));
         r.is_call_room = false;
+        // A DM, an invite, a space, an encrypted room: no badge.
         r.is_dm = true;
-        assert_eq!(channel_glyph(&r), Glyph::Avatar);
-        // Anything else is a hash: an invite, a space, an encrypted room.
-        let mut other = summary();
-        other.is_invite = true;
-        other.is_space = true;
-        other.is_encrypted = true;
-        assert_eq!(channel_glyph(&other), Glyph::Hash);
+        r.is_invite = true;
+        r.is_space = true;
+        r.is_encrypted = true;
+        assert!(!voice_badge(&r));
     }
 
     #[test]
