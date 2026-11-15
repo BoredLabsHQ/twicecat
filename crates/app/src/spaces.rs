@@ -61,6 +61,9 @@ impl fmt::Debug for RailKey {
 #[derive(Default)]
 pub struct SpacesModel {
     spaces: Vec<SpaceView>,
+    /// For each top-level space that has sub-spaces: where they are in
+    /// `spaces`, in the core's order. Worked out once per list, not per frame.
+    tree: HashMap<RoomId, Vec<usize>>,
     unread: HashMap<RoomId, UnreadCountsView>,
     outside: UnreadCountsView,
 }
@@ -135,6 +138,7 @@ impl SpacesModel {
     /// Replaces the list with the core's (capped at [`MAX_SPACES`]).
     pub fn set(&mut self, mut spaces: Vec<SpaceView>) {
         spaces.truncate(MAX_SPACES);
+        self.tree = sub_space_index(&spaces);
         self.spaces = spaces;
     }
 
@@ -151,6 +155,7 @@ impl SpacesModel {
     /// Forgets all spaces and counts (logout).
     pub fn clear(&mut self) {
         self.spaces.clear();
+        self.tree.clear();
         self.unread.clear();
         self.outside = UnreadCountsView::default();
     }
@@ -185,8 +190,26 @@ impl SpacesModel {
         sum_counts(folder.spaces.iter().map(|space| self.unread_for(&space.id)))
     }
 
-    /// The top-level spaces, in the core's order. Sub-spaces are not on the
-    /// rail (they are sections of the room list).
+    /// The sub-spaces of the top-level space `of`, for the rail's space tree:
+    /// the level 1 spaces among its `rooms` (its direct children), each once,
+    /// in the core's order. A level 1 space, an unknown space and a space
+    /// with none give an empty list. The same rule as the room list's
+    /// sub-space sections (`sections::build`).
+    pub fn sub_spaces(&self, of: &RoomId) -> Vec<&SpaceView> {
+        self.tree
+            .get(of)
+            .map(|at| at.iter().filter_map(|&i| self.spaces.get(i)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether `selected` is one of the sub-spaces of `of`: a closed parent
+    /// then stands for it, as a closed folder does for the space it holds.
+    pub fn holds_selected(&self, of: &RoomId, selected: Option<&RoomId>) -> bool {
+        selected.is_some_and(|sel| self.sub_spaces(of).iter().any(|sub| sub.id == *sel))
+    }
+
+    /// The top-level spaces, in the core's order. Sub-spaces are on the rail
+    /// only under their space, when its tree is open (see `sub_spaces`).
     pub fn entries(&self) -> Vec<&SpaceView> {
         self.spaces
             .iter()
@@ -248,6 +271,39 @@ impl SpacesModel {
     }
 }
 
+/// Where the sub-spaces of each top-level space are in `spaces`.
+fn sub_space_index(spaces: &[SpaceView]) -> HashMap<RoomId, Vec<usize>> {
+    let level_1: Vec<usize> = spaces
+        .iter()
+        .enumerate()
+        .filter(|(_, space)| space.level == 1)
+        .map(|(at, _)| at)
+        .collect();
+    let mut index = HashMap::new();
+    if level_1.is_empty() {
+        return index;
+    }
+    for parent in spaces.iter().filter(|space| space.level == 0) {
+        if index.contains_key(&parent.id) {
+            continue;
+        }
+        let held: HashSet<&RoomId> = parent.rooms.iter().collect();
+        let mut seen: HashSet<&RoomId> = HashSet::new();
+        let kids: Vec<usize> = level_1
+            .iter()
+            .copied()
+            .filter(|&at| {
+                let id = &spaces[at].id;
+                *id != parent.id && held.contains(id) && seen.insert(id)
+            })
+            .collect();
+        if !kids.is_empty() {
+            index.insert(parent.id.clone(), kids);
+        }
+    }
+    index
+}
+
 /// The window event for the room list's drag: the cursor, and the left button
 /// coming up. (The rail's drag is a sweeten column's own; it needs none.)
 pub(crate) fn pointer_message(event: iced::Event) -> Option<Message> {
@@ -297,6 +353,9 @@ pub enum SpacesMessage {
     /// What a sweeten column of the rail reports: an item picked, dropped or
     /// let go.
     RailReorder(RailColumn, ReorderEvent),
+    /// The chevron of a space on the rail: shows or hides its sub-spaces. Kept
+    /// in memory only, so it saves nothing.
+    ToggleTree(RoomId),
     /// A click on a section header of the room list: collapses or expands
     /// the section of the selected space, and saves it.
     ToggleSection(SectionKey),
@@ -349,6 +408,10 @@ impl App {
     pub(crate) fn on_rail(&mut self, message: SpacesMessage) -> Task<Message> {
         match message {
             SpacesMessage::Select(space) => self.select_space(space),
+            SpacesMessage::ToggleTree(id) => {
+                self.set_tree(&id, None);
+                Task::none()
+            }
             SpacesMessage::ToggleSection(key) => {
                 // Saved per space; refused (and nothing changes) while no
                 // layout is loaded or the stored file is protected.
@@ -443,6 +506,27 @@ impl App {
                 _ => Task::none(),
             },
         }
+    }
+
+    /// Shows (`Some(true)`) or hides (`Some(false)`) the sub-spaces of `id` on
+    /// the rail, or flips them (`None`). Only a space that has sub-spaces can
+    /// be opened; one that is open can always be closed. Memory only: no store
+    /// is touched.
+    pub(crate) fn set_tree(&mut self, id: &RoomId, show: Option<bool>) {
+        let open = self.rail_expanded.contains(id);
+        let show = show.unwrap_or(!open);
+        if show == open || (show && self.spaces.sub_spaces(id).is_empty()) {
+            return;
+        }
+        if show {
+            self.rail_expanded.insert(id.clone());
+        } else {
+            self.rail_expanded.remove(id);
+        }
+        // The rail's items changed height: a press or drag in progress means
+        // nothing now, and a hover over a slot that is gone would never end.
+        self.cancel_rail_reorder();
+        self.clear_stale_rail_keys();
     }
 
     /// What dropping `item` on `target` would do in the sectioned list.
@@ -667,15 +751,27 @@ impl App {
         self.list_drag.forget_seen();
         let mut drawn: HashSet<RailKey> = HashSet::from([RailKey::Home]);
         let items = self.spaces.rail_items(self.sidebar.layout());
+        // The sub-spaces under a drawn space whose tree is open are drawn too.
+        let with_tree = |space: &SpaceView, drawn: &mut HashSet<RailKey>| {
+            drawn.insert(RailKey::Space(space.id.clone()));
+            if self.rail_expanded.contains(&space.id) {
+                drawn.extend(
+                    self.spaces
+                        .sub_spaces(&space.id)
+                        .iter()
+                        .map(|sub| RailKey::Space(sub.id.clone())),
+                );
+            }
+        };
         for item in &items {
             match item {
-                RailItem::Space(space) => {
-                    drawn.insert(RailKey::Space(space.id.clone()));
-                }
+                RailItem::Space(space) => with_tree(space, &mut drawn),
                 RailItem::Folder(folder) => {
                     drawn.insert(RailKey::Folder(folder.id));
                     if folder.open {
-                        drawn.extend(folder.spaces.iter().map(|s| RailKey::Space(s.id.clone())));
+                        for space in &folder.spaces {
+                            with_tree(space, &mut drawn);
+                        }
                     }
                 }
             }
@@ -818,6 +914,101 @@ mod tests {
         let ids: Vec<&str> = m.entries().iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["!a:x", "!b:x", "!c:x"]);
         assert!(SpacesModel::default().entries().is_empty());
+    }
+
+    fn with_rooms(id: &str, level: u32, rooms: &[&str]) -> SpaceView {
+        SpaceView {
+            rooms: rooms.iter().map(|r| RoomId::from(*r)).collect(),
+            ..space(id, level)
+        }
+    }
+
+    fn ids(spaces: &[&SpaceView]) -> Vec<String> {
+        spaces.iter().map(|s| s.id.as_str().to_owned()).collect()
+    }
+
+    #[test]
+    fn sub_spaces_are_the_level_1_spaces_in_the_parents_rooms_in_the_cores_order() {
+        let m = model(vec![
+            with_rooms("!p:x", 0, &["!r1:x", "!s2:x", "!s1:x", "!r2:x"]),
+            // The core's order, not the parent's list, decides.
+            with_rooms("!s1:x", 1, &["!r3:x", "!s1:x"]),
+            with_rooms("!s2:x", 1, &["!s2:x"]),
+            // Level 1, but held by another parent only.
+            with_rooms("!other:x", 1, &["!other:x"]),
+            with_rooms("!q:x", 0, &["!other:x"]),
+        ]);
+        assert_eq!(
+            ids(&m.sub_spaces(&RoomId::from("!p:x"))),
+            ["!s1:x", "!s2:x"]
+        );
+        assert_eq!(ids(&m.sub_spaces(&RoomId::from("!q:x"))), ["!other:x"]);
+    }
+
+    #[test]
+    fn a_room_a_level_2_space_and_a_duplicate_are_not_sub_spaces() {
+        let m = model(vec![
+            with_rooms("!p:x", 0, &["!room:x", "!deep:x", "!s:x", "!s:x", "!p:x"]),
+            with_rooms("!s:x", 1, &["!deep:x", "!s:x"]),
+            // Listed twice by the core: once.
+            with_rooms("!s:x", 1, &["!s:x"]),
+            with_rooms("!deep:x", 2, &["!deep:x"]),
+        ]);
+        assert_eq!(ids(&m.sub_spaces(&RoomId::from("!p:x"))), ["!s:x"]);
+    }
+
+    #[test]
+    fn a_level_1_space_a_missing_space_and_a_space_with_none_have_no_sub_spaces() {
+        let m = model(vec![
+            with_rooms("!p:x", 0, &["!s:x"]),
+            with_rooms("!s:x", 1, &["!t:x"]),
+            with_rooms("!t:x", 1, &["!t:x"]),
+            with_rooms("!lonely:x", 0, &["!room:x"]),
+        ]);
+        assert!(m.sub_spaces(&RoomId::from("!s:x")).is_empty(), "level 1");
+        assert!(m.sub_spaces(&RoomId::from("!nope:x")).is_empty());
+        assert!(m.sub_spaces(&RoomId::from("!lonely:x")).is_empty());
+        assert!(
+            SpacesModel::default()
+                .sub_spaces(&RoomId::from("!p:x"))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_tree_follows_a_new_list_and_is_forgotten_at_logout() {
+        let mut m = model(vec![
+            with_rooms("!p:x", 0, &["!s:x"]),
+            with_rooms("!s:x", 1, &["!s:x"]),
+        ]);
+        let p = RoomId::from("!p:x");
+        assert_eq!(m.sub_spaces(&p).len(), 1);
+        m.set(vec![with_rooms("!p:x", 0, &["!room:x"])]);
+        assert!(m.sub_spaces(&p).is_empty(), "the sub-space left");
+        m.set(vec![
+            with_rooms("!p:x", 0, &["!s:x"]),
+            with_rooms("!s:x", 1, &["!s:x"]),
+        ]);
+        assert_eq!(m.sub_spaces(&p).len(), 1);
+        m.clear();
+        assert!(m.sub_spaces(&p).is_empty());
+    }
+
+    #[test]
+    fn a_parent_holds_the_selected_item_only_through_its_sub_spaces() {
+        let m = model(vec![
+            with_rooms("!p:x", 0, &["!s:x"]),
+            with_rooms("!s:x", 1, &["!s:x"]),
+        ]);
+        let p = RoomId::from("!p:x");
+        let s = RoomId::from("!s:x");
+        assert!(m.holds_selected(&p, Some(&s)));
+        assert!(
+            !m.holds_selected(&p, Some(&p)),
+            "itself is not its sub-space"
+        );
+        assert!(!m.holds_selected(&p, None), "Home");
+        assert!(!m.holds_selected(&p, Some(&RoomId::from("!x:x"))));
     }
 
     #[test]

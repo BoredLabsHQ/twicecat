@@ -22,7 +22,7 @@ use crate::sections::{Line, drawn_sections, spot_of};
 use crate::sidebar_menu::{
     Entry, FolderChoice, NAME_ID, NameDialog, Purpose, SectionChoice, SidebarMenu,
     SidebarMenuMessage, Target, entries, folder_choices, place_of, room_entries, section_choices,
-    section_entries,
+    section_entries, tree_entry,
 };
 use crate::spaces::RailItem;
 use crate::state::{App, Message};
@@ -234,6 +234,14 @@ fn rail_card<'a>(
         );
     }
     if let Target::Space(id) = target {
+        // A space with sub-spaces: show or hide them under it on the rail.
+        let has_subs = !app.spaces.sub_spaces(id).is_empty();
+        if let Some(entry) = tree_entry(has_subs, app.rail_expanded.contains(id)) {
+            body = body.push(
+                secondary_button(entry.label(), Some(msg(SidebarMenuMessage::Entry(entry))))
+                    .width(Fill),
+            );
+        }
         let choices = folder_choices(&items, id);
         body = body.push(field(
             "Move to folder",

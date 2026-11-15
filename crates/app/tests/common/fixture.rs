@@ -439,6 +439,97 @@ fn rail_reorder_app_with(protected: Option<twicecat_app::sidebar_store::SidebarL
     app
 }
 
+/// A rail with a tree: Home, Quartz with its sub-spaces Delta and Echo (the
+/// tree is open), Bravo with the sub-space Zeta (closed), and a closed folder
+/// of Rust and Vue. The layout is loaded, no space is selected and nothing is
+/// under the pointer. Echo has unread notifications.
+pub fn rail_tree_app() -> App {
+    use twicecat_app::sidebar_store::{SidebarAnswer, SidebarLoad};
+    use twicecat_app::spaces::SpacesMessage;
+    use twicecat_core::api::{
+        FolderLayout, RailEntry, SidebarLabel, SidebarLayout, SpaceUnreadView, UnreadCountsView,
+    };
+
+    let mut app = main_no_room();
+    let held = |id: &str, name: &str, level: u32, rooms: &[&str]| SpaceView {
+        id: rail_space(id),
+        name: name.to_owned(),
+        avatar: None,
+        level,
+        children: rooms.len() as u64,
+        rooms: rooms.iter().map(|r| rail_space(r)).collect(),
+    };
+    feed(
+        &mut app,
+        CoreEvent::Spaces(vec![
+            held("qa", "Quartz", 0, &["sd", "se", "chat"]),
+            held("sd", "Delta", 1, &["sd", "chat2"]),
+            held("se", "Echo", 1, &["se"]),
+            held("bb", "Bravo", 0, &["sz"]),
+            held("sz", "Zeta", 1, &["sz"]),
+            held("fa", "Rust", 0, &[]),
+            held("fb", "Vue", 0, &[]),
+        ]),
+    );
+    let counts = |notifications, highlights, unread| UnreadCountsView {
+        notifications,
+        highlights,
+        unread,
+    };
+    feed(
+        &mut app,
+        CoreEvent::SpaceUnread {
+            spaces: vec![
+                SpaceUnreadView {
+                    space: rail_space("qa"),
+                    counts: counts(3, 0, true),
+                },
+                SpaceUnreadView {
+                    space: rail_space("se"),
+                    counts: counts(3, 0, true),
+                },
+            ],
+            outside: counts(7, 0, true),
+        },
+    );
+    let mut layout = SidebarLayout::new(user("me"));
+    layout.rail = vec![
+        RailEntry::Space(rail_space("qa")),
+        RailEntry::Space(rail_space("bb")),
+        RailEntry::Folder(FolderLayout {
+            id: 1,
+            name: Some(SidebarLabel::try_from("Languages").expect("a valid name")),
+            open: false,
+            spaces: ["fa", "fb"].map(rail_space).to_vec(),
+        }),
+    ];
+    press(
+        &mut app,
+        Message::SidebarLoaded(SidebarAnswer::new(user("me"), SidebarLoad::Layout(layout))),
+    );
+    press(
+        &mut app,
+        Message::Spaces(SpacesMessage::ToggleTree(rail_space("qa"))),
+    );
+    app
+}
+
+/// [`rail_tree_app`] with Delta selected and the pointer on Bravo, so that
+/// the picture shows the selected sub-space, a badge in the band, and a
+/// chevron that is only there for the hover.
+fn rail_tree() -> App {
+    use twicecat_app::spaces::{RailKey, SpacesMessage};
+
+    let mut app = rail_tree_app();
+    for message in [
+        SpacesMessage::Select(Some(rail_space("sd"))),
+        SpacesMessage::Enter(RailKey::Space(rail_space("bb"))),
+    ] {
+        press(&mut app, Message::Spaces(message));
+    }
+    app
+}
+
 /// A space picked up on the rail: the app's side of a drag that runs (the
 /// pictures of the gallery drive the real events, see `ui_gallery.rs`).
 fn rail_dragging() -> App {
@@ -3852,6 +3943,13 @@ pub fn scenarios() -> Vec<Scenario> {
                 && a.spaces.entries().len() == 11
                 && a.rail_hover.is_some()
                 && a.query.space.is_some()
+                && a.sidebar.layout().is_some()
+        }),
+        s("rail-tree", true, rail_tree, |a| {
+            in_main(a)
+                && a.rail_expanded.len() == 1
+                && a.query.space == Some(rail_space("sd"))
+                && a.rail_hover.is_some()
                 && a.sidebar.layout().is_some()
         }),
         s("rail-dragging", true, rail_dragging, |a| {

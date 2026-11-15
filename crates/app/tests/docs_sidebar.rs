@@ -33,10 +33,12 @@ fn accessibility_sidebar_section() -> String {
     rest[..end].to_owned()
 }
 
-const ENTRIES: [Entry; 12] = [
+const ENTRIES: [Entry; 14] = [
     Entry::MoveUp,
     Entry::MoveDown,
     Entry::RemoveFromFolder,
+    Entry::ShowSubSpaces,
+    Entry::HideSubSpaces,
     Entry::Rename,
     Entry::Ungroup,
     Entry::Star,

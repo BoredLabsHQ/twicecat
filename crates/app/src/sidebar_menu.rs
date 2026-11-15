@@ -191,6 +191,10 @@ pub enum Entry {
     MoveDown,
     /// Take a space out of its folder.
     RemoveFromFolder,
+    /// Show the sub-spaces of a space under it on the rail (memory only).
+    ShowSubSpaces,
+    /// Hide the sub-spaces of a space from the rail.
+    HideSubSpaces,
     /// Name or rename a folder (opens the dialog).
     Rename,
     /// Dissolve a folder.
@@ -219,6 +223,8 @@ impl Entry {
             Self::MoveUp => "Move up",
             Self::MoveDown => "Move down",
             Self::RemoveFromFolder => "Remove from folder",
+            Self::ShowSubSpaces => "Show sub-spaces",
+            Self::HideSubSpaces => "Hide sub-spaces",
             Self::Rename => "Rename\u{2026}",
             Self::Ungroup => "Ungroup",
             Self::Star => "Star",
@@ -367,6 +373,17 @@ pub fn entries(target: &Target, in_folder: bool) -> Vec<Entry> {
         // The cards of the sectioned list have their own (`section_entries`
         // and `room_entries`).
         Target::Section { .. } | Target::Room { .. } => Vec::new(),
+    }
+}
+
+/// The button of a space's card that shows or hides its sub-spaces on the
+/// rail: only for a space that has some. It is not an operation on the layout
+/// (the tree is kept in memory), so it is not in [`op_for`].
+pub fn tree_entry(has_sub_spaces: bool, expanded: bool) -> Option<Entry> {
+    match (has_sub_spaces, expanded) {
+        (false, _) => None,
+        (true, false) => Some(Entry::ShowSubSpaces),
+        (true, true) => Some(Entry::HideSubSpaces),
     }
 }
 
@@ -860,6 +877,11 @@ impl App {
                     Task::none()
                 }
             };
+        }
+        if let (Target::Space(id), Entry::ShowSubSpaces | Entry::HideSubSpaces) = (&target, entry) {
+            self.set_tree(id, Some(entry == Entry::ShowSubSpaces));
+            self.sidebar_menu = None;
+            return Task::none();
         }
         if let (Target::Folder(id), Entry::Rename) = (&target, entry) {
             let current = self
