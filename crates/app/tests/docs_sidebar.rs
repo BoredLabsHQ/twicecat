@@ -33,7 +33,7 @@ fn accessibility_sidebar_section() -> String {
     rest[..end].to_owned()
 }
 
-const ENTRIES: [Entry; 14] = [
+const ENTRIES: [Entry; 18] = [
     Entry::MoveUp,
     Entry::MoveDown,
     Entry::RemoveFromFolder,
@@ -43,6 +43,10 @@ const ENTRIES: [Entry; 14] = [
     Entry::Ungroup,
     Entry::Star,
     Entry::Unstar,
+    Entry::AddFavourite,
+    Entry::RemoveFavourite,
+    Entry::MarkLowPriority,
+    Entry::RemoveLowPriority,
     Entry::BackToDefault,
     Entry::Collapse,
     Entry::Expand,
@@ -178,6 +182,53 @@ fn sidebar_md_claims_no_sync_and_no_removal_at_logout() {
     }
     // It says the opposite, so the absence above is not an accident.
     assert!(flat.contains("the file stays on disk"));
+}
+
+#[test]
+fn sidebar_md_says_favourites_and_low_priority_are_kept_on_the_homeserver() {
+    let flat = flat(&doc("sidebar.md"));
+    for wanted in [
+        "favourites",
+        "low priority",
+        "matrix room tags",
+        "kept on the homeserver",
+        "other matrix apps such as element show them too",
+        // The local arrangement stays on this device.
+        "where the two sections stand",
+        "kept on this device only",
+    ] {
+        assert!(flat.contains(wanted), "sidebar.md does not say {wanted:?}");
+    }
+    // The tags are the exception to "the server is not told".
+    assert!(flat.contains("the one exception is the favourites and low priority tags"));
+}
+
+#[test]
+fn sidebar_md_says_an_older_twicecat_drops_the_two_section_keys_it_does_not_know() {
+    let flat = flat(&doc("sidebar.md"));
+    for wanted in [
+        "an older twicecat does not know the section keys for favourites and low priority",
+        "it drops the favourites and lowpriority keys it does not know",
+        "loses only where you had placed or collapsed those two sections",
+    ] {
+        assert!(flat.contains(wanted), "sidebar.md does not say {wanted:?}");
+    }
+}
+
+#[test]
+fn accessibility_says_the_tag_entries_need_a_pointer_and_add_no_shortcut() {
+    let section = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "favourites and low priority are menu entries on a room's card",
+        "need a pointer",
+        "kept on the homeserver",
+        "wording follows the room's tags, not a colour or an icon",
+    ] {
+        assert!(
+            section.contains(wanted),
+            "the sidebar section of accessibility.md does not say {wanted:?}"
+        );
+    }
 }
 
 #[test]
