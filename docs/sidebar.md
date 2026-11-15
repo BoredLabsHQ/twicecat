@@ -71,8 +71,9 @@ You can also **drag**, in two places:
   folder itself is moved with its menu. Making a folder, putting a space into
   a folder and taking a space out of one are done **only** with the menu
   (Move to folder, which also offers a new folder, and Remove from folder).
-  A space whose sub-spaces are shown moves together with them. Pressing on its
-  sub-spaces, or on the arrow, does not start a drag. Home cannot be dragged.
+  A space whose sub-spaces are shown is not dragged, by its icon or its band,
+  and neither are its sub-spaces or its arrow: move it with its menu (Move up,
+  Move down), or hide its sub-spaces first. Home cannot be dragged.
   Esc, leaving the window or moving the pointer out of the rail ends the drag
   and changes nothing.
 - **In the room list**, a room onto a section header or between the rows of

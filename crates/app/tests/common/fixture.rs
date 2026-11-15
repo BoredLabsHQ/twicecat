@@ -514,6 +514,51 @@ pub fn rail_tree_app() -> App {
     app
 }
 
+/// A rail for the press on an expanded space: Alpha, then Quartz with four
+/// sub-spaces (its tree is open: it is tall, so the whole of its head is
+/// nearer the centre of Alpha than its own), then Bravo. No layout change,
+/// nothing selected.
+pub fn rail_tree_tall_app() -> App {
+    use twicecat_app::sidebar_store::{SidebarAnswer, SidebarLoad};
+    use twicecat_app::spaces::SpacesMessage;
+    use twicecat_core::api::{RailEntry, SidebarLayout};
+
+    let mut app = main_no_room();
+    let held = |id: &str, name: &str, level: u32, rooms: &[&str]| SpaceView {
+        id: rail_space(id),
+        name: name.to_owned(),
+        avatar: None,
+        level,
+        children: rooms.len() as u64,
+        rooms: rooms.iter().map(|r| rail_space(r)).collect(),
+    };
+    feed(
+        &mut app,
+        CoreEvent::Spaces(vec![
+            held("aa", "Alpha", 0, &[]),
+            held("qa", "Quartz", 0, &["sd", "se", "sf", "sg"]),
+            held("sd", "Delta", 1, &["sd"]),
+            held("se", "Echo", 1, &["se"]),
+            held("sf", "Foxtrot", 1, &["sf"]),
+            held("sg", "Golf", 1, &["sg"]),
+            held("bb", "Bravo", 0, &[]),
+        ]),
+    );
+    let mut layout = SidebarLayout::new(user("me"));
+    layout.rail = ["aa", "qa", "bb"]
+        .map(|id| RailEntry::Space(rail_space(id)))
+        .to_vec();
+    press(
+        &mut app,
+        Message::SidebarLoaded(SidebarAnswer::new(user("me"), SidebarLoad::Layout(layout))),
+    );
+    press(
+        &mut app,
+        Message::Spaces(SpacesMessage::ToggleTree(rail_space("qa"))),
+    );
+    app
+}
+
 /// [`rail_tree_app`] with Delta selected and the pointer on Bravo, so that
 /// the picture shows the selected sub-space, a badge in the band, and a
 /// chevron that is only there for the hover.

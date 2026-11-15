@@ -7894,30 +7894,80 @@ mod rail_reorder_drag {
         );
     }
 
+    /// A drag that must not start: press at `from`, a nudge, a move to
+    /// `to`, the release.
+    fn no_lift(rig: &mut Rig, from: Point, to: Point, what: &str) {
+        let up = drag(rig, from, to);
+        assert_eq!((up.picked, up.dropped, up.canceled), (0, 0, 0), "{what}");
+        assert!(rig.app.rail_reorder.is_none(), "{what}");
+        assert_eq!(rig.order(), ["aa", "qa", "bb"], "{what}: order");
+        assert_eq!(rig.saves(), 0, "{what}: saves");
+    }
+
     #[test]
-    fn a_top_level_drag_of_the_expanded_parent_moves_it_and_its_band_as_one_item() {
-        let mut rig = tree_rig();
-        let quartz = rig.slot("Q");
-        let bravo = rig.slot("B");
-        rig.move_to(quartz);
-        rig.press();
-        assert_eq!(rig.move_to(nudge(quartz)).picked, 1);
-        let reorder = rig.app.rail_reorder.as_ref().expect("a drag runs");
-        assert_eq!(
-            reorder.keys.len(),
-            3,
-            "Quartz with its band is one item, with Bravo and the folder"
-        );
-        rig.move_to(bravo);
-        let up = rig.release();
-        assert_eq!(up.dropped, 1);
-        assert_eq!(rig.order(), ["bb", "qa", "[fa,fb]"]);
-        assert_eq!(rig.saves(), 1, "one save");
-        // The band went with the parent: it is still right under it.
-        let (bravo, quartz) = (rig.slot("B"), rig.slot("Q"));
+    fn an_expanded_space_is_not_lifted_by_its_head_and_no_neighbour_is() {
+        // Quartz has four sub-spaces and Alpha is above it: the whole of its
+        // 48 px head is nearer the centre of Alpha than its own.
+        let mut rig = Rig::new(fixture::rail_tree_tall_app());
+        let (alpha, quartz, bravo) = (rig.slot("A"), rig.slot("Q"), rig.slot("B"));
+        let far = Point::new(quartz.x, bravo.y + 6.0);
+        // Down the head: its top edge, the middle, the bottom edge.
+        for dy in [-20.0, 0.0, 20.0] {
+            let at = Point::new(quartz.x, quartz.y + dy);
+            no_lift(&mut rig, at, far, &format!("head at {dy}"));
+        }
+        no_lift(&mut rig, quartz, alpha, "head, up over Alpha");
+        // A press that moved away and was released elsewhere is no click.
+        assert_eq!(rig.selected(), None);
+        // The band: between two sub-spaces and on the sub-spaces' own slots.
         let (delta, echo) = (rig.slot("D"), rig.slot("E"));
-        assert!(bravo.y < quartz.y && quartz.y < delta.y && delta.y < echo.y);
-        assert!(rig.app.rail_expanded.contains(&fixture::rail_space("qa")));
+        no_lift(
+            &mut rig,
+            Point::new(delta.x, (delta.y + echo.y) / 2.0),
+            alpha,
+            "band, between sub-spaces",
+        );
+        no_lift(&mut rig, delta, alpha, "a sub-space");
+    }
+
+    #[test]
+    fn the_bottom_padding_of_an_expanded_spaces_band_lifts_nothing_with_a_neighbour_below() {
+        let mut rig = Rig::new(fixture::rail_tree_tall_app());
+        let golf = rig.slot("G");
+        let bravo = rig.slot("B");
+        // The band's last 4 px of padding, under the last sub-space (40 px
+        // high, centred on its icon text), and nearer Bravo than Quartz.
+        let at = Point::new(golf.x, golf.y + 20.0 + 2.0);
+        no_lift(
+            &mut rig,
+            at,
+            Point::new(bravo.x, bravo.y - 30.0),
+            "bottom padding",
+        );
+    }
+
+    #[test]
+    fn a_collapsed_space_with_sub_spaces_still_drags_by_its_head() {
+        let mut rig = Rig::new(fixture::rail_tree_tall_app());
+        // Close the tree with the chevron.
+        let chevron = rig.slot(Icon::SectionOpen.glyph());
+        rig.move_to(chevron);
+        rig.press();
+        rig.release();
+        assert!(rig.app.rail_expanded.is_empty());
+        let alpha = rig.slot("A");
+        let quartz = rig.slot("Q");
+        let up = drag(&mut rig, quartz, alpha);
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["qa", "aa", "bb"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn the_expanded_space_moves_with_its_card_and_the_cursor_over_it_is_a_pointer() {
+        let mut rig = Rig::new(fixture::rail_tree_tall_app());
+        let quartz = rig.slot("Q");
+        assert_eq!(rig.cursor_at(quartz), mouse::Interaction::Pointer);
     }
 
     #[test]

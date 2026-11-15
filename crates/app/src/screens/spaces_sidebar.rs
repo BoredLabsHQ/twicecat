@@ -20,7 +20,9 @@
 //!
 //! Dragging reorders only: the top-level items are one sweeten column, and
 //! each open folder's spaces are another. Making a folder, filling it and
-//! emptying it are done in the options card.
+//! emptying it are done in the options card. An open folder and a space whose
+//! sub-spaces are shown are not dragged (a tall item would lift a
+//! neighbour): they move with the card, or are closed first.
 //!
 //! The sidebar is always one slot of the main row: an empty space when the
 //! user is in no space, so the room list and the timeline keep their place in
@@ -448,7 +450,16 @@ fn space_item<'a>(
     .width(width)
     .padding([4, 0])
     .style(move |t: &iced::Theme| tree_band_style(t, nested));
-    column![head, band].spacing(4).into()
+    // An expanded space is not dragged: the top column picks the item whose
+    // centre is nearest, and a tall item's centre is far from its head and
+    // its padding, so a neighbour could be lifted. The whole item takes the
+    // press instead (as an open folder does); it moves from its options
+    // card, or is collapsed first.
+    mouse_area(column![head, band].spacing(4))
+        .on_press(Message::Spaces(SpacesMessage::RailPressed(RailKey::Space(
+            parent.id.clone(),
+        ))))
+        .into()
 }
 
 /// How the slot of a top-level `space` looks. `tree` is `None` when the
@@ -481,9 +492,14 @@ fn space_slot<'a>(
     let counts = app.spaces.unread_for(&space.id);
     let hover = app.rail_hover.as_ref() == Some(&key);
     let state = space_state(app, space, tree);
+    let mut cue = cue(app, &key);
+    if tree == Some(true) && app.rail_reorder.is_none() {
+        // An expanded space cannot be picked up (see `space_item`).
+        cue.cursor = mouse::Interaction::Pointer;
+    }
     slot(Slot {
         kind: Kind::Item,
-        cue: cue(app, &key),
+        cue,
         key,
         icon: space_icon(space, ICON, icon_radius(state), &app.avatars),
         state,

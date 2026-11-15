@@ -524,7 +524,7 @@ existing shortcut keeps its meaning.
   (**Show sub-spaces**, **Hide sub-spaces**), which needs a pointer like the
   other menus. Which spaces are shown open is kept in memory only: it is not in
   the sidebar file and is reset at logout and restart. Keyboard-only users reach
-  every room of a sub-space with Ctrl+K as before. The line under Home is
+  every room of a sub-space with Ctrl+K as before. A space whose sub-spaces are shown cannot be dragged (like an open folder); its menu moves it. The line under Home is
   decoration, not a control, and has at least 3:1 contrast with the rail.
 - **No auto-scroll while dragging.** A drag does not scroll the rail or the
   list when the pointer is near an edge, so a target that is out of view

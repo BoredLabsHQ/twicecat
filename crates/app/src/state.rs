@@ -1862,6 +1862,13 @@ impl App {
                         Message::SidebarLoaded(SidebarAnswer::new(account.clone(), load))
                     });
                 task = Task::batch([task, load]);
+                // Another account with no logout in between: nothing of the
+                // old one's rail (open trees, hover) carries over.
+                if self.user_id.as_ref() != Some(&user_id) {
+                    self.rail_expanded.clear();
+                    self.rail_hover = None;
+                    self.cancel_rail_reorder();
+                }
                 self.user_id = Some(user_id);
                 self.notice = None;
                 self.end_login_attempt();
@@ -4645,6 +4652,21 @@ mod tests {
                 let _ = app.update(core(event));
                 assert!(app.rail_expanded.is_empty());
             }
+        }
+
+        #[test]
+        fn a_login_of_another_account_with_no_logout_empties_the_tree() {
+            let (mut app, _store) = tree_app();
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            send(&mut app, S::Enter(RailKey::Space(rid("!s1:x"))));
+            assert!(!app.rail_expanded.is_empty() && app.rail_hover.is_some());
+            let _ = app.update(core(CoreEvent::LoggedIn {
+                user_id: UserId::from("@other:x"),
+                device_id: DeviceId::from("D2"),
+                restored: false,
+            }));
+            assert!(app.rail_expanded.is_empty(), "the tree of the old account");
+            assert_eq!(app.rail_hover, None);
         }
 
         #[test]
