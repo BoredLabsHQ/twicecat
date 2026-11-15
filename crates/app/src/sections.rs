@@ -1390,10 +1390,10 @@ mod tests {
         let _ = app.update(Message::SearchChanged(String::new()));
         assert!(app.sections_shown());
         for tab in [RoomListTab::People, RoomListTab::Rooms, RoomListTab::Spaces] {
-            let _ = app.update(Message::TabSelected(tab));
+            let _ = app.update(Message::ChipClicked(tab));
             assert!(flat(&app), "{tab:?}");
         }
-        let _ = app.update(Message::TabSelected(RoomListTab::All));
+        let _ = app.update(Message::ChipClicked(RoomListTab::All));
         assert!(app.sections_shown());
         app.ui_settings.room_list = RoomListChoice::Rail;
         assert!(flat(&app), "the rail");
@@ -2371,7 +2371,7 @@ mod tests {
             assert!(!app.list_drag.is_dragging());
             // So does the People tab.
             let (mut app, _store, _rx) = arranged();
-            let _ = app.update(Message::TabSelected(RoomListTab::People));
+            let _ = app.update(Message::ChipClicked(RoomListTab::People));
             send(&mut app, S::ListPress(room("dm1")));
             send(&mut app, S::PointerMoved(Point::new(0.0, 0.0)));
             send(&mut app, S::PointerMoved(Point::new(50.0, 50.0)));

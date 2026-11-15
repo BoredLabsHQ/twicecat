@@ -1,4 +1,4 @@
-//! The room list pane: tabs, search and the windowed list of rows (plan Q12).
+//! The room list pane: filter chips, search and the windowed list of rows (plan Q12).
 //!
 //! Only the rows near the viewport are built, between two spacers that keep
 //! the scrollable's content `len * row height` tall (the row height is the
@@ -7,7 +7,7 @@
 //! [`row_name`] and [`preview_line`]).
 //!
 //! The pane is either expanded or collapsed to a rail
-//! ([`RoomListChoice`]). The column is always `[actions, tabs, search, list,
+//! ([`RoomListChoice`]). The column is always `[actions, chips, search, list,
 //! call bar]` in both, so the list keeps its place when Ctrl+B switches.
 
 use chrono::{Local, TimeZone};
@@ -76,7 +76,7 @@ pub const fn shows_preview(density: Density) -> bool {
     matches!(density, Density::Comfortable)
 }
 
-/// **New room**, **Direct message** and **Join**, above the tabs.
+/// **New room**, **Direct message** and **Join**, above the chips.
 fn room_actions<'a>() -> Element<'a, Message> {
     let action = |label: &'static str, message: RoomsMessage| {
         button(text(label).size(tokens::CAPTION).wrapping(Wrapping::None))
@@ -118,11 +118,16 @@ fn rail_actions<'a>() -> Element<'a, Message> {
     .into()
 }
 
-/// The tabs, left to right.
-pub const TABS: [RoomListTab; 4] = [
+/// The filter chips, left to right (plan Q11).
+pub const TABS: [RoomListTab; 9] = [
     RoomListTab::All,
+    RoomListTab::Unreads,
+    RoomListTab::Mentions,
     RoomListTab::People,
     RoomListTab::Rooms,
+    RoomListTab::Favourites,
+    RoomListTab::LowPriority,
+    RoomListTab::Invites,
     RoomListTab::Spaces,
 ];
 
@@ -270,42 +275,44 @@ fn call_label(call: CallPill) -> String {
     }
 }
 
-/// What an empty list adds to its title.
-fn empty_hint(label: &str) -> &'static str {
+/// What an empty list adds to its title: one line per chip. With a search
+/// (`label` is "No match") it asks for another one. The Mentions hint does not
+/// say that rooms marked unread are left out: the SDK lists them there too.
+pub fn empty_hint(tab: RoomListTab, label: &str) -> &'static str {
     if label == "No match" {
-        "Try another search"
-    } else {
-        "Rooms you join will appear here"
+        return "Try another search";
+    }
+    match tab {
+        RoomListTab::All | RoomListTab::Rooms => "Rooms you join will appear here",
+        RoomListTab::People => "Direct messages will appear here",
+        RoomListTab::Spaces => "Spaces you join will appear here",
+        RoomListTab::Unreads => "Rooms with unread messages will appear here",
+        RoomListTab::Mentions => "Rooms where you are mentioned will appear here",
+        RoomListTab::Favourites => "Rooms you favourite will appear here",
+        RoomListTab::LowPriority => "Rooms you mark as low priority will appear here",
+        RoomListTab::Invites => "Invitations will appear here",
     }
 }
 
-/// The tabs as a segmented control: one track, the chosen tab filled and
-/// outlined.
-fn segmented_tabs<'a>(active: RoomListTab) -> Element<'a, Message> {
-    let tabs = row(TABS.into_iter().map(|tab| {
+/// The filter chips as one wrapping row of pills, a single choice. The chosen
+/// chip is filled and outlined; clicking it goes back to All. A chip never
+/// wraps its own text, so a narrow pane puts chips on more lines instead.
+pub fn chips<'a>(active: RoomListTab) -> Element<'a, Message> {
+    row(TABS.into_iter().map(|tab| {
         button(
             text(tab_label(tab))
                 .size(tokens::CAPTION)
-                .wrapping(Wrapping::None)
-                .width(Fill)
-                .align_x(iced::Center),
+                .wrapping(Wrapping::None),
         )
-        .on_press(Message::TabSelected(tab))
-        .width(Fill)
+        .on_press(Message::ChipClicked(tab))
         .padding([tokens::XS, tokens::S])
-        .style(if tab == active {
-            kit::active_icon_style
-        } else {
-            kit::ghost_style
-        })
+        .style(kit::filter_chip_style(tab == active))
         .into()
     }))
-    .spacing(tokens::XS);
-    container(tabs)
-        .padding(tokens::XS)
-        .width(Fill)
-        .style(kit::card_style)
-        .into()
+    .spacing(tokens::XS)
+    .wrap()
+    .vertical_spacing(tokens::XS)
+    .into()
 }
 
 /// The search field with a search icon and, once there is text, a button
@@ -366,10 +373,10 @@ fn empty_view(app: &App, rail: bool) -> Element<'_, Message> {
         .padding([tokens::L, 0.0])
         .into();
     }
-    kit::empty_state(label, empty_hint(label))
+    kit::empty_state(label, empty_hint(app.query.tab, label))
 }
 
-/// The pane: tabs, search, then the list or an empty-state line.
+/// The pane: chips, search, then the list or an empty-state line.
 pub fn view(app: &App) -> Element<'_, Message> {
     let rail = app.pane_layout().list == RoomListChoice::Rail;
     let density = app.density();
@@ -378,18 +385,18 @@ pub fn view(app: &App) -> Element<'_, Message> {
     } else {
         windowed_list(app)
     };
-    let tabs: Element<'_, Message>;
+    let chips_slot: Element<'_, Message>;
     let (actions, search, dock) = if rail {
-        tabs = space().height(0).into();
+        chips_slot = space().height(0).into();
         (rail_actions(), rail_search(), call::rail_dock(app))
     } else {
-        tabs = segmented_tabs(app.query.tab);
+        chips_slot = chips(app.query.tab);
         (room_actions(), search_field(app), call::dock(app))
     };
     // The call bar is last, so the list keeps its place when a call starts.
     // `from_vec` keeps the empty slots (`push` drops a zero-sized child), so
     // the five slots stay put between the expanded list and the rail.
-    let slots = Column::from_vec(vec![actions, tabs, search, list, dock])
+    let slots = Column::from_vec(vec![actions, chips_slot, search, list, dock])
         .spacing(density.gap())
         .width(Fill)
         .height(Fill);
@@ -1427,7 +1434,20 @@ mod tests {
     #[test]
     fn tab_labels() {
         let labels: Vec<_> = TABS.iter().map(|t| tab_label(*t)).collect();
-        assert_eq!(labels, ["All", "DMs", "Rooms", "Spaces"]);
+        assert_eq!(
+            labels,
+            [
+                "All",
+                "Unreads",
+                "Mentions",
+                "DMs",
+                "Rooms",
+                "Favourites",
+                "Low priority",
+                "Invites",
+                "Spaces"
+            ]
+        );
     }
 
     #[test]

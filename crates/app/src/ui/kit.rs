@@ -202,6 +202,36 @@ pub fn active_icon_style(theme: &Theme, status: Status) -> button::Style {
     }
 }
 
+/// A filter chip of the room list: a pill in the text colour. The active chip
+/// is filled with the selection colour and outlined in the focus colour, the
+/// others sit on the raised surface with the quiet border, so the chosen one
+/// is clear without relying on a text colour alone.
+pub fn filter_chip_style(active: bool) -> impl Fn(&Theme, Status) -> button::Style {
+    move |theme, status| {
+        let sem = theme::semantic(theme);
+        let text_color = theme.palette().text;
+        let (fill, outline) = if active {
+            (sem.selection, sem.focus)
+        } else {
+            (sem.surface_raised, sem.border)
+        };
+        let background = match status {
+            Status::Hovered => mix(fill, text_color, 0.08),
+            Status::Pressed => mix(fill, text_color, 0.16),
+            Status::Active | Status::Disabled => fill,
+        };
+        filled(
+            background,
+            text_color,
+            Border {
+                color: outline,
+                width: 1.0,
+                radius: border::rounded(tokens::ROUND).radius,
+            },
+        )
+    }
+}
+
 /// A toggle that is live: no fill, an outline in the success colour (a
 /// microphone that is open). It differs from [`active_icon_style`] (the
 /// selection fill) and from the quiet [`icon_style`].
@@ -1840,5 +1870,37 @@ mod tests {
         assert!(scanned >= 40, "only {scanned} files scanned");
         assert!(controls >= 25, "only {controls} controls found");
         assert!(bad.is_empty(), "controls without the kit style: {bad:#?}");
+    }
+
+    #[test]
+    fn a_filter_chip_reads_at_4_5_to_1_in_every_status_and_theme_and_one_step_worse_fails() {
+        for (name, theme) in themes() {
+            for status in STATUSES {
+                for active in [false, true] {
+                    let style = filter_chip_style(active)(&theme, status);
+                    let back = behind(&style, &theme);
+                    let ratio = contrast(style.text_color, back);
+                    assert!(
+                        ratio >= 4.5,
+                        "{name} {status:?} active={active}: {ratio:.2}"
+                    );
+                    assert!(style.border.width >= 1.0, "{name}: an outline");
+                    // One step worse: the same text, pulled most of the way to its
+                    // background, must fail the same check (the check bites).
+                    let worse = mix(style.text_color, back, 0.85);
+                    assert!(
+                        contrast(worse, back) < 4.5,
+                        "{name} {status:?} active={active}: the check would not catch a fainter text"
+                    );
+                }
+            }
+            let on = filter_chip_style(true)(&theme, Status::Active);
+            let off = filter_chip_style(false)(&theme, Status::Active);
+            assert_ne!(
+                on.background, off.background,
+                "{name}: the active chip is filled differently"
+            );
+            assert_ne!(on.border.color, off.border.color, "{name}");
+        }
     }
 }

@@ -1371,6 +1371,16 @@ pub fn main_room() -> App {
     app
 }
 
+/// The room list with the Unreads chip chosen (sidebar rework, Task 7).
+fn room_list_chips() -> App {
+    let mut app = main_no_room();
+    press(
+        &mut app,
+        Message::ChipClicked(twicecat_core::api::RoomListTab::Unreads),
+    );
+    app
+}
+
 /// A room list built to crowd its rows: long names and previews (`body`),
 /// big counts, and a room with every tag there is (voice, invite, muted,
 /// ringing, a mention count).
@@ -4096,6 +4106,11 @@ pub fn scenarios() -> Vec<Scenario> {
         }),
         s("main-no-room", true, main_no_room, |a| {
             in_main(a) && a.selected.is_none() && a.rooms.len() > 10
+        }),
+        s("room-list-chips", true, room_list_chips, |a| {
+            in_main(a)
+                && a.query.tab == twicecat_core::api::RoomListTab::Unreads
+                && a.selected.is_none()
         }),
         s("main-empty-room", true, main_empty_room, |a| {
             in_main(a) && a.selected.is_some() && a.timeline.items.is_empty()

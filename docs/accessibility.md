@@ -511,11 +511,18 @@ existing shortcut keeps its meaning.
   collapsed, though Ctrl+K still opens its rooms. Once a name dialog is open
   (New folder, New section, Rename), its field, Enter and Esc work from the
   keyboard.
+- **The filter chips are clicks only.** The chips above the room list (All,
+  Unreads, Mentions, DMs, Rooms, Favourites, Low priority, Invites, Spaces) are
+  buttons, as the tabs were, and iced 0.14 buttons take no keyboard focus, so
+  Tab does not visit them. The chosen chip is shown by its fill and its outline
+  (not by colour alone), and its text meets 4.5:1 in every test theme. Clicking
+  the chosen chip goes back to All. Ctrl+K still finds every room, whatever
+  chip is chosen. No shortcut was added or changed.
 - **Rows and headers are pointer-only in the sectioned room list.** A room row
   and a section header there are a box that answers the pointer, not a button,
   so opening a room and collapsing or expanding a header need a click. Buttons
   took no focus in iced 0.14 either, so no keyboard access was lost, only the
-  button's own look states. The flat list (a search, the DMs or Rooms tab,
+  button's own look states. The flat list (a search, a filter chip other than All,
   Home, the narrow rail) and the rail keep their buttons. A person listed
   under a voice room is a click target too.
 - **The space tree on the rail is mouse only, and not saved.** The arrow at the

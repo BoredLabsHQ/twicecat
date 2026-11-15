@@ -403,6 +403,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "rail-tree",
         "rail-menu",
         "rail-folder-name",
+        "room-list-chips",
         "space-sections",
         "space-sections-collapsed",
         "voice-channel",
@@ -900,6 +901,94 @@ fn the_room_list_is_300_wide_or_a_72_px_rail_and_keeps_its_five_slots() {
                     }
                     assert!(out.is_empty(), "{what}: spills {out:?}");
                 }
+            }
+        }
+    }
+}
+
+// ---- Filter chips (sidebar rework, Task 7) ----------------------------------
+
+/// Checks the chips laid out inside `slot`: every painted leaf is inside the
+/// slot and no two overlap. Returns the number of chip lines.
+fn check_chips_drawn_whole(slot: &Node, what: &str) -> usize {
+    // `painted_leaves` adds the node's own offset, so the leaves are in the
+    // coordinates of the node's parent, where the node's bounds are the frame.
+    let mut leaves = Vec::new();
+    painted_leaves(slot, iced::Point::ORIGIN, &mut leaves);
+    let frame = slot.bounds();
+    assert!(leaves.len() >= 9, "{what}: {} leaves", leaves.len());
+    for leaf in &leaves {
+        assert!(
+            leaf.x >= frame.x - 0.5
+                && leaf.y >= frame.y - 0.5
+                && leaf.x + leaf.width <= frame.x + frame.width + 0.5
+                && leaf.y + leaf.height <= frame.y + frame.height + 0.5,
+            "{what}: {leaf:?} sticks out of {frame:?}"
+        );
+    }
+    for (a, first) in leaves.iter().enumerate() {
+        for second in &leaves[a + 1..] {
+            assert!(
+                !overlap(first, second),
+                "{what}: {first:?} overlaps {second:?}"
+            );
+        }
+    }
+    let mut lines: Vec<i32> = leaves.iter().map(|l| l.y.round() as i32).collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines.len()
+}
+
+#[test]
+fn the_chips_wrap_in_the_pane_and_no_chip_is_drawn_in_the_rail() {
+    let renderer = renderer();
+    for scenario in fixture::scenarios().iter().filter(|s| s.room_list) {
+        let mut app = (scenario.build)();
+        for variant in variants(true) {
+            apply(&mut app, variant);
+            for size in SIZES {
+                app.window_width = size.width;
+                let what = format!("{} {} at {}", scenario.name, variant.tag(), size.width);
+                let laid = Laid::new(&app, &renderer, size);
+                let column = list_column(list_pane_node(&laid));
+                assert_eq!(column.children().len(), 5, "{what}");
+                let slot = &column.children()[1];
+                // A window under 800 px shows the rail whatever is saved.
+                let expanded = variant.list == RoomListChoice::Expanded && size.width >= 800.0;
+                if expanded {
+                    // 300 px minus the pane's padding: nine chips need lines.
+                    let lines = check_chips_drawn_whole(slot, &what);
+                    assert!(lines >= 2, "{what}: the chips did not wrap ({lines} line)");
+                    assert!(slot.bounds().width <= 300.0, "{what}");
+                } else {
+                    assert!(slot.bounds().height < 0.5, "{what}: a chip in the rail");
+                    assert!(slot.children().is_empty(), "{what}: a chip in the rail");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn the_chips_wrap_without_overlap_or_clipping_at_every_pane_width() {
+    use twicecat_app::screens::room_list_pane::{TABS, chips};
+    let renderer = renderer();
+    for width in [300.0_f32, 240.0, 180.0] {
+        for active in TABS {
+            let mut element = chips(active);
+            let mut tree = Tree::new(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut tree,
+                &renderer,
+                &Limits::new(Size::ZERO, Size::new(width, 400.0)),
+            );
+            let what = format!("{active:?} in {width} px");
+            assert!(node.bounds().width <= width + 0.5, "{what}");
+            let lines = check_chips_drawn_whole(&node, &what);
+            assert!(lines >= 2, "{what}: {lines} line");
+            if width <= 180.0 {
+                assert!(lines >= 4, "{what}: the narrower the pane the more lines");
             }
         }
     }
@@ -4633,8 +4722,17 @@ mod sessions_screen {
             !all.iter()
                 .any(|t| t.contains("SignOutAsk") && t.contains("GALLERYDEV"))
         );
-        assert_eq!(all.iter().filter(|t| t.contains("SignOutAsk(")).count(), 2);
-        assert_eq!(all.iter().filter(|t| t.contains("RenameStart(")).count(), 3);
+        // The probe also walks the room list under the card, where a chip can
+        // sit under a button and report that button's message too; so count
+        // the distinct messages (one per device), not the places.
+        let distinct = |part: &str| {
+            all.iter()
+                .filter(|t| t.contains(part))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        };
+        assert_eq!(distinct("SignOutAsk("), 2);
+        assert_eq!(distinct("RenameStart("), 3);
         assert!(all.iter().any(|t| t.contains("SignOutAllAsk")));
     }
 

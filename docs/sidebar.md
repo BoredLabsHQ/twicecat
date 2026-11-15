@@ -28,6 +28,19 @@ keyboard use see [accessibility.md](accessibility.md), section "The sidebar".
   spaces are shown open is **not saved**: after a restart or a logout every
   space is closed again.
 
+**Filter chips** above the room list pick what the list shows, one at a time:
+All, Unreads, Mentions, DMs, Rooms, Favourites, Low priority, Invites and
+Spaces. Click a chip to filter; click the chosen chip again to go back to All.
+The chips go onto more lines when the pane is narrow, and they are not drawn
+when the room list is collapsed to its narrow rail. A chip other than All shows
+the flat list (the sections show only under All, with no search). Unreads lists
+the rooms with unread messages or marked unread; Mentions lists the rooms the
+server counts as having a mention or unread messages, so a room you marked as
+unread can show there too. Favourites and Low priority list the rooms carrying
+those Matrix tags, so a room favourited in another Matrix client such as
+Element shows under Favourites. Each chip has its own line when nothing
+matches, such as "No unread rooms".
+
 **The room list of a space**, drawn as sections you can collapse and expand:
 Starred, Channels (the space's own rooms), one section per sub-space, and
 Direct messages. A collapsed header shows the unread or mention count of its
