@@ -159,6 +159,9 @@ You can also **drag**, in two places:
   A space whose sub-spaces are shown is not dragged, by its icon or its band,
   and neither are its sub-spaces or its arrow: move it with its menu (Move up,
   Move down), or hide its sub-spaces first. Home cannot be dragged.
+  An open folder and a space whose sub-spaces are shown are not dragged: they
+  move with their own menu. A finger on a touch screen does not reorder the
+  rail either; the menu makes the same move.
   Esc, leaving the window or moving the pointer out of the rail ends the drag
   and changes nothing.
 - **In the room list**, a room onto a section header or between the rows of
@@ -175,15 +178,38 @@ You can also **drag**, in two places:
   own sections keeps its tag: the move is saved, but a favourite stays under
   Favourites (the tag wins), so remove the tag to see it in your section.
 
+  Some drops have a result you cannot see at once:
+
+  - A favourite that you moved into a section of your own stays under
+    Favourites, as said above, until you remove the tag.
+  - A starred room dropped on Favourites gets the tag and stays under Starred,
+    where it was: Starred comes first, so nothing changes on the screen. The
+    tag is there, and Element shows it.
+  - A favourite that is also saved in a section of your own, dropped on
+    Channels, removes the tag and the room reappears in that section, which is
+    what Remove from favourites does too.
+  - A room that is the only one in its own section leaves that header hidden
+    when it is tagged, because a section shows only while it has rooms, so
+    there is nothing to drop on: use Remove from favourites or Remove low
+    priority in its card.
+
 Every drop does the same thing as the menu entry of that move; nothing can be
 done only by dragging. A drag does not scroll the list, so use the menu for a
 target that is out of view. Esc, or leaving the window, cancels a drag.
 
 No keyboard shortcut was added for any of this. The menus open with a pointer
 (a right-click or a click), so someone who uses only the keyboard sees the
-arrangement but cannot change it.
+arrangement but cannot change it. Tagging is done with a pointer only, too, in
+a space's list and in the flat list: the tags a pointer user or another Matrix
+app set are shown to everyone, and every room is still found with Ctrl+K.
 
-## Where it is kept: on this device only
+## Where it is kept: on this device, and the two tags on the homeserver
+
+The tags are kept on the homeserver: Favourites and Low priority are the
+Matrix tags of the room, so Element and other clients show them, and a tag set
+there shows here. The layout and the sort are kept on this device: the layout
+in the sidebar file below, the sort in `settings.json`. Which spaces are shown
+open on the rail is not saved at all.
 
 The arrangement is kept **on this device only**. It is not sent to your
 homeserver and it is not shared with your other devices or other Matrix

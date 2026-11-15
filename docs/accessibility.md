@@ -561,8 +561,10 @@ existing shortcut keeps its meaning.
   (**Show sub-spaces**, **Hide sub-spaces**), which needs a pointer like the
   other menus. Which spaces are shown open is kept in memory only: it is not in
   the sidebar file and is reset at logout and restart. Keyboard-only users reach
-  every room of a sub-space with Ctrl+K as before. A space whose sub-spaces are shown cannot be dragged (like an open folder); its menu moves it. The line under Home is
-  decoration, not a control, and has at least 3:1 contrast with the rail.
+  every room of a sub-space with Ctrl+K as before. A space whose sub-spaces are
+  shown cannot be dragged (like an open folder); its menu moves it. The line
+  under Home is decoration, not a control, and has at least 3:1 contrast with
+  the rail.
 - **Favourites and Low priority are menu entries on a room's card.** The four
   entries (Add to favourites, Remove from favourites, Mark as low priority,
   Remove low priority) are buttons of the room card, so they need a pointer
@@ -574,7 +576,10 @@ existing shortcut keeps its meaning.
   headers collapse and move like the other headers, with a pointer. Dragging
   a room onto Favourites or Low priority is the same entry as the one in the
   card (and dropping it on its own section the matching Remove entry), so
-  nothing can be done only by dragging. No shortcut was added or changed.
+  nothing can be done only by dragging. A favourite that you moved into a
+  section of your own stays under Favourites (the tag wins), so a room can be
+  where the card says and not where it was dropped; the card's words say which
+  tag it carries. No shortcut was added or changed.
 - **The card of a row in the flat list is pointer-only too.** A right-click on
   a room in Home, under a chip other than All, or in a search result opens a
   card with the two tag entries only, worded after the room's tags. Like the
@@ -591,8 +596,10 @@ existing shortcut keeps its meaning.
   it.** Folders are made, filled and emptied with the options menu (Move to
   folder, New folder, Remove from folder). A drag on the rail ends, and saves
   nothing, with Esc, when the window loses focus, and when the pointer moves
-  out of the rail. The rail's drag follows the mouse only: a finger drag on a
-  touch screen does not reorder it, and the menu does the same move.
+  out of the rail. An open folder and a space whose sub-spaces are shown are
+  not dragged: their menu (Move up, Move down) moves them. The rail's drag
+  follows the mouse only: a finger drag on a touch screen does not reorder it,
+  and the menu does the same move.
 
 ## Known limits of iced 0.14
 
