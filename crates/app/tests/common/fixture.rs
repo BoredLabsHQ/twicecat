@@ -882,6 +882,28 @@ fn space_sections_dragging() -> App {
     )
 }
 
+/// A room of Channels held by the pointer over the "Reading list" header: the
+/// ghost tile is drawn at the pointer, over the list, with the grab offset
+/// seen at the press (30, 20 in the row).
+fn space_sections_dragging_ghost() -> App {
+    use twicecat_app::drag::Zone;
+    use twicecat_app::spaces::SpacesMessage;
+    use twicecat_core::api::SectionKey;
+    let mut app = space_sections_custom();
+    let item = list_room("general");
+    for message in [
+        SpacesMessage::ListEnter(item.clone()),
+        SpacesMessage::ListPress(item.clone()),
+        SpacesMessage::ListGrab(item, iced::Point::new(30.0, 20.0)),
+        SpacesMessage::PointerMoved(iced::Point::new(120.0, 200.0)),
+        SpacesMessage::PointerMoved(iced::Point::new(150.0, 262.0)),
+        SpacesMessage::ListOver(list_head(SectionKey::Custom(0)), Zone::Into),
+    ] {
+        press(&mut app, Message::Spaces(message));
+    }
+    app
+}
+
 /// A room of Channels dragged onto the Favourites header of the tags space:
 /// the ring shows, as for a section of the user's own (it gets the tag).
 fn space_sections_dragging_tag() -> App {
@@ -4288,6 +4310,17 @@ pub fn scenarios() -> Vec<Scenario> {
             true,
             space_sections_dragging_refused,
             |a| in_main(a) && a.list_drag.target().is_none() && a.list_drag.refused().is_some(),
+        ),
+        s(
+            "space-sections-dragging-ghost",
+            true,
+            space_sections_dragging_ghost,
+            |a| {
+                in_main(a)
+                    && a.sections_shown()
+                    && a.ghost().is_some()
+                    && a.list_drag.target().is_some()
+            },
         ),
         s(
             "space-sections-dragging-tag",

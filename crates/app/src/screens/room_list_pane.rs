@@ -41,7 +41,7 @@ use crate::sections::{
 use crate::settings::SettingsMessage;
 use crate::sidebar::SidebarState;
 use crate::sidebar_menu::SidebarMenuMessage;
-use crate::spaces::SpacesMessage;
+use crate::spaces::{GhostItem, SpacesMessage};
 use crate::state::{App, Message};
 use crate::theme;
 use crate::ui::fonts;
@@ -648,6 +648,9 @@ struct ListCue {
     hovered: bool,
     /// It is the one being dragged.
     dragged: bool,
+    /// The button is down on it and no drag has started: the area reports
+    /// where the pointer is in it once, for the ghost's grab offset.
+    pressed: bool,
 }
 
 /// The cue of the row or header `key`.
@@ -683,6 +686,7 @@ fn list_cue(app: &App, key: &ListKey) -> ListCue {
         dragging,
         hovered: !dragging && app.list_hover.as_ref() == Some(key),
         dragged: app.list_drag.dragged() == Some(key),
+        pressed: app.list_drag.pressed() == Some(key),
     }
 }
 
@@ -847,6 +851,9 @@ fn list_area<'a>(
                 list_drop::halves(point.y, height),
             ))
         });
+    } else if cue.pressed {
+        area =
+            area.on_move(move |point| Message::Spaces(SpacesMessage::ListGrab(key.clone(), point)));
     }
     area.into()
 }
@@ -1335,6 +1342,14 @@ const fn voice_badge_size(density: Density) -> f32 {
     if shows_preview(density) { 16.0 } else { 14.0 }
 }
 
+/// `color` at `alpha` of its own opacity.
+fn with_alpha(color: Color, alpha: f32) -> Color {
+    Color {
+        a: color.a * alpha,
+        ..color
+    }
+}
+
 /// What the row behind a channel's avatar looks like: selected, under the
 /// pointer, or plain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1369,9 +1384,10 @@ fn channel_avatar<'a>(
     avatars: &Avatars,
     density: Density,
     lit: Lit,
+    alpha: f32,
 ) -> Element<'a, Message> {
     let size = channel_avatar_size(density);
-    let avatar = avatar_view(room, name, avatars, size);
+    let avatar = avatar_view_alpha(room, name, avatars, size, alpha);
     if !voice_badge(room) {
         return container(avatar).width(size).height(size).into();
     }
@@ -1384,10 +1400,10 @@ fn channel_avatar<'a>(
     .center_x(side)
     .center_y(side)
     .style(move |t: &iced::Theme| container::Style {
-        background: Some(Background::Color(badge_fill(t, lit))),
-        text_color: Some(t.palette().text),
+        background: Some(Background::Color(with_alpha(badge_fill(t, lit), alpha))),
+        text_color: Some(with_alpha(t.palette().text, alpha)),
         border: border::rounded(side / 2.0)
-            .color(theme::semantic(t).border)
+            .color(with_alpha(theme::semantic(t).border, alpha))
             .width(1.0),
         ..container::Style::default()
     });
@@ -1448,7 +1464,7 @@ fn channel_row<'a>(
     } else {
         Lit::Plain
     };
-    let glyph = channel_avatar(room, &name, env.avatars, env.density, lit);
+    let glyph = channel_avatar(room, &name, env.avatars, env.density, lit, 1.0);
     let weight = if emphasis == Emphasis::Unread {
         fonts::BODY_SEMIBOLD
     } else {
@@ -1494,6 +1510,126 @@ fn channel_row<'a>(
         .into()
 }
 
+/// How opaque the ghost tile of a dragged row or header is.
+pub const GHOST_ALPHA: f32 = 0.7;
+
+/// The width of a room's ghost tile: a row of the list, less the scrollbar's
+/// gutter.
+pub const GHOST_ROOM_WIDTH: f32 = main_view::LIST_PANE_WIDTH - SCROLLBAR_GUTTER;
+
+/// The width of a header's ghost tile.
+pub const GHOST_HEADER_WIDTH: f32 = 180.0;
+
+/// The size of the ghost tile of `item` in `density`: the row's own height.
+pub fn ghost_size(item: &GhostItem<'_>, density: Density) -> iced::Size {
+    match item {
+        GhostItem::Room(_) => iced::Size::new(GHOST_ROOM_WIDTH, row_height(density)),
+        GhostItem::Header(header) => iced::Size::new(
+            GHOST_HEADER_WIDTH,
+            line_height(&Line::Header(header.clone()), density),
+        ),
+    }
+}
+
+/// The ghost tile of a dragged row or header: a copy at [`GHOST_ALPHA`] on
+/// the raised surface with the quiet border, so it reads in every theme. A
+/// room shows its avatar (with the speaker on a voice room) and its name; a
+/// header its name in capitals. It holds no widget that takes the pointer, so
+/// whatever is under it still gets every pointer event.
+pub fn ghost_tile<'a>(
+    app: &'a App,
+    item: &GhostItem<'a>,
+    density: Density,
+) -> Element<'a, Message> {
+    let size = ghost_size(item, density);
+    let content: Element<'a, Message> = match item {
+        GhostItem::Room(room) => {
+            let name = row_name(&room.name);
+            let emphasis = channel_emphasis(room, app.effective_room_mode(&room.id));
+            let weight = if emphasis == Emphasis::Unread {
+                fonts::BODY_SEMIBOLD
+            } else {
+                fonts::BODY
+            };
+            let avatar =
+                channel_avatar(room, &name, &app.avatars, density, Lit::Plain, GHOST_ALPHA);
+            row![
+                avatar,
+                container(
+                    text(name)
+                        .size(tokens::BODY)
+                        .font(weight)
+                        .wrapping(Wrapping::None)
+                        .style(move |t: &iced::Theme| text::Style {
+                            color: Some(with_alpha(channel_name_color(t, emphasis), GHOST_ALPHA)),
+                        })
+                )
+                .width(Fill)
+                .clip(true),
+            ]
+            .spacing(tokens::S)
+            .align_y(iced::Center)
+            .into()
+        }
+        GhostItem::Header(header) => container(
+            text(header_label(header.name))
+                .size(tokens::CAPTION)
+                .font(fonts::BODY_SEMIBOLD)
+                .wrapping(Wrapping::None)
+                .style(|t: &iced::Theme| text::Style {
+                    color: Some(with_alpha(t.palette().text, GHOST_ALPHA)),
+                }),
+        )
+        .width(Fill)
+        .clip(true)
+        .into(),
+    };
+    container(content)
+        .width(size.width)
+        .height(size.height)
+        .center_y(size.height)
+        .padding([tokens::XS, tokens::S])
+        .clip(true)
+        .style(|t: &iced::Theme| {
+            let sem = theme::semantic(t);
+            container::Style {
+                background: Some(Background::Color(with_alpha(
+                    sem.surface_raised,
+                    GHOST_ALPHA,
+                ))),
+                border: border::rounded(tokens::SMALL)
+                    .color(with_alpha(sem.border, GHOST_ALPHA))
+                    .width(1.0),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// `base` with the ghost tile of the dragged row or header over it, or with
+/// nothing over it: always a stack of two, so the widget tree keeps its shape
+/// when the ghost comes and goes. The layer is the window, holds nothing that
+/// takes the pointer, and is below every card and dialog (those wrap this).
+pub fn ghost_layer<'a>(base: Element<'a, Message>, app: &'a App) -> Element<'a, Message> {
+    let top: Element<'a, Message> = match app.ghost() {
+        None => space().into(),
+        Some(ghost) => iced::widget::responsive(move |window| {
+            let density = app.density();
+            let tile = ghost_tile(app, &ghost.item, density);
+            let size = ghost_size(&ghost.item, density);
+            // Without a seen grab the pointer holds the tile near its left
+            // edge, in the middle of its height.
+            let grab = ghost
+                .grab
+                .unwrap_or_else(|| iced::Point::new(tokens::XL, size.height / 2.0));
+            let at = crate::drag::ghost_position(ghost.pointer, grab, size, window);
+            iced::widget::pin(tile).x(at.x).y(at.y).into()
+        })
+        .into(),
+    };
+    stack([base, top]).into()
+}
+
 /// A channel row on its own, for the layout tests: no pointer cue, no
 /// avatars loaded.
 pub fn channel_row_alone<'a>(
@@ -1514,6 +1650,7 @@ pub fn channel_row_alone<'a>(
         dragging: false,
         hovered: false,
         dragged: false,
+        pressed: false,
     };
     channel_row(room, &env, selected, mode, None, cue)
 }
@@ -1698,12 +1835,14 @@ fn speaker_dot<'a>(call: Option<CallPill>) -> Element<'a, Message> {
 
 /// The room's avatar, `size` wide: the decoded image once it arrived,
 /// otherwise (and when it is unavailable) a round placeholder with the
-/// initials of the already sanitised `name`.
-fn avatar_view<'a>(
+/// initials of the already sanitised `name`. `alpha` is its opacity (1.0, or
+/// the ghost's).
+fn avatar_view_alpha<'a>(
     room: &RoomSummary,
     name: &str,
     avatars: &Avatars,
     size: f32,
+    alpha: f32,
 ) -> Element<'a, Message> {
     let ready = room
         .avatar
@@ -1718,6 +1857,7 @@ fn avatar_view<'a>(
             .width(size)
             .height(size)
             .border_radius(size / 2.0)
+            .opacity(alpha)
             .into();
     }
     let label = initials(name);
@@ -1733,20 +1873,34 @@ fn avatar_view<'a>(
             } else {
                 tokens::CAPTION
             })
-            .color(Color::WHITE),
+            .color(Color {
+                a: alpha,
+                ..Color::WHITE
+            }),
     )
     .width(size)
     .height(size)
     .center_x(size)
     .center_y(size)
     .style(move |t| container::Style {
-        background: Some(Background::Color(
-            fill.unwrap_or_else(|| theme::semantic(t).muted),
-        )),
+        background: Some(Background::Color(Color {
+            a: alpha,
+            ..fill.unwrap_or_else(|| theme::semantic(t).muted)
+        })),
         border: border::rounded(size / 2.0),
         ..container::Style::default()
     })
     .into()
+}
+
+/// [`avatar_view_alpha`] at full strength.
+fn avatar_view<'a>(
+    room: &RoomSummary,
+    name: &str,
+    avatars: &Avatars,
+    size: f32,
+) -> Element<'a, Message> {
+    avatar_view_alpha(room, name, avatars, size, 1.0)
 }
 
 /// The call pill: the speaker and how many devices are in the room's call,
@@ -2277,6 +2431,7 @@ mod tests {
                             dragging: false,
                             hovered: selected,
                             dragged: false,
+                            pressed: false,
                         },
                     );
                 }

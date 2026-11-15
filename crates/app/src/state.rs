@@ -3238,7 +3238,12 @@ impl App {
                                             screens::settings::layer(
                                                 screens::room_dialogs::layer(
                                                     screens::stage::layers(
-                                                        main_view::view(self),
+                                                        // The drag's ghost is over the
+                                                        // list and under every card.
+                                                        screens::room_list_pane::ghost_layer(
+                                                            main_view::view(self),
+                                                            self,
+                                                        ),
                                                         self,
                                                     ),
                                                     self,

@@ -421,6 +421,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "space-sections-dragging-refused",
         "space-sections-dragging-header",
         "space-sections-dragging-tag",
+        "space-sections-dragging-ghost",
         "section-menu",
         "verification-requested",
         "verification-emojis",
@@ -1702,6 +1703,7 @@ fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes()
         "space-sections-dragging-refused",
         "space-sections-dragging-header",
         "space-sections-dragging-tag",
+        "space-sections-dragging-ghost",
     ] {
         let scenario = fixture::scenarios()
             .into_iter()
@@ -1999,6 +2001,94 @@ fn a_channel_row_draws_the_avatar_and_a_speaker_only_on_a_voice_room() {
         assert!(
             has(&w, "AE") && !has(&w, speaker) && !has(&w, "#"),
             "{density:?}: {w:?}"
+        );
+    }
+}
+
+/// Sidebar rework, Task 10d: the ghost tile of a dragged room. Its own parts
+/// sit inside the tile and apart, the tile is as tall as the row it copies,
+/// and in the whole window it is where `ghost_position` puts it (the pointer
+/// minus the grab offset), inside the window. It overlaps the list by design:
+/// that is the one overlap this test allows, and the list's own rows are
+/// checked by `space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes`
+/// (the scenario is in that test, and its rows ignore the ghost layer).
+#[test]
+fn the_ghost_tile_is_whole_the_height_of_its_row_and_where_the_pointer_holds_it() {
+    use twicecat_app::drag::ghost_position;
+    use twicecat_app::room_list::row_height;
+    use twicecat_app::screens::room_list_pane::{ghost_size, ghost_tile};
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "space-sections-dragging-ghost")
+        .expect("the scenario");
+    for variant in variants(true)
+        .into_iter()
+        .filter(|v| v.list == RoomListChoice::Expanded)
+    {
+        let mut app = (scenario.build)();
+        apply(&mut app, variant);
+        let what = variant.tag();
+        let density = app.density();
+        let ghost = app.ghost().expect("a ghost");
+        let size = ghost_size(&ghost.item, density);
+        assert!((size.height - row_height(density)).abs() < 0.5, "{what}");
+        // The tile alone.
+        let mut element = ghost_tile(&app, &ghost.item, density);
+        let mut tree = Tree::new(element.as_widget());
+        let node = element.as_widget_mut().layout(
+            &mut tree,
+            &renderer,
+            &Limits::new(Size::ZERO, Size::new(500.0, 500.0)),
+        );
+        assert!((node.bounds().width - size.width).abs() < 0.5, "{what}");
+        assert!((node.bounds().height - size.height).abs() < 0.5, "{what}");
+        let mut leaves = Vec::new();
+        painted_leaves(&node, iced::Point::ORIGIN, &mut leaves);
+        assert!(!leaves.is_empty(), "{what}");
+        let tile = Rectangle::with_size(size);
+        for leaf in &leaves {
+            assert!(
+                leaf.x >= -0.5
+                    && leaf.y >= -0.5
+                    && leaf.x + leaf.width <= tile.width + 0.5
+                    && leaf.y + leaf.height <= tile.height + 0.5,
+                "{what}: {leaf:?} sticks out of the tile"
+            );
+        }
+        for (a, first) in leaves.iter().enumerate() {
+            for second in &leaves[a + 1..] {
+                assert!(
+                    !overlap(first, second),
+                    "{what}: {first:?} overlaps {second:?}"
+                );
+            }
+        }
+        // In the window: the dragged room's name is drawn twice (the row and
+        // the ghost); one of them is in the tile's place.
+        let at = ghost_position(
+            ghost.pointer,
+            ghost.grab.expect("the fixture seen a grab"),
+            size,
+            WIDE,
+        );
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let words = texts(&mut laid, &renderer);
+        let tile_rect = Rectangle::new(at, size);
+        let named: Vec<&Rectangle> = words
+            .iter()
+            .filter(|(t, _)| t == "General")
+            .map(|(_, r)| r)
+            .collect();
+        assert!(named.len() >= 2, "{what}: the row and the ghost: {named:?}");
+        assert!(
+            named.iter().any(|r| tile_rect.contains(r.center())),
+            "{what}: no name in the tile {tile_rect:?}: {named:?}"
+        );
+        assert!(
+            at.x >= 0.0 && at.y >= 0.0 && at.x + size.width <= WIDE.width + 0.5,
+            "{what}: inside the window"
         );
     }
 }
@@ -7880,6 +7970,7 @@ mod real_drag {
         let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
         feed(&mut app, &renderer, &mut tree, press.clone(), from);
         let mut seen = vec![];
+        let mut ghost_seen = false;
         for at in steps {
             let ev = Event::Mouse(mouse::Event::CursorMoved { position: at });
             if app.list_drag.is_active()
@@ -7889,6 +7980,9 @@ mod real_drag {
             }
             feed(&mut app, &renderer, &mut tree, ev, at);
             seen.push(format!("{:?}", app.list_drag));
+            // The ghost is drawn over the list during the drag. It takes no
+            // pointer event: the header under it still becomes the target.
+            ghost_seen |= app.ghost().is_some();
         }
         let up = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
         let to = iced::Point::new(to.x + 2.0, to.y);
@@ -7896,6 +7990,8 @@ mod real_drag {
         if let Some(m) = pointer_message(up) {
             let _ = app.update(m);
         }
+        assert!(ghost_seen, "no ghost during the drag: {seen:?}");
+        assert!(app.ghost().is_none(), "the ghost is gone after the drop");
         assert!(!app.list_drag.is_active(), "{seen:?}");
         assert_ne!(app.section_lines().map(|l| l.len()), before, "{seen:?}");
     }

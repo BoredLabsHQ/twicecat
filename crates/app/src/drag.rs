@@ -15,7 +15,7 @@
 //! the children of one container and the room list is virtualized, so it
 //! cannot be one.
 
-use iced::Point;
+use iced::{Point, Size};
 
 /// How far the pointer must move after the press for the press to become a
 /// drag, in pixels. Less than this is a click that wobbled.
@@ -95,6 +95,9 @@ pub enum Drag<I> {
         /// Whether the pointer has left the item since the press: the click
         /// is then over.
         left: bool,
+        /// Where the pointer was inside the item (item-local coordinates)
+        /// when first seen after the press: the grab offset of the ghost.
+        grab: Option<Point>,
     },
     /// A drag is running.
     Dragging {
@@ -108,7 +111,39 @@ pub enum Drag<I> {
         /// A place the pointer is over where the dragged item may not go
         /// (drawn as not allowed). Never a target: a release there cancels.
         refused: Option<Target<I>>,
+        /// Where the pointer is now (window coordinates): the ghost follows it.
+        pointer: Point,
+        /// Where the pointer was inside the item at the press, if it was
+        /// seen (item-local coordinates).
+        grab: Option<Point>,
     },
+}
+
+/// Where the top left corner of the ghost tile goes: the pointer minus the
+/// grab offset (so the pointer stays at the same place on the tile as at the
+/// press), kept inside the window. A tile larger than the window sits at 0.
+///
+/// ```
+/// use iced::{Point, Size};
+/// use twicecat_app::drag::ghost_position;
+/// let at = ghost_position(
+///     Point::new(100.0, 50.0),
+///     Point::new(20.0, 10.0),
+///     Size::new(200.0, 40.0),
+///     Size::new(800.0, 600.0),
+/// );
+/// assert_eq!(at, Point::new(80.0, 40.0));
+/// ```
+pub fn ghost_position(pointer: Point, grab: Point, tile: Size, window: Size) -> Point {
+    // `max` returns the other operand for NaN, so the bound is never NaN.
+    let place = |at: f32, size: f32, limit: f32| {
+        let top = (limit - size).max(0.0);
+        if at.is_nan() { 0.0 } else { at.clamp(0.0, top) }
+    };
+    Point::new(
+        place(pointer.x - grab.x, tile.width, window.width),
+        place(pointer.y - grab.y, tile.height, window.height),
+    )
 }
 
 impl<I: Clone + PartialEq> Drag<I> {
@@ -120,6 +155,15 @@ impl<I: Clone + PartialEq> Drag<I> {
     /// Whether a drag (not just a press) is running.
     pub fn is_dragging(&self) -> bool {
         matches!(self, Self::Dragging { .. })
+    }
+
+    /// The item the button is down on while no drag has started (a click that
+    /// may still become a drag).
+    pub fn pressed(&self) -> Option<&I> {
+        match self {
+            Self::Pressed { item, .. } => Some(item),
+            Self::Idle | Self::Dragging { .. } => None,
+        }
     }
 
     /// What is dragged.
@@ -150,15 +194,21 @@ impl<I: Clone + PartialEq> Drag<I> {
             at: None,
             draggable,
             left: false,
+            grab: None,
         };
     }
 
     /// The pointer moved to `at` (window coordinates) with the button down.
     pub fn moved(&mut self, at: Point) -> Outcome<I> {
+        if let Self::Dragging { pointer, .. } = self {
+            *pointer = at;
+            return Outcome::Nothing;
+        }
         let Self::Pressed {
             item,
             at: origin,
             draggable,
+            grab,
             ..
         } = self
         else {
@@ -177,8 +227,42 @@ impl<I: Clone + PartialEq> Drag<I> {
             target: None,
             seen: None,
             refused: None,
+            pointer: at,
+            grab: *grab,
         };
         Outcome::Started
+    }
+
+    /// The pointer is at `local` (inside `item`) while the button is down on
+    /// it and no drag has started: the first such place is the grab offset
+    /// of the ghost. Ignored otherwise.
+    pub fn grab(&mut self, item: &I, local: Point) {
+        if let Self::Pressed {
+            item: pressed,
+            grab,
+            ..
+        } = self
+            && pressed == item
+            && grab.is_none()
+        {
+            *grab = Some(local);
+        }
+    }
+
+    /// The pointer's window position, while a drag runs.
+    pub fn pointer(&self) -> Option<Point> {
+        match self {
+            Self::Dragging { pointer, .. } => Some(*pointer),
+            Self::Idle | Self::Pressed { .. } => None,
+        }
+    }
+
+    /// Where the pointer was inside the dragged item at the press.
+    pub fn grab_offset(&self) -> Option<Point> {
+        match self {
+            Self::Dragging { grab, .. } => *grab,
+            Self::Idle | Self::Pressed { .. } => None,
+        }
     }
 
     /// The pointer is over `target` (or over no target) during a drag. The
@@ -319,6 +403,7 @@ impl<I: Clone + PartialEq> Drag<I> {
                 target,
                 seen,
                 refused,
+                ..
             } => {
                 if !keep(item) {
                     *self = Self::Idle;
@@ -362,6 +447,74 @@ mod tests {
         assert_eq!(d.moved(at(10.0, 10.0)), Outcome::Nothing);
         assert_eq!(d.moved(at(30.0, 10.0)), Outcome::Started);
         d
+    }
+
+    #[test]
+    fn the_ghost_keeps_the_grab_offset_and_stays_in_the_window() {
+        let tile = Size::new(200.0, 40.0);
+        let window = Size::new(800.0, 600.0);
+        let grab = at(20.0, 10.0);
+        let table = [
+            // (pointer, expected top left)
+            (at(100.0, 50.0), at(80.0, 40.0)),
+            (at(0.0, 0.0), at(0.0, 0.0)),
+            (at(5.0, 700.0), at(0.0, 560.0)),
+            (at(790.0, 590.0), at(600.0, 560.0)),
+            (at(-30.0, -30.0), at(0.0, 0.0)),
+            (at(400.0, 300.0), at(380.0, 290.0)),
+        ];
+        for (pointer, want) in table {
+            assert_eq!(
+                ghost_position(pointer, grab, tile, window),
+                want,
+                "{pointer:?}"
+            );
+        }
+        // A tile larger than the window sits at the corner.
+        assert_eq!(
+            ghost_position(at(50.0, 50.0), grab, Size::new(900.0, 700.0), window),
+            at(0.0, 0.0)
+        );
+        // Not a number: the corner, not a panic.
+        let nan = ghost_position(at(f32::NAN, 5.0), grab, tile, window);
+        assert!(nan.x.is_finite() && nan.y.is_finite());
+    }
+
+    #[test]
+    fn the_pointer_follows_a_drag_and_is_not_kept_before_it() {
+        let mut d = D::default();
+        d.press("a", true);
+        assert_eq!(d.pointer(), None);
+        let _ = d.moved(at(10.0, 10.0));
+        assert_eq!(
+            d.moved(at(11.0, 10.0)),
+            Outcome::Nothing,
+            "under the threshold"
+        );
+        assert_eq!(d.pointer(), None, "a press is not a drag");
+        assert_eq!(d.moved(at(30.0, 10.0)), Outcome::Started);
+        assert_eq!(d.pointer(), Some(at(30.0, 10.0)));
+        assert_eq!(d.moved(at(55.0, 42.0)), Outcome::Nothing);
+        assert_eq!(d.pointer(), Some(at(55.0, 42.0)));
+        let _ = d.cancel();
+        assert_eq!(d.pointer(), None);
+    }
+
+    #[test]
+    fn the_first_grab_of_the_pressed_item_becomes_the_offset_of_the_drag() {
+        let mut d = D::default();
+        d.press("a", true);
+        d.grab(&"b", at(1.0, 1.0)); // another item: ignored
+        d.grab(&"a", at(12.0, 9.0));
+        d.grab(&"a", at(30.0, 20.0)); // only the first counts
+        let _ = d.moved(at(10.0, 10.0));
+        assert_eq!(d.moved(at(30.0, 10.0)), Outcome::Started);
+        assert_eq!(d.grab_offset(), Some(at(12.0, 9.0)));
+        // No grab seen: no offset.
+        assert_eq!(dragging().grab_offset(), None);
+        // A grab during the drag changes nothing.
+        d.grab(&"a", at(0.0, 0.0));
+        assert_eq!(d.grab_offset(), Some(at(12.0, 9.0)));
     }
 
     #[test]
