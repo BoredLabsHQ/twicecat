@@ -3769,6 +3769,50 @@ mod tests {
             assert_eq!(tag_sent(&mut rx).len(), 1, "only the Favourites drop sent");
         }
 
+        /// A room dropped on a row of Channels does what the drop on the
+        /// Channels header does, and saves once.
+        #[test]
+        fn a_room_dropped_on_a_row_of_a_built_in_section_does_what_its_header_does() {
+            // chan1 is in "Ops"; chan2 is a row of Channels.
+            let (mut by_row, store, _rx) = arranged();
+            let saved = saves(&store);
+            start(&mut by_row, &room("chan1"));
+            send(&mut by_row, S::ListOver(room("chan2"), Zone::After));
+            assert_eq!(
+                by_row.list_drag.target().map(|t| (t.item.clone(), t.zone)),
+                Some((room("chan2"), Zone::Into)),
+                "the whole row is the target: no before/after line"
+            );
+            send(&mut by_row, S::PointerReleased);
+            assert_eq!(saves(&store), saved + 1, "saved once");
+            let (mut by_head, _s, _r) = arranged();
+            drag(
+                &mut by_head,
+                &room("chan1"),
+                &head(SectionKey::Channels),
+                Zone::Into,
+            );
+            assert_eq!(record(&by_row), record(&by_head));
+            assert!(
+                record(&by_row).custom[0]
+                    .rooms
+                    .iter()
+                    .all(|r| *r != rid("chan1"))
+            );
+            // A DM on a row of Channels is refused and drawn so.
+            let (mut app, store, _rx) = arranged();
+            let saved = saves(&store);
+            start(&mut app, &room("dm1"));
+            send(&mut app, S::ListOver(room("chan2"), Zone::Before));
+            assert!(app.list_drag.target().is_none());
+            assert_eq!(
+                app.list_drag.refused().map(|t| t.item.clone()),
+                Some(room("chan2"))
+            );
+            send(&mut app, S::PointerReleased);
+            assert_eq!(saves(&store), saved);
+        }
+
         #[test]
         fn a_press_and_release_with_no_movement_is_still_a_click() {
             let (mut app, store, mut rx) = arranged();

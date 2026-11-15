@@ -177,6 +177,12 @@ You can also **drag**, in two places:
   use Unstar first. A room that has a tag and that you drag into one of your
   own sections keeps its tag: the move is saved, but a favourite stays under
   Favourites (the tag wins), so remove the tag to see it in your section.
+  A row of Channels, a sub-space, Direct messages, Favourites, Low priority
+  or Starred takes a dropped room like its header does: dropping a room on a
+  row of a built-in section works like dropping it on that section's header
+  (the whole row shows the same ring, or "Not allowed"), and the sort, not
+  the drop, decides where it stands. Between the rows of a section of your own
+  the drop still puts the room before or after the row.
 
   Some drops have a result you cannot see at once:
 

@@ -25,6 +25,8 @@
 //!   (Starred wins: the way is Unstar first);
 //! - a room between two rows of a section of the user's own: it goes there,
 //!   from wherever it was;
+//! - a room onto a row of any other section: the same as onto that section's
+//!   header (the sort decides the order, so there is no before or after);
 //! - a section header onto another header: the section goes before or after
 //!   it among the sections drawn.
 //!
@@ -133,7 +135,7 @@ pub fn plan(
             room_onto_header(space, lines, defaults, room, key)
         }
         (ListKey::Room(room), ListKey::Room(near)) => {
-            room_beside(space, layout, lines, room, near, target.zone)
+            room_beside(space, layout, lines, defaults, room, near, target.zone)
         }
         (ListKey::Header(key), ListKey::Header(over)) => {
             header_over_header(space, layout, lines, key, over, target.zone)
@@ -215,6 +217,7 @@ fn room_beside(
     space: &RoomId,
     layout: &SidebarLayout,
     lines: &[Line<'_>],
+    defaults: &[Line<'_>],
     room: &RoomId,
     near: &RoomId,
     zone: Zone,
@@ -223,7 +226,10 @@ fn room_beside(
         return Verdict::Nothing;
     };
     let SectionKey::Custom(section) = there.section else {
-        return Verdict::Nothing;
+        // A row of any other section stands for its header: the room goes
+        // where the header would send it (no before or after, the sort
+        // decides the order).
+        return room_onto_header(space, lines, defaults, room, &there.section);
     };
     if zone == Zone::Into {
         return Verdict::Nothing;
@@ -612,10 +618,11 @@ mod tests {
             planned(&rec, r("c2"), r("c1"), Zone::After),
             Verdict::Nothing
         );
-        // A row of a built-in section takes no drop; nor does the middle.
+        // A row of a built-in section is its header (sbr.10b): c1 may not go
+        // to the sub-space. The middle of a row of a custom one takes no drop.
         assert_eq!(
             planned(&rec, r("c1"), r("t2"), Zone::Before),
-            Verdict::Nothing
+            Verdict::Refused
         );
         assert_eq!(
             planned(&rec, r("t1"), r("c2"), Zone::Into),
@@ -836,6 +843,97 @@ mod tests {
                 room: rid("c3")
             }]
         );
+    }
+
+    /// A room dropped on a ROW of a built-in section (or of Favourites, Low
+    /// priority or Starred) is the drop on that section's header, whatever
+    /// the half of the row.
+    #[test]
+    fn a_room_on_a_row_of_a_built_in_section_is_the_drop_on_its_header() {
+        use SectionKey::{Channels, Favourites, LowPriority, Starred, SubSpace};
+        let rec = record();
+        // t2 is a favourite, d1 low priority; c4 stays in Channels.
+        let tags = [("t2", true, false), ("d1", false, true)];
+        let tech = SubSpace(rid("tech"));
+        // (room, the row it is dropped on, the header that row stands for)
+        let cases = [
+            ("c1", "c4", Channels),
+            ("c3", "c4", Channels),
+            ("d1", "c4", Channels),
+            ("t1", "c4", Channels),
+            ("c1", "t1", tech.clone()),
+            ("c4", "t1", tech),
+            ("c4", "t2", Favourites),
+            ("c1", "t2", Favourites),
+            ("c4", "d1", LowPriority),
+            ("c3", "d1", LowPriority),
+            ("c4", "c3", Starred),
+            ("c1", "c3", Starred),
+            ("c4", "c4", Channels),
+        ];
+        let mut tag_seen = 0;
+        for (room, row, header) in cases {
+            for zone in [Zone::Before, Zone::After, Zone::Into] {
+                let on_row = planned_in(tagged_rooms(&tags), &rec, r(room), r(row), zone);
+                let on_head = planned_in(
+                    tagged_rooms(&tags),
+                    &rec,
+                    r(room),
+                    h(header.clone()),
+                    Zone::Into,
+                );
+                assert_eq!(
+                    on_row, on_head,
+                    "{room} on a row of {row} ({header:?}), {zone:?}"
+                );
+                tag_seen += usize::from(matches!(on_row, Verdict::Tag(..)));
+            }
+        }
+        assert!(tag_seen > 0);
+        // The cases that matter, spelled out.
+        let go = |room: &str, row: &str| {
+            planned_in(tagged_rooms(&tags), &rec, r(room), r(row), Zone::After)
+        };
+        assert_eq!(
+            ops(go("c1", "c4")),
+            [Op::RoomToDefault {
+                space: rid("sp"),
+                room: rid("c1")
+            }]
+        );
+        assert_eq!(
+            ops(go("c3", "c4")),
+            [Op::Unstar {
+                space: rid("sp"),
+                room: rid("c3")
+            }]
+        );
+        assert_eq!(go("d1", "c4"), Verdict::Refused);
+        assert_eq!(
+            go("c4", "t2"),
+            Verdict::Tag(rid("c4"), Some(RoomTagView::Favourite))
+        );
+        assert_eq!(
+            go("c4", "d1"),
+            Verdict::Tag(rid("c4"), Some(RoomTagView::LowPriority))
+        );
+        assert_eq!(go("c3", "d1"), Verdict::Refused);
+        assert_eq!(go("c4", "c4"), Verdict::Nothing);
+    }
+
+    #[test]
+    fn a_row_of_a_section_of_the_users_own_still_gives_before_and_after() {
+        let rec = record();
+        // c2 is the last row of "Ops": before it is a move up in the section.
+        let before = ops(planned(&rec, r("t1"), r("c2"), Zone::Before));
+        assert!(
+            before
+                .iter()
+                .any(|op| matches!(op, Op::MoveRoomInSection { dir: Dir::Up, .. }))
+        );
+        let after = ops(planned(&rec, r("t1"), r("c2"), Zone::After));
+        assert_eq!(after.len(), 1);
+        assert!(matches!(after[0], Op::MoveRoomToSection { .. }));
     }
 
     /// Every operation a drop gives is one that a card of Task 9 produces.

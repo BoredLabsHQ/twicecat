@@ -4487,6 +4487,20 @@ Three reviews (core messaging and sync, calls and audio, app UI) found the bugs 
 - **Task 13 suggestions left open:** per-section matching in the docs test (it matches anywhere in `sidebar.md`); shared constants for the three hand-added labels ("Unreads first", "Move to folder", "Move to section").
 - **Not run or not proven here:** the real-window looks, the sweeten animation timing, overlays, real pointer drags and hover, and tag round trips with Element are on the checkpoint. A Task 2 note: a room marked unread also appears under Mentions (the SDK read-receipts filter), which the chip hint text and "Unreads first" do not assume otherwise. Task 4: re-wrap the `to_key` doc comment in `api/sidebar.rs` when next touched.
 
+### Step 10b: a room dropped on a row of a built-in section goes where its header would send it (sbr.10b)
+- **Report:** "I can't drag and drop channels into the default group Channels". A drop on a ROW of Channels, Direct messages, a sub-space, Favourites, Low priority or Starred did nothing: only the header took it. The human chose: rows of a built-in section act as its header for a dropped room; no manual ordering, the sort still decides.
+- **Changed (app):**
+  - `list_drop.rs`: in `room_beside`, a row whose section is not one of the user's own gives `room_onto_header(.., that section)` (zone ignored): back to default / Unstar / lose the tag, Star, the tag drops, `Refused` for a section that is not the room's default (a DM on a Channels row), `Nothing` for the section it is already in. Rows of a custom section keep before/after.
+  - `spaces.rs`: `list_over` sets the zone to `Into` for such a row, so the target is the whole row (no before/after line) and a `Refused` verdict draws the refusal on the row.
+  - `screens/room_list_pane.rs` (the cue): `with_mark` now draws, for a row, a 2 px ring over the whole row (focus colour) for `Into`, and a danger-colour ring with the words "Not allowed" at the right (and the not-allowed cursor) for `Refused`. A header draws its own ring as before (its `list_area` cue has no mark, so there is no double ring). This is the smallest cue: the same ring and words as the header, no background fill so the row stays readable.
+  - Docs: `docs/sidebar.md` ("You can also drag"), `docs/accessibility.md`, a sentence in the `docs_sidebar` test.
+- **Existing test edited (conflicts with the human's ruling):** `a_room_between_rows_of_a_custom_section_lands_there` asserted that dropping c1 on a row of a built-in section (t2, in a sub-space) is `Nothing`; it is now `Refused` (c1's default is not that sub-space, as on the header). Nothing else of the existing tests changed.
+- **Tests (red first):** `list_drop::tests::a_room_on_a_row_of_a_built_in_section_is_the_drop_on_its_header` (13 cases x 3 zones equal to the header's verdict, plus spelled-out ones), `a_row_of_a_section_of_the_users_own_still_gives_before_and_after`, and `sections::tests::dragging::a_room_dropped_on_a_row_of_a_built_in_section_does_what_its_header_does` (same layout as the header drop, saved once, target is the whole row, a DM is refused and drawn so). Before the fix the first and the state test failed.
+- **Mutation (recorded, reverted):** replacing the delegation by `Verdict::Nothing` fails the three tests above and the edited existing test.
+- **Not verified here (human checkpoint):** the row ring and the "Not allowed" words on a row are not drawn in a new gallery scenario; only the existing layout and overlap tests ran.
+- **Checks (`CC=clang-22 CXX=clang++-22`):** fmt, clippy with and without `--all-features`, `cargo test --workspace` (3,049 passed, 0 failed, 187 ignored), `cargo check --workspace --lib --bins --locked`, the four scripts, `cargo deny check`.
+- **Open:** the Starred row case of a custom-section room: a room dropped on a Starred row stars it, as the header does.
+
 ## Sidebar rework human checkpoint
 - [ ] **(Task 5) The rail's drag in a real window** (Linux Wayland and X11, Windows, macOS; none of this can be seen headlessly, the gallery is tiny-skia and has no pointer):
   - how the drag feels: the lifted item (1.05 scale), the others sliding aside, the ghost where it came from, in every shipped theme and both densities; whether the settling after the drop looks right or jumps;
@@ -4520,3 +4534,4 @@ What cannot be verified headlessly (all of it is on the items above):
 - overlays (tooltips, the cards);
 - real pointer drags and hover;
 - tag round trips with Element.
+- [ ] **(Task 10b) Dragging a room onto a ROW of Channels (or Direct messages, a sub-space, Favourites, Low priority, Starred) in a real window:** a room from one of your own sections dropped on a row of Channels goes back to Channels; the whole row shows a ring while the pointer is over it (not a line), and a room that may not go there (a DM on a Channels row) shows the red ring and "Not allowed" on the row. Is the cue on a row readable in every theme, and enough? The order inside the section stays the sort's.

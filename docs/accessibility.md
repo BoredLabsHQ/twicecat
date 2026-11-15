@@ -576,7 +576,8 @@ existing shortcut keeps its meaning.
   headers collapse and move like the other headers, with a pointer. Dragging
   a room onto Favourites or Low priority is the same entry as the one in the
   card (and dropping it on its own section the matching Remove entry), so
-  nothing can be done only by dragging. A favourite that you moved into a
+  nothing can be done only by dragging. A drop on a row of a built-in section
+  is the drop on its header, so it is the same entry too. A favourite that you moved into a
   section of your own stays under Favourites (the tag wins), so a room can be
   where the card says and not where it was dropped; the card's words say which
   tag it carries. No shortcut was added or changed.

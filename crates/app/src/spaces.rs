@@ -542,6 +542,13 @@ impl App {
         list_drop::plan(space, layout, &lines, &defaults, item, target)
     }
 
+    /// Whether `room` is drawn in a section that is not one of the user's own.
+    fn in_built_in_section(&self, room: &RoomId) -> bool {
+        self.section_lines()
+            .and_then(|lines| crate::sections::spot_of(&lines, room))
+            .is_some_and(|spot| !matches!(spot.section, SectionKey::Custom(_)))
+    }
+
     /// The pointer is over `key`, in `zone`, during a drag in the list: a
     /// target if dropping there would change something, refused (drawn as not
     /// allowed) if it may not be done, and nothing otherwise.
@@ -552,6 +559,9 @@ impl App {
         // Onto a header a room has no before or after: it goes into it.
         let zone = match (&item, &key) {
             (ListKey::Room(_), ListKey::Header(_)) => Zone::Into,
+            // A row of a section that is not one of the user's own stands
+            // for its header too: the whole row is the target.
+            (ListKey::Room(_), ListKey::Room(near)) if self.in_built_in_section(near) => Zone::Into,
             _ => zone,
         };
         let target = Target { item: key, zone };
