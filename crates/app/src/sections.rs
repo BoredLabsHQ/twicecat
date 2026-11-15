@@ -19,7 +19,7 @@ use twicecat_core::api::{
 };
 
 use crate::calls::CallModel;
-use crate::room_list::{Badge, clamp_window, row_height};
+use crate::room_list::{Badge, Sorting, clamp_window, order, row_height};
 use crate::state::App;
 use crate::ui::tokens::Density;
 
@@ -198,6 +198,20 @@ pub fn build_with<'a>(
     layout: Option<&'a SpaceLayout>,
     calls: Option<&'a CallModel>,
 ) -> Vec<Line<'a>> {
+    build_sorted(space, spaces, rooms, layout, calls, Sorting::default())
+}
+
+/// [`build_with`] with the rooms of every section the user does not order
+/// (all but Starred and the custom ones) put in `sorting`'s order (plan L2).
+/// Starred and the custom sections keep the user's order under every setting.
+pub fn build_sorted<'a>(
+    space: &'a SpaceView,
+    spaces: &'a [SpaceView],
+    rooms: &'a [RoomSummary],
+    layout: Option<&'a SpaceLayout>,
+    calls: Option<&'a CallModel>,
+    sorting: Sorting,
+) -> Vec<Line<'a>> {
     #[cfg(test)]
     BUILDS.with(|n| n.set(n.get() + 1));
     let own = &space.id;
@@ -287,7 +301,13 @@ pub fn build_with<'a>(
     }
     for bucket in &mut buckets {
         if matches!(bucket.key, SectionKey::Starred | SectionKey::Custom(_)) {
+            // The user's own order, whatever the sort setting.
             bucket.rooms.sort_by_key(|(at, _)| *at);
+        } else if !sorting.is_default() {
+            // Low priority last is a rule of the flat list only (plan L3).
+            let refs: Vec<&RoomSummary> = bucket.rooms.iter().map(|(_, room)| *room).collect();
+            let picked = order(&refs, sorting.by, sorting.unread_first, false);
+            bucket.rooms = picked.into_iter().map(|i| bucket.rooms[i]).collect();
         }
     }
 
@@ -564,12 +584,13 @@ impl App {
             .sidebar
             .layout()
             .and_then(|layout| layout.spaces.iter().find(|s| s.space == *id));
-        Some(build_with(
+        Some(build_sorted(
             space,
             self.spaces.spaces(),
             &self.rooms,
             stored,
             Some(&self.calls),
+            self.sorting(),
         ))
     }
 
@@ -590,7 +611,12 @@ impl App {
     /// collapsed section is not among them. The room-stepping keys walk this.
     pub(crate) fn rooms_as_drawn(&self) -> Cow<'_, [RoomSummary]> {
         match self.section_lines() {
-            None => Cow::Borrowed(&self.rooms),
+            None => match self.flat_order() {
+                None => Cow::Borrowed(&self.rooms),
+                Some(order) => {
+                    Cow::Owned(order.into_iter().map(|i| self.rooms[i].clone()).collect())
+                }
+            },
             Some(lines) => Cow::Owned(
                 lines
                     .into_iter()
@@ -723,6 +749,395 @@ mod tests {
 
     fn label(s: &str) -> SidebarLabel {
         SidebarLabel::try_from(s).expect("a valid name")
+    }
+
+    mod sorted {
+        use super::*;
+        use twicecat_core::api::RoomSortChoice;
+
+        fn fixture() -> (Vec<SpaceView>, Vec<RoomSummary>, SpaceLayout) {
+            let sp = vec![view(
+                "sp",
+                0,
+                &[
+                    "zeta", "Alpha", "mid", "quiet", "st1", "st2", "cu1", "cu2", "dm_b", "dm_a",
+                ],
+            )];
+            let mut rs: Vec<RoomSummary> =
+                ["zeta", "Alpha", "mid", "quiet", "st1", "st2", "cu1", "cu2"]
+                    .into_iter()
+                    .map(room)
+                    .collect();
+            rs.push(dm("dm_b"));
+            rs.push(dm("dm_a"));
+            // Unread: `mid` has a mention, `quiet` stays quiet, `zeta` is
+            // marked unread.
+            rs[2].highlights = 1;
+            rs[0].marked_unread = true;
+            let mut layout = SpaceLayout::new(rid("sp"));
+            layout.starred = vec![rid("st2"), rid("st1")];
+            layout.custom = vec![CustomSection {
+                id: 1,
+                name: label("Mine"),
+                rooms: vec![rid("cu2"), rid("cu1")],
+            }];
+            (sp, rs, layout)
+        }
+
+        fn lines(sorting: Sorting) -> Vec<String> {
+            let (sp, rs, layout) = fixture();
+            lines_of(&build_sorted(
+                &sp[0],
+                &sp,
+                &rs,
+                Some(&layout),
+                None,
+                sorting,
+            ))
+        }
+
+        #[test]
+        fn the_default_is_the_lists_own_order() {
+            assert_eq!(
+                lines(Sorting::default()),
+                [
+                    "# Starred",
+                    "st2",
+                    "st1",
+                    "# Channels",
+                    "zeta",
+                    "Alpha",
+                    "mid",
+                    "quiet",
+                    "# Mine",
+                    "cu2",
+                    "cu1",
+                    "# Direct messages",
+                    "dm_b",
+                    "dm_a"
+                ]
+            );
+        }
+
+        #[test]
+        fn channels_and_dms_in_name_order_are_sorted() {
+            let out = lines(Sorting {
+                by: RoomSortChoice::Name,
+                unread_first: false,
+            });
+            assert_eq!(
+                out,
+                [
+                    "# Starred",
+                    "st2",
+                    "st1",
+                    "# Channels",
+                    "Alpha",
+                    "mid",
+                    "quiet",
+                    "zeta",
+                    "# Mine",
+                    "cu2",
+                    "cu1",
+                    "# Direct messages",
+                    "dm_a",
+                    "dm_b"
+                ]
+            );
+        }
+
+        #[test]
+        fn starred_and_custom_sections_keep_the_users_order_under_every_setting() {
+            for by in [RoomSortChoice::Activity, RoomSortChoice::Name] {
+                for unread_first in [false, true] {
+                    let out = lines(Sorting { by, unread_first });
+                    let at = |name: &str| out.iter().position(|l| l == name).expect(name);
+                    assert!(at("st2") < at("st1"), "{by:?} {unread_first}");
+                    assert!(at("cu2") < at("cu1"), "{by:?} {unread_first}");
+                }
+            }
+        }
+
+        #[test]
+        fn unread_first_puts_unread_rooms_first_inside_a_section_only() {
+            let out = lines(Sorting {
+                by: RoomSortChoice::Name,
+                unread_first: true,
+            });
+            let channels = out.iter().position(|l| l == "# Channels").expect("header");
+            // `mid` (a mention) before `zeta` (marked), then the quiet ones
+            // in name order.
+            assert_eq!(
+                out[channels + 1..channels + 5],
+                ["mid", "zeta", "Alpha", "quiet"]
+            );
+        }
+
+        #[test]
+        fn sorting_does_not_change_which_section_a_room_is_in() {
+            let (sp, rs, layout) = fixture();
+            let sections = |sorting| {
+                let lines = build_sorted(&sp[0], &sp, &rs, Some(&layout), None, sorting);
+                let mut seen: Vec<(SectionKey, String)> = Vec::new();
+                let mut key = None;
+                for line in &lines {
+                    match line {
+                        Line::Header(h) => key = Some(h.key.clone()),
+                        Line::Room(r) => seen.push((key.clone().expect("header"), r.name.clone())),
+                        _ => {}
+                    }
+                }
+                seen.sort_by(|a, b| a.1.cmp(&b.1));
+                seen
+            };
+            let name = Sorting {
+                by: RoomSortChoice::Name,
+                unread_first: true,
+            };
+            assert_eq!(sections(Sorting::default()), sections(name));
+        }
+
+        // ---- the app: the settings, the keys, the paging ----
+
+        use crate::settings::RecordingSettings;
+        use crate::sidebar_menu::{SidebarMenu, SidebarMenuMessage as M};
+
+        fn menu(app: &mut App, message: M) {
+            let _ = app.update(Message::SidebarMenu(message));
+        }
+
+        /// The card open, the choices made.
+        fn choose(app: &mut App, by: RoomSortChoice, unread_first: bool) {
+            menu(app, M::OpenSort);
+            menu(app, M::SetSort(by));
+            menu(app, M::UnreadFirst(unread_first));
+        }
+
+        #[test]
+        fn the_sort_card_opens_and_esc_or_close_shuts_it() {
+            use crate::keys::Shortcut;
+            let (mut app, _rx) = space_app(None);
+            menu(&mut app, M::OpenSort);
+            assert_eq!(app.sidebar_menu, Some(SidebarMenu::Sort));
+            press(&mut app, Shortcut::Escape);
+            assert!(app.sidebar_menu.is_none());
+            menu(&mut app, M::OpenSort);
+            menu(&mut app, M::Close);
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
+        fn a_choice_with_no_card_open_changes_nothing() {
+            let (mut app, _rx) = space_app(None);
+            let store = RecordingSettings::default();
+            app.set_settings_store(Box::new(store.clone()));
+            menu(&mut app, M::SetSort(RoomSortChoice::Name));
+            menu(&mut app, M::UnreadFirst(true));
+            assert!(app.sorting().is_default());
+            assert!(store.saved.lock().expect("mutex").is_empty());
+        }
+
+        #[test]
+        fn choosing_a_sort_saves_the_settings_once_per_change() {
+            let (mut app, _rx) = space_app(None);
+            let store = RecordingSettings::default();
+            app.set_settings_store(Box::new(store.clone()));
+            menu(&mut app, M::OpenSort);
+            menu(&mut app, M::SetSort(RoomSortChoice::Name));
+            assert_eq!(store.saved.lock().expect("mutex").len(), 1);
+            assert_eq!(
+                store.saved.lock().expect("mutex")[0].room_sort,
+                RoomSortChoice::Name
+            );
+            // The same choice again is not a change: nothing is written.
+            menu(&mut app, M::SetSort(RoomSortChoice::Name));
+            assert_eq!(store.saved.lock().expect("mutex").len(), 1);
+            menu(&mut app, M::UnreadFirst(true));
+            let saved = store.saved.lock().expect("mutex").clone();
+            assert_eq!(saved.len(), 2);
+            assert!(saved[1].unread_first && saved[1].room_sort == RoomSortChoice::Name);
+            assert!(
+                app.sidebar_menu.is_some(),
+                "the card stays for the next choice"
+            );
+        }
+
+        #[test]
+        fn a_restart_restores_the_sort() {
+            let root =
+                std::env::temp_dir().join(format!("twicecat-sort-restart-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).expect("a temp dir");
+            let paths = twicecat_core::paths::DataPaths::at(&root);
+
+            let (mut app, _rx) = space_app(None);
+            let store = RecordingSettings::default();
+            app.set_settings_store(Box::new(store.clone()));
+            choose(&mut app, RoomSortChoice::Name, true);
+            // What the disk store writes is the newest settings handed to it.
+            let newest = *store.saved.lock().expect("mutex").last().expect("a save");
+            paths.write_settings(&newest).expect("written");
+
+            // The next start reads them back before the first frame.
+            let (mut again, _rx) = space_app(None);
+            again.set_ui_settings(paths.read_settings());
+            assert_eq!(
+                again.sorting(),
+                Sorting {
+                    by: RoomSortChoice::Name,
+                    unread_first: true
+                }
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
+
+        #[test]
+        fn alt_down_from_the_last_room_of_a_group_goes_to_the_next_room_as_shown() {
+            use crate::keys::Shortcut;
+            let (mut app, _rx) = space_app(None);
+            // By activity the Tech section reads t1, rustroom, t2.
+            let _ = app.update(Message::SelectRoom(rid("starred1")));
+            press(&mut app, Shortcut::NextRoom);
+            assert_eq!(app.selected, Some(rid("t1")), "the list's own order");
+            choose(&mut app, RoomSortChoice::Name, false);
+            menu(&mut app, M::Close);
+            assert_eq!(
+                drawn_names(&app)[..8],
+                [
+                    "# Channels",
+                    "chan1",
+                    "chan2",
+                    "starred1",
+                    "# tech",
+                    "rustroom",
+                    "t1",
+                    "t2"
+                ]
+            );
+            let _ = app.update(Message::SelectRoom(rid("starred1")));
+            press(&mut app, Shortcut::NextRoom);
+            assert_eq!(app.selected, Some(rid("rustroom")), "as shown, not t1");
+            press(&mut app, Shortcut::PreviousRoom);
+            assert_eq!(app.selected, Some(rid("starred1")));
+        }
+
+        #[test]
+        fn alt_up_and_down_walk_the_sorted_flat_list_too() {
+            use crate::keys::Shortcut;
+            let (mut app, _rx) = space_app(None);
+            let _ = app.update(Message::Spaces(SpacesMessage::Select(None)));
+            let _ = app.update(Message::SelectRoom(rid("chan1")));
+            press(&mut app, Shortcut::NextRoom);
+            assert_eq!(app.selected, Some(rid("v1")), "by activity");
+            choose(&mut app, RoomSortChoice::Name, false);
+            menu(&mut app, M::Close);
+            let _ = app.update(Message::SelectRoom(rid("chan1")));
+            press(&mut app, Shortcut::NextRoom);
+            assert_eq!(app.selected, Some(rid("chan2")), "by name");
+            press(&mut app, Shortcut::NextRoom);
+            assert_eq!(app.selected, Some(rid("dm1")));
+            press(&mut app, Shortcut::PreviousRoom);
+            press(&mut app, Shortcut::PreviousRoom);
+            assert_eq!(app.selected, Some(rid("chan1")));
+        }
+
+        fn loads(rx: &mut mpsc::Receiver<Command>) -> usize {
+            drain(rx)
+                .into_iter()
+                .filter(|c| matches!(c, Command::LoadMoreRooms))
+                .count()
+        }
+
+        fn flat_500(total: u32) -> (App, mpsc::Receiver<Command>) {
+            let (mut app, rx) = space_app(Some(total));
+            let _ = app.update(Message::Spaces(SpacesMessage::Select(None)));
+            let many: Vec<RoomSummary> = (0..500).map(|i| room(&format!("m{i}"))).collect();
+            feed(
+                &mut app,
+                CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: many }]),
+            );
+            (app, rx)
+        }
+
+        #[test]
+        fn a_sorted_flat_list_asks_for_one_page_per_loaded_length_until_complete() {
+            let (mut app, mut rx) = flat_500(1100);
+            let _ = drain(&mut rx);
+            feed(
+                &mut app,
+                CoreEvent::RoomListLoaded {
+                    total_rooms: Some(1100),
+                },
+            );
+            assert_eq!(
+                loads(&mut rx),
+                0,
+                "by activity only the end of the list asks"
+            );
+            // Choosing A to Z needs every room: the first page is asked for.
+            menu(&mut app, M::OpenSort);
+            menu(&mut app, M::SetSort(RoomSortChoice::Name));
+            assert_eq!(loads(&mut rx), 1);
+            // The same length again: not twice.
+            feed(
+                &mut app,
+                CoreEvent::RoomListLoaded {
+                    total_rooms: Some(1100),
+                },
+            );
+            assert_eq!(loads(&mut rx), 0);
+            let page = |from: usize, to: usize| {
+                CoreEvent::RoomListChanged(vec![ListDiff::Append {
+                    values: (from..to).map(|i| room(&format!("p{i}"))).collect(),
+                }])
+            };
+            feed(&mut app, page(0, 300));
+            assert_eq!(app.rooms.len(), 800);
+            assert_eq!(loads(&mut rx), 1, "a page arrived, the next is asked for");
+            feed(&mut app, page(300, 600));
+            assert_eq!(app.rooms.len(), 1100);
+            assert_eq!(loads(&mut rx), 0, "complete: no more");
+        }
+
+        #[test]
+        fn unreads_first_in_the_flat_list_loads_everything_too() {
+            let (mut app, mut rx) = flat_500(1100);
+            let _ = drain(&mut rx);
+            menu(&mut app, M::OpenSort);
+            menu(&mut app, M::UnreadFirst(true));
+            assert_eq!(loads(&mut rx), 1);
+        }
+
+        #[test]
+        fn the_flat_list_is_shown_sorted_and_low_priority_last_with_the_all_chip() {
+            let (mut app, _rx) = space_app(None);
+            let _ = app.update(Message::Spaces(SpacesMessage::Select(None)));
+            assert_eq!(app.flat_order(), None, "nothing to change");
+            let mut low = room("chan1");
+            low.is_low_priority = true;
+            let at = app
+                .rooms
+                .iter()
+                .position(|r| r.name == "chan1")
+                .expect("chan1");
+            feed(
+                &mut app,
+                CoreEvent::RoomListChanged(vec![ListDiff::Set {
+                    index: at,
+                    value: low,
+                }]),
+            );
+            let shown = |app: &App| -> Vec<String> {
+                app.rooms_as_drawn()
+                    .iter()
+                    .map(|r| r.name.clone())
+                    .collect()
+            };
+            assert_eq!(shown(&app).last().map(String::as_str), Some("chan1"));
+            // Another chip: low priority stays where the list put it.
+            let _ = app.update(Message::ChipClicked(RoomListTab::Rooms));
+            assert_eq!(app.flat_order(), None);
+        }
     }
 
     // ---- the options card's questions about the lines (Task sbc.9) ----

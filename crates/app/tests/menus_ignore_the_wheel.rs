@@ -140,6 +140,26 @@ fn the_sidebar_cards_lists_are_pick_lists_behind_the_wheel_guard() {
 }
 
 #[test]
+fn the_sort_card_list_is_a_pick_list_behind_the_wheel_guard() {
+    let own: Vec<(String, String)> = app_sources()
+        .into_iter()
+        .filter(|(name, _)| name.ends_with("screens/room_list_pane.rs"))
+        .collect();
+    let (seen, bare) = unwrapped(&own, "pick_list");
+    assert_eq!(seen, 1, "the Sort card's order list is in the scan");
+    assert!(bare.is_empty(), "unwrapped: {bare:?}");
+    // And it is the Sort card's: a sort that changed on Ctrl + wheel would
+    // reorder the whole room list while the user only zooms.
+    let code = code_of(&own[0].1);
+    let card = code.find("fn sort_card(").expect("the Sort card");
+    let wrapped = code[card..]
+        .find("kit::menu(")
+        .zip(code[card..].find("pick_list("))
+        .is_some_and(|(menu, list)| menu < list);
+    assert!(wrapped, "the Sort card's list is not inside kit::menu");
+}
+
+#[test]
 fn every_slider_is_wrapped_by_the_wheel_guard() {
     let files = app_sources();
     for widget in ["slider", "vertical_slider"] {

@@ -518,6 +518,15 @@ existing shortcut keeps its meaning.
   (not by colour alone), and its text meets 4.5:1 in every test theme. Clicking
   the chosen chip goes back to All. Ctrl+K still finds every room, whatever
   chip is chosen. No shortcut was added or changed.
+- **Sort is a click too, and Alt+Up / Alt+Down follow it.** The **Sort** button
+  next to the search field is a button, so Tab does not visit it, and its card
+  (a list for Activity or A to Z, and an "Unreads first" check box) needs a
+  pointer to open, like the other cards. The choice is kept in the settings
+  file, so a person who set it once keeps it. Esc closes the card. The chosen
+  order is the one Alt+Up / Alt+Down and Ctrl+Shift+Up / Ctrl+Shift+Down
+  walk, so a keyboard user steps through the rooms as they are shown, and
+  Ctrl+K still finds every room. The list is a menu that Ctrl + wheel (the
+  zoom gesture) cannot change. No shortcut was added or changed.
 - **Rows and headers are pointer-only in the sectioned room list.** A room row
   and a section header there are a box that answers the pointer, not a button,
   so opening a room and collapsing or expanding a header need a click. Buttons
