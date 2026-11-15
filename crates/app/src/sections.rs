@@ -2708,6 +2708,202 @@ mod tests {
             assert!(tag_commands(&mut rx).is_empty());
         }
 
+        // ---- the card of a row of the flat list (sidebar rework, Task 9b) ----
+
+        /// The app on Home: the flat list.
+        fn home_app() -> (App, MemorySidebar, mpsc::Receiver<Command>) {
+            let (mut app, store, rx) = menu_app();
+            let _ = app.update(Message::Spaces(SpacesMessage::Select(None)));
+            assert!(!app.sections_shown());
+            (app, store, rx)
+        }
+
+        fn flat_card_room(app: &App) -> Option<RoomId> {
+            match &app.sidebar_menu {
+                Some(SidebarMenu::Card {
+                    target: Target::FlatRoom(room),
+                    ..
+                }) => Some(room.clone()),
+                _ => None,
+            }
+        }
+
+        #[test]
+        fn a_right_click_on_a_flat_row_opens_its_card_under_home_a_chip_and_a_search() {
+            let (mut app, _store, _rx) = home_app();
+            send(&mut app, M::OpenFlatRoom(rid("chan1")));
+            assert_eq!(flat_card_room(&app), Some(rid("chan1")), "Home");
+            send(&mut app, M::Close);
+            // A chip other than All, with a space selected.
+            let _ = app.update(Message::Spaces(SpacesMessage::Select(Some(rid("sp")))));
+            let _ = app.update(Message::ChipClicked(RoomListTab::Rooms));
+            assert!(!app.sections_shown());
+            send(&mut app, M::OpenFlatRoom(rid("chan2")));
+            assert_eq!(flat_card_room(&app), Some(rid("chan2")), "a chip");
+            send(&mut app, M::Close);
+            // A search result.
+            let _ = app.update(Message::ChipClicked(RoomListTab::All));
+            let _ = app.update(Message::SearchChanged("t1".to_owned()));
+            send(&mut app, M::OpenFlatRoom(rid("t1")));
+            assert_eq!(flat_card_room(&app), Some(rid("t1")), "a search");
+        }
+
+        #[test]
+        fn the_flat_card_does_not_open_where_the_list_is_sectioned_or_a_rail_or_for_a_stranger() {
+            let (mut app, _store, _rx) = menu_app();
+            assert!(app.sections_shown());
+            send(&mut app, M::OpenFlatRoom(rid("chan1")));
+            assert!(app.sidebar_menu.is_none(), "the sectioned list has its own");
+            let _ = app.update(Message::Spaces(SpacesMessage::Select(None)));
+            send(&mut app, M::OpenFlatRoom(rid("nobody")));
+            assert!(app.sidebar_menu.is_none(), "a room that is not in the list");
+            // The narrow rail has no card.
+            app.ui_settings.room_list = RoomListChoice::Rail;
+            send(&mut app, M::OpenFlatRoom(rid("chan1")));
+            assert!(app.sidebar_menu.is_none(), "the rail");
+        }
+
+        #[test]
+        fn the_flat_cards_entries_send_one_set_room_tag_close_it_and_save_no_file() {
+            use twicecat_core::api::RoomTagView;
+            let (mut app, store, mut rx) = home_app();
+            let _ = drain(&mut rx);
+            let cases = [
+                (Entry::AddFavourite, Some(RoomTagView::Favourite)),
+                (Entry::RemoveFavourite, None),
+                (Entry::MarkLowPriority, Some(RoomTagView::LowPriority)),
+                (Entry::RemoveLowPriority, None),
+            ];
+            for (entry_pressed, tag) in cases {
+                send(&mut app, M::OpenFlatRoom(rid("chan1")));
+                entry(&mut app, entry_pressed);
+                assert!(app.sidebar_menu.is_none(), "{entry_pressed:?}: card closes");
+                let sent = tag_commands(&mut rx);
+                assert_eq!(sent.len(), 1, "{entry_pressed:?}: exactly one command");
+                assert!(
+                    matches!(
+                        &sent[0],
+                        Command::SetRoomTag { room_id, tag: t }
+                            if *room_id == rid("chan1") && *t == tag
+                    ),
+                    "{entry_pressed:?}: {:?}",
+                    sent[0]
+                );
+            }
+            assert_eq!(saves(&store), 0, "a tag action saves no sidebar file");
+        }
+
+        #[test]
+        fn the_flat_card_offers_only_the_tags() {
+            use crate::sidebar_menu::{tag_change, tag_entries};
+            // The card is the Task 9 pair (its wording table is tested above)
+            // and nothing else: both are tag buttons.
+            for (favourite, low) in [(false, false), (true, false), (false, true), (true, true)] {
+                let offered = tag_entries(favourite, low);
+                assert!(offered.iter().all(|e| tag_change(*e).is_some()));
+            }
+            // A button that needs a section or a space does nothing here.
+            let (mut app, store, mut rx) = home_app();
+            let _ = drain(&mut rx);
+            for stray in [
+                Entry::Star,
+                Entry::Unstar,
+                Entry::MoveUp,
+                Entry::MoveDown,
+                Entry::BackToDefault,
+                Entry::NewSection,
+            ] {
+                send(&mut app, M::OpenFlatRoom(rid("chan1")));
+                entry(&mut app, stray);
+                assert!(drain(&mut rx).is_empty(), "{stray:?}");
+                assert_eq!(flat_card_room(&app), Some(rid("chan1")), "{stray:?}");
+            }
+            assert_eq!(saves(&store), 0);
+        }
+
+        #[test]
+        fn a_flat_card_for_a_room_that_left_the_list_sends_nothing() {
+            let (mut app, store, mut rx) = home_app();
+            let _ = drain(&mut rx);
+            // Pressed on a card whose room is not in the list as drawn.
+            app.sidebar_menu = Some(SidebarMenu::Card {
+                target: Target::FlatRoom(rid("gone")),
+                error: None,
+            });
+            entry(&mut app, Entry::AddFavourite);
+            assert!(tag_commands(&mut rx).is_empty());
+            assert!(app.sidebar_menu.is_none(), "the card goes away");
+            // The room leaves while the card is open: the card closes with it.
+            send(&mut app, M::OpenFlatRoom(rid("chan1")));
+            let rest: Vec<RoomSummary> =
+                rooms().into_iter().filter(|r| r.name != "chan1").collect();
+            feed(
+                &mut app,
+                CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: rest }]),
+            );
+            assert!(app.sidebar_menu.is_none());
+            entry(&mut app, Entry::AddFavourite);
+            assert!(tag_commands(&mut rx).is_empty());
+            assert_eq!(saves(&store), 0);
+        }
+
+        #[test]
+        fn a_flat_card_closes_when_the_list_turns_sectioned() {
+            let (mut app, _store, _rx) = home_app();
+            send(&mut app, M::OpenFlatRoom(rid("chan1")));
+            let _ = app.update(Message::Spaces(SpacesMessage::Select(Some(rid("sp")))));
+            assert!(app.sidebar_menu.is_none(), "the list is sectioned now");
+        }
+
+        #[test]
+        fn under_the_favourites_chip_remove_from_favourites_removes_the_tag_and_the_room_leaves() {
+            let (mut app, store, mut rx) = home_app();
+            tag_rooms(&mut app, &[("chan1", true, false), ("chan2", true, false)]);
+            let _ = app.update(Message::ChipClicked(RoomListTab::Favourites));
+            // The core answers the chip's query with the favourites only.
+            let mut only: Vec<RoomSummary> = rooms()
+                .into_iter()
+                .filter(|r| r.name.starts_with("chan"))
+                .collect();
+            for r in &mut only {
+                r.is_favourite = true;
+            }
+            feed(
+                &mut app,
+                CoreEvent::RoomListChanged(vec![ListDiff::Reset {
+                    values: only.clone(),
+                }]),
+            );
+            let _ = drain(&mut rx);
+            send(&mut app, M::OpenFlatRoom(rid("chan1")));
+            let labels = crate::sidebar_menu::tag_entries(true, false).map(Entry::label);
+            assert_eq!(labels[0], "Remove from favourites");
+            entry(&mut app, Entry::RemoveFavourite);
+            let sent = tag_commands(&mut rx);
+            assert_eq!(sent.len(), 1);
+            assert!(matches!(
+                &sent[0],
+                Command::SetRoomTag { room_id, tag: None } if *room_id == rid("chan1")
+            ));
+            assert!(app.sidebar_menu.is_none());
+            // The next room-list event drops the room from that list.
+            only.retain(|r| r.name != "chan1");
+            feed(
+                &mut app,
+                CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: only }]),
+            );
+            assert!(app.rooms.iter().all(|r| r.name != "chan1"));
+            assert_eq!(saves(&store), 0);
+        }
+
+        #[test]
+        fn the_flat_target_hides_the_room_id_in_debug() {
+            let text = format!("{:?}", Target::FlatRoom(rid("!secretroom:x")));
+            assert!(!text.contains("secretroom"), "{text}");
+            let text = format!("{:?}", M::OpenFlatRoom(rid("!secretroom:x")));
+            assert!(!text.contains("secretroom"), "{text}");
+        }
+
         #[test]
         fn a_tagged_room_moves_into_its_section_when_the_core_reports_the_tag() {
             let (mut app, _store, _rx) = menu_app();

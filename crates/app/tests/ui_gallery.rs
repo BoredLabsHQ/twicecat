@@ -408,6 +408,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "rail-folder-name",
         "room-list-chips",
         "room-list-sort",
+        "room-list-card",
         "space-sections",
         "space-sections-collapsed",
         "space-sections-tags",
@@ -1888,6 +1889,8 @@ fn ctrl_wheel_over_the_options_cards_never_picks_a_folder_or_a_section() {
         ("section-menu", 720.0),
         ("room-list-sort", 1280.0),
         ("room-list-sort", 720.0),
+        ("room-list-card", 1280.0),
+        ("room-list-card", 720.0),
     ] {
         let size = Size::new(width, 800.0);
         let mut app = fixture::scenarios()
@@ -2030,6 +2033,241 @@ fn the_sort_scenario_shows_the_card_over_a_to_z_with_unreads_first() {
     }
     // Every theme at both densities, in the expanded list, at the wide size.
     assert_eq!(checked, variants(false).len(), "the expanded variants read");
+}
+
+/// The `room-list-card` scenario (sidebar rework, Task 9b): a flat row's card
+/// is open over Home in every theme and density, at both widths. The card fits
+/// the window, holds the two tag buttons worded after the room's flags and
+/// nothing that needs a section, and its words do not touch.
+#[test]
+fn the_flat_card_scenario_shows_only_the_tags_in_every_theme_and_density() {
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "room-list-card")
+        .expect("the scenario");
+    let mut app = (scenario.build)();
+    for variant in variants(true) {
+        apply(&mut app, variant);
+        for size in SIZES {
+            app.window_width = size.width;
+            let what = format!("{} at {}", variant.tag(), size.width);
+            let mut laid = Laid::new(&app, &renderer, size);
+            laid.settle(&renderer, size);
+            let card = dialogs::card_rect(&laid, 380.0);
+            assert!(
+                card.x >= 0.0 && card.x + card.width <= size.width,
+                "{what}: {card:?}"
+            );
+            assert!(
+                card.y >= -0.5 && card.y + card.height <= size.height + 0.5,
+                "{what}: {card:?}"
+            );
+            let shown = texts(&mut laid, &renderer);
+            let in_card: Vec<&(String, Rectangle)> = shown
+                .iter()
+                .filter(|(_, r)| card.contains(r.center()))
+                .collect();
+            for words in [
+                "Kitchen",
+                "Remove from favourites",
+                "Mark as low priority",
+                "Close",
+            ] {
+                assert!(
+                    in_card.iter().any(|(t, _)| t == words),
+                    "{what}: no \"{words}\" in the card"
+                );
+            }
+            for words in [
+                "Star",
+                "Unstar",
+                "Move up",
+                "Move down",
+                "Back to its default section",
+                "Move to section",
+                "Add to favourites",
+                "Remove low priority",
+            ] {
+                assert!(
+                    in_card.iter().all(|(t, _)| t != words),
+                    "{what}: \"{words}\" is in the flat card"
+                );
+            }
+            for (a, ra) in &in_card {
+                assert!(
+                    ra.x >= card.x && ra.x + ra.width <= card.x + card.width + 0.5,
+                    "{what}: {a:?} {ra:?} runs out of the card"
+                );
+                for (b, rb) in &in_card {
+                    assert!(
+                        std::ptr::eq(a, b) || a == b || !overlap(ra, rb),
+                        "{what}: {a:?} overlaps {b:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A right-click on a flat row through the real widgets: it asks for the
+/// card of that room and does not select it; a left click still selects the
+/// room and never asks for the card, twice in a row too; a wheel turn over a
+/// row is not taken by the row, so the list scrolls as before.
+#[test]
+fn a_right_click_on_a_flat_row_asks_for_its_card_and_a_click_still_selects() {
+    use twicecat_app::sidebar_menu::SidebarMenuMessage;
+    let renderer = renderer();
+    let app = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "main-no-room")
+        .map(|s| (s.build)())
+        .expect("the scenario");
+    let size = WIDE;
+    let mut laid = Laid::new(&app, &renderer, size);
+    laid.settle(&renderer, size);
+    let alice = texts(&mut laid, &renderer)
+        .into_iter()
+        .find(|(t, r)| t == "Alice Example" && r.x < 320.0)
+        .expect("an Alice Example row in the list")
+        .1
+        .center();
+    let deliver = |laid: &mut Laid<'_>, events: &[Event]| -> (Vec<Message>, bool) {
+        let mut messages: Vec<Message> = Vec::new();
+        let mut captured = false;
+        for event in events {
+            let mut shell = Shell::new(&mut messages);
+            laid.element.as_widget_mut().update(
+                &mut laid.tree,
+                event,
+                Layout::new(&laid.node),
+                mouse::Cursor::Available(alice),
+                &renderer,
+                &mut clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(size),
+            );
+            captured |= shell.is_event_captured();
+        }
+        (messages, captured)
+    };
+    let at = Event::Mouse(mouse::Event::CursorMoved { position: alice });
+    let right = |press: bool| {
+        Event::Mouse(if press {
+            mouse::Event::ButtonPressed(mouse::Button::Right)
+        } else {
+            mouse::Event::ButtonReleased(mouse::Button::Right)
+        })
+    };
+    let (sent, _) = deliver(&mut laid, &[at.clone(), right(true), right(false)]);
+    let opened = sent
+        .iter()
+        .filter(|m| {
+            matches!(
+                m,
+                Message::SidebarMenu(SidebarMenuMessage::OpenFlatRoom(id))
+                    if id.as_str().starts_with("!alice:")
+            )
+        })
+        .count();
+    assert_eq!(opened, 1, "{sent:?}");
+    assert!(
+        sent.iter().all(|m| !matches!(m, Message::SelectRoom(_))),
+        "a right-click does not open the room: {sent:?}"
+    );
+    // A click, as before.
+    let left = |press: bool| {
+        Event::Mouse(if press {
+            mouse::Event::ButtonPressed(mouse::Button::Left)
+        } else {
+            mouse::Event::ButtonReleased(mouse::Button::Left)
+        })
+    };
+    let (sent, _) = deliver(&mut laid, &[at.clone(), left(true), left(false)]);
+    assert_eq!(
+        sent.iter()
+            .filter(|m| matches!(m, Message::SelectRoom(id) if id.as_str().starts_with("!alice:")))
+            .count(),
+        1,
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter().all(|m| !matches!(m, Message::SidebarMenu(_))),
+        "{sent:?}"
+    );
+    // Two clicks in a row (a double-click) select it twice, as a button does.
+    let (sent, _) = deliver(
+        &mut laid,
+        &[at.clone(), left(true), left(false), left(true), left(false)],
+    );
+    assert_eq!(
+        sent.iter()
+            .filter(|m| matches!(m, Message::SelectRoom(_)))
+            .count(),
+        2,
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter().all(|m| !matches!(m, Message::SidebarMenu(_))),
+        "{sent:?}"
+    );
+    // The wheel over a row still scrolls the list: the row does not take it.
+    let wheel = Event::Mouse(mouse::Event::WheelScrolled {
+        delta: mouse::ScrollDelta::Lines { x: 0.0, y: -1.0 },
+    });
+    let (sent, _) = deliver(&mut laid, &[at, wheel]);
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [Message::RoomListScrolled { offset_y, .. }] if *offset_y > 0.0
+        ),
+        "{sent:?}"
+    );
+}
+
+/// The narrow rail's rows have no card: a right-click on one asks for
+/// nothing.
+#[test]
+fn a_right_click_on_a_rail_row_asks_for_no_card() {
+    let renderer = renderer();
+    let mut app = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "main-no-room")
+        .map(|s| (s.build)())
+        .expect("the scenario");
+    app.window_width = 720.0;
+    let size = NARROW;
+    let mut laid = Laid::new(&app, &renderer, size);
+    laid.settle(&renderer, size);
+    let mut messages: Vec<Message> = Vec::new();
+    for y in (0..800).step_by(8) {
+        for x in (0..size.width as i32).step_by(8) {
+            let at = iced::Point::new(x as f32, y as f32);
+            for event in [
+                Event::Mouse(mouse::Event::CursorMoved { position: at }),
+                Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right)),
+                Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Right)),
+            ] {
+                let mut shell = Shell::new(&mut messages);
+                laid.element.as_widget_mut().update(
+                    &mut laid.tree,
+                    &event,
+                    Layout::new(&laid.node),
+                    mouse::Cursor::Available(at),
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut shell,
+                    &Rectangle::with_size(size),
+                );
+            }
+        }
+    }
+    assert!(
+        messages
+            .iter()
+            .all(|m| !matches!(m, Message::SidebarMenu(_))),
+        "{messages:?}"
+    );
 }
 
 #[test]
@@ -5101,7 +5339,7 @@ mod dialogs {
     }
 
     /// `(scenario, card width, what the close button in the header sends)`.
-    const CARDS: [(&str, f32, &str); 12] = [
+    const CARDS: [(&str, f32, &str); 13] = [
         ("create-room", 460.0, "Rooms(CloseDialog)"),
         ("join-room", 460.0, "Rooms(CloseDialog)"),
         ("start-dm", 460.0, "Rooms(CloseDialog)"),
@@ -5114,6 +5352,7 @@ mod dialogs {
         ("rail-folder-name", 380.0, "SidebarMenu(Close)"),
         ("section-menu", 380.0, "SidebarMenu(Close)"),
         ("room-list-sort", 380.0, "SidebarMenu(Close)"),
+        ("room-list-card", 380.0, "SidebarMenu(Close)"),
     ];
 
     #[test]
@@ -5161,13 +5400,14 @@ mod dialogs {
             "rail-folder-name",
             "section-menu",
             "room-list-sort",
+            "room-list-card",
         ];
         for name in names {
             for size in [WIDE, NARROW, SHORT] {
                 let app = dialog_app(name, size);
                 let laid = Laid::new(&app, &renderer, size);
                 let width = match name {
-                    "room-list-sort" => 380.0,
+                    "room-list-sort" | "room-list-card" => 380.0,
                     n if n.starts_with("room-") || n.starts_with("members") => 520.0,
                     n if n.starts_with("upload") => 520.0,
                     n if n.starts_with("rail-") || n.starts_with("section-") => 380.0,
@@ -5415,6 +5655,7 @@ mod dialogs {
             "rail-folder-name",
             "section-menu",
             "room-list-sort",
+            "room-list-card",
         ] {
             let app = dialog_app(name, WIDE);
             let mut laid = Laid::new(&app, &renderer, WIDE);

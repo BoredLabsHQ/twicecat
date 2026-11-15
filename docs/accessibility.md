@@ -554,6 +554,14 @@ existing shortcut keeps its meaning.
   can still find and open every room with Ctrl+K and Alt+Up / Alt+Down. The two
   headers collapse and move like the other headers, with a pointer. No
   shortcut was added or changed.
+- **The card of a row in the flat list is pointer-only too.** A right-click on
+  a room in Home, under a chip other than All, or in a search result opens a
+  card with the two tag entries only, worded after the room's tags. Like the
+  other cards it needs a pointer: buttons and rows take no keyboard focus in
+  iced 0.14, and no chord opens it, so a keyboard-only user cannot tag from
+  there and keeps Ctrl+K and Alt+Up / Alt+Down to reach every room. The narrow
+  rail's rows have no card at all; widen the list to tag a room. A right-click
+  does not change what a left click does on the row.
 - **No auto-scroll while dragging.** A drag does not scroll the rail or the
   list when the pointer is near an edge, so a target that is out of view
   cannot be reached by dragging. Use the options menu: it works on any item,

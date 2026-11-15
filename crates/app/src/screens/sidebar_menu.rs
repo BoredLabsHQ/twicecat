@@ -13,7 +13,7 @@
 
 use iced::widget::{Column, column, pick_list, responsive, space, stack, text_input};
 use iced::{Element, Fill};
-use twicecat_core::api::{RoomId, SectionKey};
+use twicecat_core::api::{RoomId, RoomSummary, SectionKey};
 
 use crate::room_list::row_name;
 use crate::screens::room_dialogs::error_line;
@@ -80,7 +80,7 @@ fn title_of(app: &App, items: &[RailItem<'_>], target: &Target) -> String {
                 |name| name_or_placeholder(name, MAX_NAME_CHARS),
             ),
         // These cards have their own (`section_card` and `room_card`).
-        Target::Section { .. } | Target::Room { .. } => String::new(),
+        Target::Section { .. } | Target::Room { .. } | Target::FlatRoom(_) => String::new(),
     }
 }
 
@@ -94,6 +94,7 @@ fn card<'a>(
         Target::Space(_) | Target::Folder(_) => rail_card(app, target, error, window_height),
         Target::Section { key, .. } => section_card(app, key, error, window_height),
         Target::Room { space, room } => room_card(app, space, room, error, window_height),
+        Target::FlatRoom(room) => flat_room_card(app, room, error, window_height),
     }
 }
 
@@ -186,12 +187,7 @@ fn room_card<'a>(
             };
             body = body.push(entry_button(entry, enabled));
         }
-        // The tags are kept on the homeserver; the words follow the flags.
-        let (favourite, low) =
-            summary.map_or((false, false), |r| (r.is_favourite, r.is_low_priority));
-        for entry in tag_entries(favourite, low) {
-            body = body.push(entry_button(entry, true));
-        }
+        body = tag_buttons(body, summary);
     }
     let custom = app
         .sidebar
@@ -211,6 +207,33 @@ fn room_card<'a>(
             .width(Fill),
         ),
     ));
+    frame(title, body, error, window_height)
+}
+
+/// The two tag buttons of a room's card, worded after the room's flags (they
+/// are kept on the homeserver). Both room cards share them.
+fn tag_buttons<'a>(
+    mut body: Column<'a, Message>,
+    summary: Option<&RoomSummary>,
+) -> Column<'a, Message> {
+    let (favourite, low) = summary.map_or((false, false), |r| (r.is_favourite, r.is_low_priority));
+    for entry in tag_entries(favourite, low) {
+        body = body.push(entry_button(entry, true));
+    }
+    body
+}
+
+/// The card of a room row of the flat list: the tags and nothing else (a
+/// move, a star or a section needs a space's sectioned list).
+fn flat_room_card<'a>(
+    app: &'a App,
+    room: &RoomId,
+    error: Option<&'static str>,
+    window_height: f32,
+) -> Element<'a, Message> {
+    let summary = app.rooms.iter().find(|r| r.id == *room);
+    let title = summary.map_or_else(|| "Room".to_owned(), |r| row_name(&r.name));
+    let body = tag_buttons(Column::new().spacing(tokens::S), summary);
     frame(title, body, error, window_height)
 }
 

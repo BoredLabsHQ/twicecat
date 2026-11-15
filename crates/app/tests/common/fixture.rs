@@ -1427,6 +1427,28 @@ fn room_list_sort() -> App {
     app
 }
 
+/// The card of a row of the flat list (sidebar rework, Task 9b): Home, with
+/// Kitchen a favourite and its card open, so the buttons read "Remove from
+/// favourites" and "Mark as low priority".
+fn room_list_card() -> App {
+    use twicecat_app::sidebar_menu::SidebarMenuMessage;
+
+    let mut app = main_no_room();
+    let mut rows = app.rooms.clone();
+    for row in &mut rows {
+        row.is_favourite = row.id == room("filler1");
+    }
+    feed(
+        &mut app,
+        CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: rows }]),
+    );
+    press(
+        &mut app,
+        Message::SidebarMenu(SidebarMenuMessage::OpenFlatRoom(room("filler1"))),
+    );
+    app
+}
+
 /// A room list built to crowd its rows: long names and previews (`body`),
 /// big counts, and a room with every tag there is (voice, invite, muted,
 /// ringing, a mention count).
@@ -4184,6 +4206,17 @@ pub fn scenarios() -> Vec<Scenario> {
                         by: twicecat_core::api::RoomSortChoice::Name,
                         unread_first: true,
                     }
+        }),
+        s("room-list-card", true, room_list_card, |a| {
+            in_main(a)
+                && a.selected.is_none()
+                && matches!(
+                    &a.sidebar_menu,
+                    Some(twicecat_app::sidebar_menu::SidebarMenu::Card {
+                        target: twicecat_app::sidebar_menu::Target::FlatRoom(_),
+                        ..
+                    })
+                )
         }),
         s("main-empty-room", true, main_empty_room, |a| {
             in_main(a) && a.selected.is_some() && a.timeline.items.is_empty()
