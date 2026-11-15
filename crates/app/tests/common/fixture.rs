@@ -1074,6 +1074,29 @@ fn space_categories() -> App {
     app
 }
 
+/// Board 12 (sidebar rework, Task 12): every category of the space shut. The
+/// open room is "General" (Channels keeps it and only it) and this device is
+/// in the call of "vocal" (Voice keeps it, with its three people, and drops
+/// "coworking"). Starred (Roadmap, unread), Tech, Hobbies and Direct messages
+/// (Alice, unread) keep nothing: their headers carry the counts.
+fn space_categories_collapsed() -> App {
+    use twicecat_app::spaces::SpacesMessage;
+    use twicecat_core::api::SectionKey;
+    let mut app = voice_channel();
+    press(
+        &mut app,
+        Message::Spaces(SpacesMessage::ToggleSection(SectionKey::SubSpace(
+            sec_space("voice"),
+        ))),
+    );
+    press(
+        &mut app,
+        Message::Spaces(SpacesMessage::ToggleSection(SectionKey::Direct)),
+    );
+    press(&mut app, Message::SelectRoom(room("sec-r-general")));
+    app
+}
+
 // ---- Timeline -----------------------------------------------------------
 
 fn run(text: &str, style: TextStyle) -> Inline {
@@ -4163,6 +4186,35 @@ pub fn scenarios() -> Vec<Scenario> {
                     )
                 })
         }),
+        s(
+            "space-categories-collapsed",
+            true,
+            space_categories_collapsed,
+            |a| {
+                use twicecat_app::sections::Line;
+                in_main(a)
+                    && a.sections_shown()
+                    && a.calls.call.is_some()
+                    && a.section_lines().is_some_and(|lines| {
+                        let headers = lines
+                            .iter()
+                            .filter(|l| matches!(l, Line::Header(h) if h.collapsed))
+                            .count();
+                        let rooms: Vec<&str> = lines
+                            .iter()
+                            .filter_map(|l| match l {
+                                Line::Room(r) => Some(r.name.as_str()),
+                                _ => None,
+                            })
+                            .collect();
+                        let people = lines
+                            .iter()
+                            .filter(|l| matches!(l, Line::Participant(_)))
+                            .count();
+                        headers == 6 && rooms == ["General", "vocal"] && people == 3
+                    })
+            },
+        ),
         s("space-categories", true, space_categories, |a| {
             use twicecat_app::room_list::{Emphasis, channel_emphasis};
             use twicecat_app::sections::Line;
