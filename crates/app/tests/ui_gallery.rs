@@ -7944,6 +7944,109 @@ mod real_drag {
             .1
     }
 
+    /// The vertical offset of every scrollable of the view, built on `tree`.
+    fn offsets(app: &App, renderer: &Renderer, tree: &mut Tree) -> Vec<f32> {
+        struct Offsets(Vec<f32>);
+        impl iced::advanced::widget::Operation for Offsets {
+            fn traverse(
+                &mut self,
+                operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation),
+            ) {
+                operate(self);
+            }
+
+            fn scrollable(
+                &mut self,
+                _id: Option<&iced::advanced::widget::Id>,
+                _bounds: Rectangle,
+                _content_bounds: Rectangle,
+                translation: iced::Vector,
+                _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+            ) {
+                self.0.push(translation.y);
+            }
+        }
+        let mut element = app.view();
+        tree.diff(element.as_widget());
+        let node = element
+            .as_widget_mut()
+            .layout(tree, renderer, &Limits::new(Size::ZERO, WIDE));
+        let mut op = Offsets(Vec::new());
+        element
+            .as_widget_mut()
+            .operate(tree, Layout::new(&node), renderer, &mut op);
+        op.0
+    }
+
+    /// The ghost layer is a stack whose second slot is empty when idle and
+    /// holds the tile while dragging. The main view must keep its widget state
+    /// through that change: the scrolled list stays where it was when the
+    /// drag starts and when it ends, on one persistent tree.
+    #[test]
+    fn the_scrolled_list_keeps_its_place_when_the_ghost_comes_and_goes() {
+        let renderer = renderer();
+        let mut app = scenario_app("space-sections-custom");
+        let mut tree = Tree::empty();
+        let from = find(&app, &renderer, &mut tree, "General").center();
+        // Scroll the list with the wheel.
+        feed(
+            &mut app,
+            &renderer,
+            &mut tree,
+            Event::Mouse(mouse::Event::CursorMoved { position: from }),
+            from,
+        );
+        feed(
+            &mut app,
+            &renderer,
+            &mut tree,
+            Event::Mouse(mouse::Event::WheelScrolled {
+                delta: mouse::ScrollDelta::Lines { x: 0.0, y: -3.0 },
+            }),
+            from,
+        );
+        let scrolled = offsets(&app, &renderer, &mut tree);
+        assert!(
+            scrolled.iter().any(|y| *y > 1.0),
+            "the list did not scroll: {scrolled:?}"
+        );
+        let from = find(&app, &renderer, &mut tree, "General").center();
+        // Press and drag past the threshold with real pointer events.
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        feed(&mut app, &renderer, &mut tree, press, from);
+        for at in [
+            iced::Point::new(from.x, from.y + 6.0),
+            iced::Point::new(from.x, from.y + 14.0),
+            iced::Point::new(from.x + 30.0, from.y + 40.0),
+        ] {
+            let ev = Event::Mouse(mouse::Event::CursorMoved { position: at });
+            if app.list_drag.is_active()
+                && let Some(m) = pointer_message(ev.clone())
+            {
+                let _ = app.update(m);
+            }
+            feed(&mut app, &renderer, &mut tree, ev, at);
+        }
+        assert!(app.ghost().is_some(), "the drag did not start");
+        assert_eq!(
+            offsets(&app, &renderer, &mut tree),
+            scrolled,
+            "the list lost its scroll when the ghost appeared"
+        );
+        // Let go.
+        let up = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
+        feed(&mut app, &renderer, &mut tree, up.clone(), from);
+        if let Some(m) = pointer_message(up) {
+            let _ = app.update(m);
+        }
+        assert!(app.ghost().is_none());
+        assert_eq!(
+            offsets(&app, &renderer, &mut tree),
+            scrolled,
+            "the list lost its scroll when the ghost went"
+        );
+    }
+
     #[test]
     fn a_room_dragged_onto_a_section_header_moves() {
         let renderer = renderer();

@@ -146,6 +146,19 @@ pub fn ghost_position(pointer: Point, grab: Point, tile: Size, window: Size) -> 
     )
 }
 
+/// The grab offset the ghost tile is held by: the place seen in the dragged
+/// row, kept on the tile (a header's tile is narrower than its row, so a grab
+/// far to the right is held by the tile's right edge). Without a seen grab the
+/// tile is held near its left edge, in the middle of its height.
+pub fn ghost_grab(seen: Option<Point>, tile: Size) -> Point {
+    let held = seen.unwrap_or(Point::new(16.0, tile.height / 2.0));
+    // `max` first: a NaN grab becomes 0, not a panic in `clamp`.
+    Point::new(
+        held.x.max(0.0).min(tile.width),
+        held.y.max(0.0).min(tile.height),
+    )
+}
+
 impl<I: Clone + PartialEq> Drag<I> {
     /// Whether a button is down on an item: the window listener is needed.
     pub fn is_active(&self) -> bool {
@@ -447,6 +460,37 @@ mod tests {
         assert_eq!(d.moved(at(10.0, 10.0)), Outcome::Nothing);
         assert_eq!(d.moved(at(30.0, 10.0)), Outcome::Started);
         d
+    }
+
+    #[test]
+    fn the_pointer_is_on_the_ghost_whatever_the_grab_was() {
+        let window = Size::new(1280.0, 800.0);
+        // A header's 180 px tile grabbed at x = 400 of its row, a room's tile
+        // grabbed in its row, and a grab never seen.
+        for (tile, seen) in [
+            (Size::new(180.0, 32.0), Some(at(400.0, 12.0))),
+            (Size::new(180.0, 32.0), Some(at(-5.0, 90.0))),
+            (Size::new(288.0, 64.0), Some(at(120.0, 30.0))),
+            (Size::new(288.0, 64.0), Some(at(500.0, 30.0))),
+            (Size::new(288.0, 64.0), None),
+        ] {
+            let grab = ghost_grab(seen, tile);
+            let pointer = at(600.0, 300.0);
+            let top_left = ghost_position(pointer, grab, tile, window);
+            let on_tile = pointer.x >= top_left.x
+                && pointer.x <= top_left.x + tile.width
+                && pointer.y >= top_left.y
+                && pointer.y <= top_left.y + tile.height;
+            assert!(
+                on_tile,
+                "{tile:?} {seen:?}: the pointer is off the tile at {top_left:?}"
+            );
+        }
+        // A grab inside the tile is kept as it was.
+        assert_eq!(
+            ghost_grab(Some(at(20.0, 10.0)), Size::new(180.0, 32.0)),
+            at(20.0, 10.0)
+        );
     }
 
     #[test]
