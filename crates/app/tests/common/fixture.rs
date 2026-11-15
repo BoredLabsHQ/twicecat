@@ -375,33 +375,84 @@ fn rail_states() -> App {
     app
 }
 
-/// A drag of a space in progress on the rail, with the pointer over `over`
-/// in `zone`.
-fn rail_drag_over(over: &str, zone: twicecat_app::drag::Zone) -> App {
+/// A rail to reorder: Home, then Quartz, Bravo, a closed folder of Rust and
+/// Vue, and an open folder of Garden, Kettle and Tulip. The layout is loaded
+/// and no space is selected.
+pub fn rail_reorder_app() -> App {
+    rail_reorder_app_with(None)
+}
+
+/// The same rail with a stored file the app may not change (`Newer`,
+/// `OtherAccount`): customizing is off.
+pub fn rail_reorder_app_protected(load: twicecat_app::sidebar_store::SidebarLoad) -> App {
+    rail_reorder_app_with(Some(load))
+}
+
+fn rail_reorder_app_with(protected: Option<twicecat_app::sidebar_store::SidebarLoad>) -> App {
+    use twicecat_app::sidebar_store::{SidebarAnswer, SidebarLoad};
+    use twicecat_core::api::{FolderLayout, RailEntry, SidebarLayout};
+
+    let mut app = main_no_room();
+    let names = [
+        ("qa", "Quartz"),
+        ("bb", "Bravo"),
+        ("fa", "Rust"),
+        ("fb", "Vue"),
+        ("ga", "Garden"),
+        ("gb", "Kettle"),
+        ("gc", "Tulip"),
+    ];
+    let spaces = names
+        .iter()
+        .map(|(id, name)| SpaceView {
+            id: rail_space(id),
+            name: (*name).to_owned(),
+            avatar: None,
+            level: 0,
+            children: 0,
+            rooms: Vec::new(),
+        })
+        .collect();
+    feed(&mut app, CoreEvent::Spaces(spaces));
+    let mut layout = SidebarLayout::new(user("me"));
+    layout.rail = vec![
+        RailEntry::Space(rail_space("qa")),
+        RailEntry::Space(rail_space("bb")),
+        RailEntry::Folder(FolderLayout {
+            id: 1,
+            name: None,
+            open: false,
+            spaces: ["fa", "fb"].map(rail_space).to_vec(),
+        }),
+        RailEntry::Folder(FolderLayout {
+            id: 2,
+            name: None,
+            open: true,
+            spaces: ["ga", "gb", "gc"].map(rail_space).to_vec(),
+        }),
+    ];
+    let load = protected.unwrap_or(SidebarLoad::Layout(layout));
+    press(
+        &mut app,
+        Message::SidebarLoaded(SidebarAnswer::new(user("me"), load)),
+    );
+    app
+}
+
+/// A space picked up on the rail: the app's side of a drag that runs (the
+/// pictures of the gallery drive the real events, see `ui_gallery.rs`).
+fn rail_dragging() -> App {
+    use twicecat_app::rail_reorder::{RailColumn, ReorderEvent};
     use twicecat_app::spaces::{RailKey, SpacesMessage};
 
     let mut app = rail_states();
-    let key = |id: &str| RailKey::Space(rail_space(id));
     for message in [
-        SpacesMessage::Press(key("default")),
-        SpacesMessage::PointerMoved(iced::Point::new(30.0, 30.0)),
-        SpacesMessage::PointerMoved(iced::Point::new(40.0, 90.0)),
-        SpacesMessage::Over(key(over), zone),
+        SpacesMessage::RailPressed(RailKey::Space(rail_space("default"))),
+        SpacesMessage::RailReorder(RailColumn::Top, ReorderEvent::Picked { index: 0 }),
     ] {
         press(&mut app, Message::Spaces(message));
     }
     app
-}
-
-/// A space dragged to just before another one: the line shows above it.
-fn rail_dragging() -> App {
-    rail_drag_over("mention", twicecat_app::drag::Zone::Before)
-}
-
-/// A space dragged onto the middle of another: the ring shows (a folder
-/// would be made).
-fn rail_dragging_into() -> App {
-    rail_drag_over("unread", twicecat_app::drag::Zone::Into)
 }
 
 /// The options card open on a space of the rail (right-click).
@@ -3804,14 +3855,7 @@ pub fn scenarios() -> Vec<Scenario> {
                 && a.sidebar.layout().is_some()
         }),
         s("rail-dragging", true, rail_dragging, |a| {
-            in_main(a)
-                && a.rail_drag.is_dragging()
-                && a.rail_drag.target().map(|t| t.zone) == Some(twicecat_app::drag::Zone::Before)
-        }),
-        s("rail-dragging-into", true, rail_dragging_into, |a| {
-            in_main(a)
-                && a.rail_drag.is_dragging()
-                && a.rail_drag.target().map(|t| t.zone) == Some(twicecat_app::drag::Zone::Into)
+            in_main(a) && a.rail_reorder.is_some()
         }),
         s("rail-menu", true, rail_menu, |a| {
             in_main(a)

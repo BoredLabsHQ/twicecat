@@ -2421,7 +2421,7 @@ mod tests {
         fn the_window_listener_runs_only_while_the_button_is_down_on_a_row_or_header() {
             use iced::advanced::subscription::into_recipes;
             let (mut app, _store, _rx) = arranged();
-            let count = |app: &App| into_recipes(app.rail_drag_subscription()).len();
+            let count = |app: &App| into_recipes(app.list_drag_subscription()).len();
             assert_eq!(count(&app), 0, "idle");
             send(&mut app, S::ListEnter(room("chan2")));
             assert_eq!(count(&app), 0, "hover alone");
@@ -2463,9 +2463,12 @@ mod tests {
             assert!(app.sidebar_menu.is_some());
             assert!(!app.list_drag.is_active());
             menu(&mut app, M::Close);
-            send(&mut app, S::Press(crate::spaces::RailKey::Space(rid("sp"))));
+            send(
+                &mut app,
+                S::RailPressed(crate::spaces::RailKey::Space(rid("sp"))),
+            );
             send(&mut app, S::ListPress(room("chan2")));
-            assert!(!app.rail_drag.is_active());
+            assert!(app.rail_press.is_none());
             assert!(app.list_drag.is_active());
         }
 
@@ -2513,9 +2516,12 @@ mod tests {
         fn a_rail_press_ends_a_tracked_list_press() {
             let (mut app, _store, _rx) = arranged();
             send(&mut app, S::ListPress(room("chan2")));
-            send(&mut app, S::Press(crate::spaces::RailKey::Space(rid("sp"))));
+            send(
+                &mut app,
+                S::RailPressed(crate::spaces::RailKey::Space(rid("sp"))),
+            );
             assert!(!app.list_drag.is_active());
-            assert!(app.rail_drag.is_active());
+            assert!(app.rail_press.is_some());
         }
 
         #[test]

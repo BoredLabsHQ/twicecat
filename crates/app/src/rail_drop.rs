@@ -1,5 +1,13 @@
-//! What a drop on the rail does (sidebar plan, Task 7): the operations of
-//! the options card, in the order that makes the drop.
+//! What a move of an item of the rail does (sidebar plan, Task 7): the
+//! operations of the options card, in the order that makes it.
+//!
+//! The rail now reorders by dragging only (sidebar rework plan, S4): a drop
+//! becomes a place before or after another item (`rail_reorder::target`) and
+//! goes through [`plan`], so it uses the same `MoveSpace` and `MoveFolder`
+//! operations as the card. The planner still works out drops *into* a folder
+//! or a space (`Zone::Into`): the card's Move to folder, New folder and Remove
+//! from folder are checked against it by the tests below, which keeps the two
+//! from drifting apart.
 //!
 //! Dragging adds no way to change the layout that the options card of Task 6
 //! does not have. A drop is worked out as a list of [`Op`]s, each one of
@@ -18,18 +26,6 @@ use twicecat_core::api::{RailEntry, RoomId, SidebarLayout};
 use crate::drag::{Target, Zone};
 use crate::sidebar::{self, Dir, FolderTarget, Op};
 use crate::spaces::RailKey;
-
-#[cfg(test)]
-thread_local! {
-    /// How many times [`plan`] ran on this thread (tests count evaluations).
-    static PLANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// How many times [`plan`] ran on this thread.
-#[cfg(test)]
-pub(crate) fn plan_runs() -> usize {
-    PLANS.with(std::cell::Cell::get)
-}
 
 /// The operations that make dropping `item` on `target` (empty when the drop
 /// does nothing: onto itself, a folder into a folder, a move to where it
@@ -51,8 +47,6 @@ pub fn plan(
     item: &RailKey,
     target: &Target<RailKey>,
 ) -> Vec<Op> {
-    #[cfg(test)]
-    PLANS.with(|n| n.set(n.get() + 1));
     let mut ops = Vec::new();
     if item == &target.item || *item == RailKey::Home || target.item == RailKey::Home {
         return ops;

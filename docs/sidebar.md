@@ -50,13 +50,22 @@ down, Move to folder (which also offers a new folder), Remove from folder,
 Rename, Ungroup, Move to section (which also offers New section), Back to its
 default section, Star, Unstar, Collapse, Expand and Delete section.
 
-You can also **drag**: a space onto another one (above or below it, or onto
-its middle to make a folder), onto a folder, a room onto a section header or
-between the rows of one of your own sections, and a section header onto
-another header. Every drop does the same thing as the menu entry of that move;
-nothing can be done only by dragging. A drag does not scroll the list, so use
-the menu for a target that is out of view. Esc, or leaving the window,
-cancels a drag.
+You can also **drag**, in two places:
+
+- **On the rail**, a drag only **reorders**: press a space or a closed folder
+  and move it up or down, and the others slide aside to make room. The
+  spaces inside an open folder are reordered inside that folder, and an open
+  folder itself is moved with its menu. Making a folder, putting a space into
+  a folder and taking a space out of one are done **only** with the menu
+  (Move to folder, which also offers a new folder, and Remove from folder).
+  Home cannot be dragged. Esc, leaving the window or moving the pointer out of
+  the rail ends the drag and changes nothing.
+- **In the room list**, a room onto a section header or between the rows of
+  one of your own sections, and a section header onto another header.
+
+Every drop does the same thing as the menu entry of that move; nothing can be
+done only by dragging. A drag does not scroll the list, so use the menu for a
+target that is out of view. Esc, or leaving the window, cancels a drag.
 
 No keyboard shortcut was added for any of this. The menus open with a pointer
 (a right-click or a click), so someone who uses only the keyboard sees the

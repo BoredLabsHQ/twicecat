@@ -23,6 +23,7 @@ use crate::drag::{Outcome, Target, Zone};
 use crate::keys::Shortcut;
 use crate::list_drop::{self, ListKey, Verdict};
 use crate::rail_drop;
+use crate::rail_reorder::{self, RailColumn, RailReorder, ReorderEvent};
 use crate::sections::Line;
 use crate::sidebar::{Op as SidebarOp, SidebarState};
 use crate::state::{App, Message};
@@ -247,8 +248,8 @@ impl SpacesModel {
     }
 }
 
-/// The window event for the rail's drag: the cursor, and the left button
-/// coming up.
+/// The window event for the room list's drag: the cursor, and the left button
+/// coming up. (The rail's drag is a sweeten column's own; it needs none.)
 pub(crate) fn pointer_message(event: iced::Event) -> Option<Message> {
     match event {
         iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
@@ -290,16 +291,18 @@ pub enum SpacesMessage {
     Enter(RailKey),
     /// The pointer left an item of the rail.
     Exit(RailKey),
-    /// The left button went down on an item of the rail.
-    Press(RailKey),
+    /// The left button went down on an item of the rail (reported by a press
+    /// spy, which leaves the press to the sweeten column that picks the item).
+    RailPressed(RailKey),
+    /// What a sweeten column of the rail reports: an item picked, dropped or
+    /// let go.
+    RailReorder(RailColumn, ReorderEvent),
     /// A click on a section header of the room list: collapses or expands
     /// the section of the selected space, and saves it.
     ToggleSection(SectionKey),
     /// The left button came up over an item of the rail: a click when it
     /// went down on the same item and the pointer has not left it since.
     Release(RailKey),
-    /// While a drag runs: the pointer moved over an item, in this part of it.
-    Over(RailKey, Zone),
     /// The pointer entered a room row or a section header of the sectioned
     /// list.
     ListEnter(ListKey),
@@ -367,28 +370,31 @@ impl App {
                 if self.rail_hover.as_ref() == Some(&key) {
                     self.rail_hover = None;
                 }
-                self.rail_drag.leave(&key);
+                // Leaving the item ends the click it could have been.
+                if self.rail_press.as_ref() == Some(&key) {
+                    self.rail_press = None;
+                }
                 Task::none()
             }
-            SpacesMessage::Press(key) => {
-                let draggable = key != RailKey::Home
-                    && matches!(
-                        self.sidebar.state(),
-                        SidebarState::Loaded | SidebarState::Full
-                    );
+            SpacesMessage::RailPressed(key) => {
                 // One pointer: a press here ends any press tracked in the list.
                 let _ = self.list_drag.cancel();
-                self.rail_drag.press(key, draggable);
+                self.rail_press = Some(key);
                 Task::none()
             }
-            SpacesMessage::Release(key) => match self.rail_drag.release_on(&key) {
-                Outcome::Click(key) => self.rail_click(key),
-                _ => Task::none(),
-            },
-            SpacesMessage::Over(key, zone) => {
-                self.rail_over(key, zone);
-                Task::none()
+            SpacesMessage::Release(key) => {
+                // A click is a release over the item the button went down on,
+                // with the pointer never gone from it, and no drag running
+                // (the release that comes just before a drop is not one).
+                let clicked = self.rail_press.as_ref() == Some(&key);
+                self.rail_press = None;
+                if clicked && self.rail_reorder.is_none() {
+                    self.rail_click(key)
+                } else {
+                    Task::none()
+                }
             }
+            SpacesMessage::RailReorder(column, event) => self.on_rail_reorder(column, event),
             SpacesMessage::ListEnter(key) => {
                 self.list_hover = Some(key);
                 Task::none()
@@ -407,7 +413,7 @@ impl App {
                         SidebarState::Loaded | SidebarState::Full
                     );
                 // One pointer: a press here ends any press tracked on the rail.
-                let _ = self.rail_drag.cancel();
+                self.cancel_rail_reorder();
                 self.list_drag.press(key, draggable);
                 Task::none()
             }
@@ -423,28 +429,19 @@ impl App {
                 Task::none()
             }
             SpacesMessage::PointerMoved(at) => {
-                let _ = self.rail_drag.moved(at);
                 let _ = self.list_drag.moved(at);
                 Task::none()
             }
             SpacesMessage::PointerPressed | SpacesMessage::PointerCancelled => {
                 // A button is down again (the release of the one tracked was
                 // missed), or the touch was cancelled. Nothing is dropped.
-                let _ = self.rail_drag.cancel();
                 let _ = self.list_drag.cancel();
                 Task::none()
             }
-            SpacesMessage::PointerReleased => {
-                let rail = match self.rail_drag.end() {
-                    Outcome::Drop { item, target } => self.rail_drop(&item, &target),
-                    _ => Task::none(),
-                };
-                let list = match self.list_drag.end() {
-                    Outcome::Drop { item, target } => self.list_drop(&item, &target),
-                    _ => Task::none(),
-                };
-                Task::batch([rail, list])
-            }
+            SpacesMessage::PointerReleased => match self.list_drag.end() {
+                Outcome::Drop { item, target } => self.list_drop(&item, &target),
+                _ => Task::none(),
+            },
         }
     }
 
@@ -535,22 +532,67 @@ impl App {
         self.spaces.entries().iter().map(|s| s.id.clone()).collect()
     }
 
-    /// The pointer is over `key`, in `zone`, during a drag: it is a target
-    /// only if dropping there would change something.
-    fn rail_over(&mut self, key: RailKey, zone: Zone) {
-        let Some(item) = self.rail_drag.dragged().cloned() else {
-            return;
-        };
-        let target = Target { item: key, zone };
-        if self.rail_drag.seen(&target) {
-            return;
+    /// A sweeten column of the rail reported `event` (plan S3 and S4).
+    ///
+    /// A drop does what the options card does: the same `MoveSpace` and
+    /// `MoveFolder` operations, done as one change and saved once.
+    fn on_rail_reorder(&mut self, column: RailColumn, event: ReorderEvent) -> Task<Message> {
+        match event {
+            ReorderEvent::Picked { index } => {
+                // The drag starts, so what could have been a click is not one.
+                self.rail_press = None;
+                let customizable = matches!(
+                    self.sidebar.state(),
+                    SidebarState::Loaded | SidebarState::Full
+                );
+                let items = self.spaces.rail_items(self.sidebar.layout());
+                let keys = rail_reorder::column_keys(&items, column)
+                    .filter(|keys| customizable && index < keys.len());
+                if let Some(keys) = keys {
+                    // One pointer: a drag here ends any press tracked in the list.
+                    let _ = self.list_drag.cancel();
+                    self.rail_reorder = Some(RailReorder { column, keys });
+                }
+                Task::none()
+            }
+            ReorderEvent::Canceled { .. } => {
+                // Sweeten has already let go of the item; nothing is saved.
+                self.rail_press = None;
+                self.rail_reorder = None;
+                Task::none()
+            }
+            ReorderEvent::Dropped {
+                index,
+                target_index,
+            } => {
+                self.rail_press = None;
+                // No drag of ours (Esc, focus lost, or one never picked): the
+                // drop is not ours to do.
+                let Some(reorder) = self.rail_reorder.take() else {
+                    return Task::none();
+                };
+                let items = self.spaces.rail_items(self.sidebar.layout());
+                let now = rail_reorder::column_keys(&items, column);
+                if reorder.column != column || now.as_deref() != Some(&reorder.keys[..]) {
+                    // The rail changed under the drag: the indices mean nothing.
+                    return Task::none();
+                }
+                let Some(place) = rail_reorder::target(&reorder.keys, index, target_index) else {
+                    return Task::none();
+                };
+                self.rail_drop(&reorder.keys[index], &place.target())
+            }
         }
-        let known = self.known_spaces();
-        let does_something = self
-            .sidebar
-            .layout()
-            .is_some_and(|layout| !rail_drop::plan(layout, &known, &item, &target).is_empty());
-        self.rail_drag.hover(does_something.then_some(target));
+    }
+
+    /// Ends the rail's press and drag, wherever the app does it (Esc, focus
+    /// lost, a card opened, logout). A drag that ran is ended in sweeten too,
+    /// by flipping `rail_generation`: see its doc.
+    pub(crate) fn cancel_rail_reorder(&mut self) {
+        self.rail_press = None;
+        if self.rail_reorder.take().is_some() {
+            self.rail_generation = self.rail_generation.wrapping_add(1);
+        }
     }
 
     /// The drag ended on a target: the same operations the options card
@@ -580,11 +622,11 @@ impl App {
     /// closes. `None` when no drag runs.
     pub(crate) fn rail_escape(&mut self, shortcut: Shortcut) -> Option<Task<Message>> {
         if shortcut != Shortcut::Escape
-            || !(self.rail_drag.is_dragging() || self.list_drag.is_dragging())
+            || !(self.rail_reorder.is_some() || self.list_drag.is_dragging())
         {
             return None;
         }
-        let _ = self.rail_drag.cancel();
+        self.cancel_rail_reorder();
         let _ = self.list_drag.cancel();
         // The composer's copy of the key must not close another layer.
         self.escape_spent = false;
@@ -592,10 +634,11 @@ impl App {
     }
 
     /// The window's pointer, listened to only while the left button is down
-    /// on an item of the rail (the end of a drag is often outside every
-    /// `mouse_area`, which only sees a release over itself).
-    pub fn rail_drag_subscription(&self) -> Subscription<Message> {
-        if self.rail_drag.is_active() || self.list_drag.is_active() {
+    /// on a row or header of the room list (the end of a drag is often
+    /// outside every `mouse_area`, which only sees a release over itself).
+    /// The rail needs none: its sweeten column sees the whole drag.
+    pub fn list_drag_subscription(&self) -> Subscription<Message> {
+        if self.list_drag.is_active() {
             iced::event::listen_with(listener)
         } else {
             Subscription::none()
@@ -621,10 +664,10 @@ impl App {
     /// would never come.
     pub(crate) fn clear_stale_rail_keys(&mut self) {
         // The layout or the spaces changed: what was worked out is stale.
-        self.rail_drag.forget_seen();
         self.list_drag.forget_seen();
         let mut drawn: HashSet<RailKey> = HashSet::from([RailKey::Home]);
-        for item in self.spaces.rail_items(self.sidebar.layout()) {
+        let items = self.spaces.rail_items(self.sidebar.layout());
+        for item in &items {
             match item {
                 RailItem::Space(space) => {
                     drawn.insert(RailKey::Space(space.id.clone()));
@@ -644,7 +687,21 @@ impl App {
         {
             self.rail_hover = None;
         }
-        self.rail_drag.retain(|key| drawn.contains(key));
+        if self
+            .rail_press
+            .as_ref()
+            .is_some_and(|key| !drawn.contains(key))
+        {
+            self.rail_press = None;
+        }
+        // A drag over items that are no longer there: its indices mean
+        // nothing, and sweeten would index past its children.
+        let moved = self.rail_reorder.as_ref().is_some_and(|reorder| {
+            rail_reorder::column_keys(&items, reorder.column).as_ref() != Some(&reorder.keys)
+        });
+        if moved {
+            self.cancel_rail_reorder();
+        }
         self.close_sidebar_menu_if_gone();
     }
 

@@ -400,7 +400,6 @@ fn the_fixture_reaches_every_screen_it_names() {
         "switcher-empty",
         "switcher-long",
         "rail-dragging",
-        "rail-dragging-into",
         "rail-menu",
         "rail-folder-name",
         "space-sections",
@@ -624,11 +623,19 @@ fn write_the_gallery() {
         let mut app = (scenario.build)();
         let mut files = Vec::new();
         for variant in variants(scenario.room_list) {
-            apply(&mut app, variant);
-            let renderer = renderer();
-            let mut laid = Laid::new(&app, &renderer, WIDE);
-            laid.settle(&renderer, WIDE);
-            let pixels = laid.pixels(&app, renderer, WIDE);
+            let pixels = if scenario.name == "rail-dragging" {
+                // A drag shows in the widgets, not in the app: the picture
+                // is taken after real pointer events.
+                let mut app = (scenario.build)();
+                apply(&mut app, variant);
+                rail_reorder_drag::dragging_pixels(app)
+            } else {
+                apply(&mut app, variant);
+                let renderer = renderer();
+                let mut laid = Laid::new(&app, &renderer, WIDE);
+                laid.settle(&renderer, WIDE);
+                laid.pixels(&app, renderer, WIDE)
+            };
             let file = format!("{}-{}.png", scenario.name, variant.tag());
             let (w, h) = (WIDE.width as u32, WIDE.height as u32);
             image::RgbaImage::from_raw(w, h, pixels)
@@ -7064,54 +7071,593 @@ mod real_drag {
         assert!(!app.list_drag.is_active(), "{seen:?}");
         assert_ne!(app.section_lines().map(|l| l.len()), before, "{seen:?}");
     }
+}
+
+/// Dragging on the rail with real pointer events (sidebar rework plan, Task
+/// 5): events go to the app's own view, which is rebuilt and diffed against
+/// one kept widget tree after every message, as the runtime does.
+mod rail_reorder_drag {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use iced::{Point, Task};
+    use twicecat_app::rail_reorder::ReorderEvent;
+    use twicecat_app::screens::spaces_sidebar::SIDEBAR_WIDTH;
+    use twicecat_app::sidebar_store::{ResetOutcome, SidebarLoad, SidebarStore};
+    use twicecat_app::spaces::SpacesMessage;
+    use twicecat_app::ui::icons::Icon;
+    use twicecat_core::api::{CoreEvent, RoomId, SidebarLayout, SpaceView, UserId};
+
+    use super::*;
+
+    /// A store that counts the saves and touches no disk.
+    #[derive(Clone, Default)]
+    pub struct CountingStore(pub Arc<AtomicUsize>);
+
+    impl SidebarStore for CountingStore {
+        fn load(&self, _account: &UserId) -> Task<SidebarLoad> {
+            Task::none()
+        }
+
+        fn save(&self, _account: &UserId, _layout: SidebarLayout) -> Task<bool> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Task::done(true)
+        }
+
+        fn reset(&self, _account: &UserId) -> Task<ResetOutcome> {
+            Task::none()
+        }
+    }
+
+    /// What a delivered event made the widgets publish.
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    pub struct Seen {
+        pub picked: usize,
+        pub dropped: usize,
+        pub canceled: usize,
+        pub released: usize,
+    }
+
+    fn seen(messages: &[Message]) -> Seen {
+        let mut seen = Seen::default();
+        for message in messages {
+            match message {
+                Message::Spaces(SpacesMessage::RailReorder(_, ReorderEvent::Picked { .. })) => {
+                    seen.picked += 1;
+                }
+                Message::Spaces(SpacesMessage::RailReorder(_, ReorderEvent::Dropped { .. })) => {
+                    seen.dropped += 1;
+                }
+                Message::Spaces(SpacesMessage::RailReorder(_, ReorderEvent::Canceled { .. })) => {
+                    seen.canceled += 1;
+                }
+                Message::Spaces(SpacesMessage::Release(_)) => seen.released += 1,
+                _ => {}
+            }
+        }
+        seen
+    }
+
+    pub struct Rig {
+        pub app: App,
+        renderer: Renderer,
+        tree: Tree,
+        at: Point,
+        saves: Arc<AtomicUsize>,
+    }
+
+    impl Rig {
+        pub fn new(mut app: App) -> Self {
+            let store = CountingStore::default();
+            let saves = store.0.clone();
+            app.set_sidebar_store(Box::new(store));
+            let mut rig = Self {
+                app,
+                renderer: renderer(),
+                tree: Tree::empty(),
+                at: Point::ORIGIN,
+                saves,
+            };
+            rig.rebuild();
+            rig
+        }
+
+        /// The runtime diffs the widget tree against each new view.
+        pub fn rebuild(&mut self) {
+            let element = self.app.view();
+            self.tree.diff(element.as_widget());
+        }
+
+        pub fn saves(&self) -> usize {
+            self.saves.load(Ordering::SeqCst)
+        }
+
+        /// Delivers `event` at the pointer, applies what the widgets
+        /// published, and returns a summary of it.
+        pub fn event(&mut self, event: Event) -> Seen {
+            if let Event::Mouse(mouse::Event::CursorMoved { position }) = &event {
+                self.at = *position;
+            }
+            let mut messages: Vec<Message> = Vec::new();
+            {
+                let mut element = self.app.view();
+                self.tree.diff(element.as_widget());
+                let node = element.as_widget_mut().layout(
+                    &mut self.tree,
+                    &self.renderer,
+                    &Limits::new(Size::ZERO, WIDE),
+                );
+                let mut shell = Shell::new(&mut messages);
+                element.as_widget_mut().update(
+                    &mut self.tree,
+                    &event,
+                    Layout::new(&node),
+                    mouse::Cursor::Available(self.at),
+                    &self.renderer,
+                    &mut clipboard::Null,
+                    &mut shell,
+                    &Rectangle::with_size(WIDE),
+                );
+            }
+            let summary = seen(&messages);
+            for message in messages {
+                let _ = self.app.update(message);
+            }
+            self.rebuild();
+            summary
+        }
+
+        pub fn move_to(&mut self, at: Point) -> Seen {
+            self.event(Event::Mouse(mouse::Event::CursorMoved { position: at }))
+        }
+
+        pub fn press(&mut self) -> Seen {
+            self.event(Event::Mouse(mouse::Event::ButtonPressed(
+                mouse::Button::Left,
+            )))
+        }
+
+        pub fn release(&mut self) -> Seen {
+            self.event(Event::Mouse(mouse::Event::ButtonReleased(
+                mouse::Button::Left,
+            )))
+        }
+
+        /// The cursor over `at`, as the window asks the widgets.
+        pub fn cursor_at(&mut self, at: Point) -> mouse::Interaction {
+            let element = self.app.view();
+            self.tree.diff(element.as_widget());
+            let mut element = element;
+            let node = element.as_widget_mut().layout(
+                &mut self.tree,
+                &self.renderer,
+                &Limits::new(Size::ZERO, WIDE),
+            );
+            element.as_widget().mouse_interaction(
+                &self.tree,
+                Layout::new(&node),
+                mouse::Cursor::Available(at),
+                &Rectangle::with_size(WIDE),
+                &self.renderer,
+            )
+        }
+
+        /// The middle of the rail's text `word` (an initial, or Home's glyph).
+        pub fn slot(&mut self, word: &str) -> Point {
+            self.slot_nth(word, 0)
+        }
+
+        /// The middle of the `n`th rail text `word`, top to bottom (an open
+        /// folder shows its first spaces in its head too).
+        pub fn slot_nth(&mut self, word: &str, n: usize) -> Point {
+            let mut element = self.app.view();
+            self.tree.diff(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut self.tree,
+                &self.renderer,
+                &Limits::new(Size::ZERO, WIDE),
+            );
+            let mut op = Texts(Vec::new());
+            element.as_widget_mut().operate(
+                &mut self.tree,
+                Layout::new(&node),
+                &self.renderer,
+                &mut op,
+            );
+            op.0.into_iter()
+                .filter(|(text, at)| text == word && at.x < SIDEBAR_WIDTH)
+                .nth(n)
+                .unwrap_or_else(|| panic!("no {word} #{n} on the rail"))
+                .1
+                .center()
+        }
+
+        /// The layout's rail as a list: a space by its short name, a folder
+        /// as `[a,b]`.
+        pub fn order(&self) -> Vec<String> {
+            use twicecat_core::api::RailEntry;
+            let short = |id: &RoomId| {
+                id.as_str()
+                    .trim_start_matches("!rail-")
+                    .trim_end_matches(":example.org")
+                    .to_owned()
+            };
+            let layout = self.app.sidebar.layout().expect("a layout");
+            layout
+                .rail
+                .iter()
+                .map(|entry| match entry {
+                    RailEntry::Space(id) => short(id),
+                    RailEntry::Folder(f) => format!(
+                        "[{}]",
+                        f.spaces.iter().map(short).collect::<Vec<_>>().join(",")
+                    ),
+                })
+                .collect()
+        }
+
+        pub fn selected(&self) -> Option<RoomId> {
+            self.app.query.space.clone()
+        }
+    }
+
+    /// The rail with a space picked up and carried down to another one, as
+    /// the pixels of the window.
+    pub fn dragging_pixels(app: App) -> Vec<u8> {
+        let mut rig = Rig::new(app);
+        let from = rig.slot("H");
+        let to = rig.slot("B");
+        rig.move_to(from);
+        rig.press();
+        rig.move_to(nudge(from));
+        rig.move_to(Point::new(to.x, to.y + 6.0));
+        assert!(rig.app.rail_reorder.is_some(), "the drag runs");
+        rig.pixels()
+    }
+
+    impl Rig {
+        /// What the window would draw now, with the pointer where it is.
+        pub fn pixels(&mut self) -> Vec<u8> {
+            let mut renderer = renderer();
+            let mut element = self.app.view();
+            self.tree.diff(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut self.tree,
+                &renderer,
+                &Limits::new(Size::ZERO, WIDE),
+            );
+            let theme = self.app.current_theme();
+            let palette = theme.palette();
+            element.as_widget().draw(
+                &self.tree,
+                &mut renderer,
+                &theme,
+                &Style {
+                    text_color: palette.text,
+                },
+                Layout::new(&node),
+                mouse::Cursor::Available(self.at),
+                &Rectangle::with_size(WIDE),
+            );
+            let physical = Size::new(WIDE.width as u32, WIDE.height as u32);
+            renderer.screenshot(physical, 1.0, palette.background)
+        }
+    }
+
+    /// Where the pointer goes after the press to start a drag: more than the
+    /// deadband from the press point.
+    fn nudge(at: Point) -> Point {
+        Point::new(at.x + 4.5, at.y)
+    }
+
+    fn rig() -> Rig {
+        Rig::new(fixture::rail_reorder_app())
+    }
+
+    /// A drag from `from` to `to`: press, a nudge, a move onto `to`, and the
+    /// release there.
+    fn drag(rig: &mut Rig, from: Point, to: Point) -> Seen {
+        rig.move_to(from);
+        rig.press();
+        rig.move_to(nudge(from));
+        rig.move_to(to);
+        rig.release()
+    }
 
     #[test]
-    fn a_space_dragged_onto_another_in_the_rail() {
-        let renderer = renderer();
-        let mut app = scenario_app("rail-states");
-        let mut tree = Tree::empty();
-        let before = app.sidebar.layout().map(|l| l.rail.len());
-        let from = find(&app, &renderer, &mut tree, "Q").center();
-        let to = find(&app, &renderer, &mut tree, "B").center();
-        let steps = [
-            from,
-            iced::Point::new(from.x, from.y + 6.0),
-            iced::Point::new(from.x, from.y + 12.0),
-            to,
-            iced::Point::new(to.x + 1.0, to.y),
-            iced::Point::new(to.x + 2.0, to.y),
-        ];
-        feed(
-            &mut app,
-            &renderer,
-            &mut tree,
-            Event::Mouse(mouse::Event::CursorMoved { position: from }),
-            from,
+    fn the_rail_is_home_then_the_items_in_the_layouts_order() {
+        let mut rig = rig();
+        let home = rig.slot(Icon::Home.glyph());
+        let q = rig.slot("Q");
+        let b = rig.slot("B");
+        let r = rig.slot("R");
+        let g = rig.slot("G");
+        assert!(home.y < q.y && q.y < b.y && b.y < r.y && r.y < g.y);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"]);
+    }
+
+    #[test]
+    fn a_press_a_four_pixel_move_and_a_release_selects_and_starts_no_drag() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        rig.move_to(q);
+        rig.press();
+        assert_eq!(rig.move_to(Point::new(q.x + 4.0, q.y)), Seen::default());
+        let up = rig.release();
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert_eq!(rig.selected(), Some(fixture::rail_space("qa")));
+        assert!(rig.app.rail_reorder.is_none());
+        assert_eq!(rig.saves(), 0);
+    }
+
+    #[test]
+    fn a_drag_over_a_closed_folder_puts_the_space_after_it_and_saves_once() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let f = rig.slot("R");
+        rig.move_to(q);
+        rig.press();
+        assert_eq!(rig.move_to(nudge(q)).picked, 1);
+        assert!(rig.app.rail_reorder.is_some());
+        assert_eq!(rig.cursor_at(nudge(q)), mouse::Interaction::Grabbing);
+        rig.move_to(f);
+        let up = rig.release();
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["bb", "[fa,fb]", "qa", "[ga,gb,gc]"]);
+        assert_eq!(rig.saves(), 1);
+        assert_eq!(
+            rig.selected(),
+            None,
+            "the release with the drop is no click"
         );
-        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
-        feed(&mut app, &renderer, &mut tree, press.clone(), from);
-        let mut seen = vec![];
-        for at in steps {
-            let ev = Event::Mouse(mouse::Event::CursorMoved { position: at });
-            if app.rail_drag.is_active()
-                && let Some(m) = pointer_message(ev.clone())
-            {
-                let _ = app.update(m);
-            }
-            feed(&mut app, &renderer, &mut tree, ev, at);
-            seen.push(format!("{:?}", app.rail_drag));
-        }
-        let up = Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left));
-        let to = iced::Point::new(to.x + 2.0, to.y);
-        feed(&mut app, &renderer, &mut tree, up.clone(), to);
-        if let Some(m) = pointer_message(up) {
-            let _ = app.update(m);
-        }
-        assert!(!app.rail_drag.is_active(), "{seen:?}");
-        assert_ne!(
-            app.sidebar.layout().map(|l| l.rail.len()),
-            before,
-            "{seen:?}"
+        assert!(rig.app.rail_reorder.is_none());
+    }
+
+    #[test]
+    fn a_drag_upwards_puts_the_space_before_the_one_it_is_over() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let b = rig.slot("B");
+        drag(&mut rig, b, q);
+        assert_eq!(rig.order(), ["bb", "qa", "[fa,fb]", "[ga,gb,gc]"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn home_cannot_be_picked() {
+        let mut rig = rig();
+        let home = rig.slot(Icon::Home.glyph());
+        let q = rig.slot("Q");
+        let up = drag(&mut rig, home, q);
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert!(rig.app.rail_reorder.is_none());
+        assert_eq!(rig.saves(), 0);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"]);
+        assert_eq!(rig.cursor_at(home), mouse::Interaction::Pointer);
+    }
+
+    #[test]
+    fn a_press_on_a_closed_folders_head_drags_the_whole_folder() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let f = rig.slot("R");
+        let up = drag(&mut rig, f, q);
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["[fa,fb]", "qa", "bb", "[ga,gb,gc]"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn inside_an_open_folder_a_drag_reorders_only_inside_it() {
+        let mut rig = rig();
+        // The head of an open folder previews its spaces; the spaces follow.
+        let first = rig.slot_nth("G", 1);
+        let last = rig.slot_nth("T", 1);
+        let up = drag(&mut rig, first, last);
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[gb,gc,ga]"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn dragging_a_space_of_an_open_folder_out_of_it_moves_it_inside_at_most() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let inner = rig.slot_nth("K", 1);
+        let up = drag(&mut rig, inner, q);
+        // The folder's own column holds the drag: the space cannot leave it.
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[gb,ga,gc]"]);
+    }
+
+    #[test]
+    fn a_press_on_an_open_folders_head_picks_nothing_and_no_neighbour() {
+        // The top column picks the item whose centre is nearest, and an open
+        // folder is tall: from its head the item above is nearer. The head
+        // takes the press instead, so no drag starts.
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let head = rig.slot_nth("G", 0);
+        let up = drag(&mut rig, head, q);
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert!(rig.app.rail_reorder.is_none());
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"]);
+        assert_eq!(rig.saves(), 0);
+        assert_eq!(
+            rig.selected(),
+            None,
+            "a drag that did not start is no click"
         );
+    }
+
+    #[test]
+    fn a_press_over_nothing_on_the_rail_then_a_release_over_a_space_is_no_click() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        // The button goes down in the room pane and comes up over Quartz.
+        rig.move_to(Point::new(700.0, 400.0));
+        rig.press();
+        rig.move_to(q);
+        let up = rig.release();
+        assert_eq!(up.released, 1, "the slot saw the release");
+        assert_eq!(rig.selected(), None);
+        assert!(rig.app.rail_press.is_none());
+    }
+
+    #[test]
+    fn a_press_on_one_space_and_a_release_on_another_is_no_click() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        let b = rig.slot("B");
+        rig.move_to(q);
+        rig.press();
+        // Less than the deadband in total: no drag, but the pointer left Quartz.
+        rig.move_to(b);
+        rig.release();
+        // The pointer went far enough to drag Quartz: it dropped. Either way
+        // Bravo was not selected by a click.
+        assert_eq!(rig.selected(), None);
+    }
+
+    #[test]
+    fn a_click_selects_a_space_and_a_folder_head_toggles_it() {
+        let mut rig = rig();
+        let b = rig.slot("B");
+        rig.move_to(b);
+        rig.press();
+        rig.release();
+        assert_eq!(rig.selected(), Some(fixture::rail_space("bb")));
+        let f = rig.slot("R");
+        rig.move_to(f);
+        rig.press();
+        rig.release();
+        assert_eq!(rig.order().len(), 4);
+        assert_eq!(rig.saves(), 1, "opening the folder saved once");
+    }
+
+    #[test]
+    fn the_cursor_is_grab_when_idle_and_grabbing_while_dragging() {
+        let mut rig = rig();
+        let q = rig.slot("Q");
+        rig.move_to(q);
+        assert_eq!(rig.cursor_at(q), mouse::Interaction::Grab);
+        rig.press();
+        rig.move_to(nudge(q));
+        assert_eq!(rig.cursor_at(nudge(q)), mouse::Interaction::Grabbing);
+        rig.release();
+        assert_eq!(rig.cursor_at(q), mouse::Interaction::Grab);
+    }
+
+    #[test]
+    fn with_a_file_the_app_may_not_change_nothing_is_picked_and_the_cursor_is_a_pointer() {
+        for load in [SidebarLoad::Newer, SidebarLoad::OtherAccount] {
+            let mut rig = Rig::new(fixture::rail_reorder_app_protected(load));
+            let q = rig.slot("Q");
+            let f = rig.slot("R");
+            assert_eq!(rig.cursor_at(q), mouse::Interaction::Pointer);
+            let up = drag(&mut rig, q, f);
+            assert_eq!((up.picked, up.dropped), (0, 0));
+            assert!(rig.app.rail_reorder.is_none());
+            assert_eq!(rig.saves(), 0);
+            // A plain click still selects.
+            rig.move_to(q);
+            rig.press();
+            rig.release();
+            assert_eq!(rig.selected(), Some(fixture::rail_space("qa")));
+        }
+    }
+
+    /// Picks Quartz and moves over the folder, with the button still down.
+    fn dragging(rig: &mut Rig) -> Point {
+        let q = rig.slot("Q");
+        let f = rig.slot("R");
+        rig.move_to(q);
+        rig.press();
+        assert_eq!(rig.move_to(nudge(q)).picked, 1);
+        rig.move_to(f);
+        f
+    }
+
+    #[test]
+    fn esc_and_losing_the_focus_end_the_drag_and_the_release_that_follows_does_nothing() {
+        for cancel in ["esc", "focus"] {
+            let mut rig = rig();
+            let f = dragging(&mut rig);
+            let flips = rig.app.rail_generation;
+            let _ = match cancel {
+                "esc" => rig.app.update(Message::Shortcut {
+                    shortcut: twicecat_app::keys::Shortcut::Escape,
+                    captured: false,
+                }),
+                _ => rig.app.update(Message::WindowFocus(false)),
+            };
+            // The runtime builds the next view and diffs the kept tree.
+            rig.rebuild();
+            assert_ne!(rig.app.rail_generation, flips, "{cancel}");
+            let moved = rig.move_to(Point::new(f.x, f.y + 1.0));
+            let up = rig.release();
+            assert_eq!(moved, Seen::default(), "{cancel}: {moved:?}");
+            assert_eq!((up.dropped, up.canceled), (0, 0), "{cancel}: {up:?}");
+            assert_eq!(rig.saves(), 0, "{cancel}");
+            assert_eq!(rig.selected(), None, "{cancel}: no click");
+            assert_eq!(
+                rig.order(),
+                ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"],
+                "{cancel}"
+            );
+            // And a new drag works.
+            let q = rig.slot("Q");
+            let again = drag(&mut rig, q, f);
+            assert_eq!(again.dropped, 1, "{cancel}");
+            assert_eq!(rig.saves(), 1, "{cancel}");
+        }
+    }
+
+    #[test]
+    fn leaving_the_rail_ends_the_drag_and_a_later_release_saves_nothing() {
+        let mut rig = rig();
+        dragging(&mut rig);
+        // Out of the rail's scrollable: the column has no pointer position.
+        let out = rig.move_to(Point::new(700.0, 400.0));
+        assert_eq!(out.canceled, 1, "{out:?}");
+        assert!(rig.app.rail_reorder.is_none());
+        let up = rig.release();
+        assert_eq!((up.dropped, up.canceled), (0, 0));
+        assert_eq!(rig.saves(), 0);
+        assert_eq!(rig.order(), ["qa", "bb", "[fa,fb]", "[ga,gb,gc]"]);
+    }
+
+    #[test]
+    fn keys_that_changed_between_the_pick_and_the_drop_save_nothing() {
+        let mut rig = rig();
+        dragging(&mut rig);
+        // The core reports one top-level space fewer under the drag.
+        let spaces: Vec<SpaceView> = [
+            ("qa", "Quartz"),
+            ("fa", "Rust"),
+            ("fb", "Vue"),
+            ("ga", "Garden"),
+            ("gb", "Kettle"),
+            ("gc", "Tulip"),
+        ]
+        .iter()
+        .map(|(id, name)| SpaceView {
+            id: fixture::rail_space(id),
+            name: (*name).to_owned(),
+            avatar: None,
+            level: 0,
+            children: 0,
+            rooms: Vec::new(),
+        })
+        .collect();
+        let _ = rig
+            .app
+            .update(Message::Core(Box::new(CoreEvent::Spaces(spaces))));
+        rig.rebuild();
+        let f = rig.slot("R");
+        rig.move_to(f);
+        let up = rig.release();
+        assert_eq!(up.dropped, 0, "the drag was ended with the old keys");
+        assert_eq!(rig.saves(), 0);
     }
 }

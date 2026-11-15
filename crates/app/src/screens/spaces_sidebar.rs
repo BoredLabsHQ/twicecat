@@ -3,10 +3,16 @@
 //!
 //! Each item is a 72 x 48 slot holding a 44 px icon, a pill at the left
 //! edge, an unread badge at the bottom right and a tooltip with the name.
-//! One `mouse_area` per item reports hover and click; there is no button
-//! inside it (a button would swallow the press, and iced 0.14 gives buttons
-//! no keyboard focus anyway). Sub-spaces are not on the rail: they are
-//! sections of the room list.
+//! One `mouse_area` per item reports hover, right-click and release; a press
+//! spy reports the press without taking it, so that a click is "pressed and
+//! released on the same item" while the drag belongs to a sweeten column (see
+//! `rail_reorder.rs`). There is no button inside (a button would swallow the
+//! press, and iced 0.14 gives buttons no keyboard focus anyway). Sub-spaces
+//! are not on the rail: they are sections of the room list.
+//!
+//! Dragging reorders only: the top-level items are one sweeten column, and
+//! each open folder's spaces are another. Making a folder, filling it and
+//! emptying it are done in the options card.
 //!
 //! The sidebar is always one slot of the main row: an empty space when the
 //! user is in no space, so the room list and the timeline keep their place in
@@ -19,10 +25,11 @@ use iced::widget::{
     Column, Stack, column, container, image, mouse_area, row, scrollable, space, text, tooltip,
 };
 use iced::{Background, Color, Element, Padding, border, mouse};
+use sweeten::widget::column::Style as DragStyle;
 use twicecat_core::api::{SpaceView, UnreadCountsView};
 
 use crate::avatars::{AvatarState, Avatars, NEUTRAL_INITIALS, initials, placeholder_color};
-use crate::drag::Zone;
+use crate::rail_reorder::RailColumn;
 use crate::sidebar::SidebarState;
 use crate::sidebar_menu::SidebarMenuMessage;
 use crate::spaces::{RailFolder, RailItem, RailKey, SpacesMessage};
@@ -31,6 +38,7 @@ use crate::text_safety::{MAX_NAME_CHARS, name_or_placeholder};
 use crate::theme;
 use crate::ui::icons::Icon;
 use crate::ui::kit;
+use crate::ui::press_spy::press_spy;
 use crate::ui::tokens;
 
 /// Width of the sidebar, in pixels.
@@ -62,6 +70,14 @@ const NESTED_INDENT: f32 = 4.0;
 
 /// Side of a space's icon in a folder's 2 x 2 preview.
 const MINI: f32 = 18.0;
+
+/// How far the pointer must move after the press before a rail item is
+/// picked up, in pixels (sweeten picks on "more than" this, so a click that
+/// wobbles by 4 px stays a click).
+const DEADBAND: f32 = 4.0;
+
+/// How much larger the item under the pointer is drawn while it is dragged.
+const DRAG_SCALE: f32 = 1.05;
 
 /// How long the pointer rests on an item before its tooltip shows.
 pub const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
@@ -156,27 +172,27 @@ pub fn view(app: &App) -> Element<'_, Message> {
     }
     let selected = app.query.space.as_ref();
     let hover = app.rail_hover.as_ref();
-    let mut items: Column<'_, Message> = Column::new().spacing(4).padding([6, 0]);
     let home = home_counts(app);
-    items = items.push(slot(Slot {
-        cue: cue(app, &RailKey::Home),
-        key: RailKey::Home,
-        icon: round(Icon::Home.glyph().to_owned(), None, ICON / 2.0),
-        state: ItemState::of(
-            selected.is_none(),
-            hover == Some(&RailKey::Home),
-            is_unread(&home),
-        ),
-        counts: home,
-        name: "Home".to_owned(),
-        width: SIDEBAR_WIDTH,
-    }));
-    for item in app.spaces.rail_items(app.sidebar.layout()) {
-        items = match item {
-            RailItem::Space(space) => items.push(space_slot(app, space, SIDEBAR_WIDTH)),
-            RailItem::Folder(folder) => items.push(folder_view(app, &folder)),
-        };
-    }
+    // Home is outside the reorderable column: it cannot be picked up, and
+    // nothing can be dropped before it.
+    let items: Column<'_, Message> = column![
+        slot(Slot {
+            cue: cue(app, &RailKey::Home),
+            key: RailKey::Home,
+            icon: round(Icon::Home.glyph().to_owned(), None, ICON / 2.0),
+            state: ItemState::of(
+                selected.is_none(),
+                hover == Some(&RailKey::Home),
+                is_unread(&home),
+            ),
+            counts: home,
+            name: "Home".to_owned(),
+            width: SIDEBAR_WIDTH,
+        }),
+        rail_column(app),
+    ]
+    .spacing(4)
+    .padding([6, 0]);
     row![
         container(scrollable(items))
             .width(SIDEBAR_WIDTH)
@@ -186,6 +202,55 @@ pub fn view(app: &App) -> Element<'_, Message> {
     ]
     .height(iced::Fill)
     .into()
+}
+
+/// Whether the layout can be changed, so that the rail can be dragged.
+fn customizable(app: &App) -> bool {
+    matches!(
+        app.sidebar.state(),
+        SidebarState::Loaded | SidebarState::Full
+    )
+}
+
+/// The top-level items in one sweeten column. When the app has cancelled a
+/// drag (`rail_generation` is odd), the column is wrapped in one more
+/// widget: iced then drops sweeten's state, which ends the drag it holds
+/// (sweeten has no cancel; plan S3). A `container` would not do, it forwards
+/// its content's tag.
+fn rail_column(app: &App) -> Element<'_, Message> {
+    let mut items = sweeten::widget::Column::new()
+        .spacing(4)
+        .deadband_zone(DEADBAND)
+        .style(drag_style);
+    for item in app.spaces.rail_items(app.sidebar.layout()) {
+        items = match item {
+            RailItem::Space(space) => items.push(space_slot(app, space, SIDEBAR_WIDTH)),
+            RailItem::Folder(folder) => items.push(folder_view(app, &folder)),
+        };
+    }
+    if customizable(app) {
+        items = items.on_drag(|event| {
+            Message::Spaces(SpacesMessage::RailReorder(RailColumn::Top, event.into()))
+        });
+    }
+    let items: Element<'_, Message> = items.into();
+    if app.rail_generation % 2 == 1 {
+        column![items].into()
+    } else {
+        items
+    }
+}
+
+/// How a dragged item and the ones it moves look: the focus colour marks
+/// where it came from, and the selection wash tints what slides aside.
+fn drag_style(t: &iced::Theme) -> DragStyle {
+    let sem = theme::semantic(t);
+    DragStyle {
+        scale: DRAG_SCALE,
+        moved_item_overlay: sem.selection,
+        ghost_border: border::rounded(tokens::LARGE).color(sem.focus).width(RING),
+        ghost_background: Background::Color(sem.selection),
+    }
 }
 
 /// The label of a space for its tooltip: one line, capped, a placeholder
@@ -202,45 +267,24 @@ fn folder_name(folder: &RailFolder<'_>) -> String {
     }
 }
 
-/// Thickness of the line that shows where a drop would put the item.
-const DROP_LINE: f32 = 3.0;
-
-/// What dragging shows on and does to one slot.
+/// What the pointer shows over one slot.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Cue {
-    /// Where a drop on this slot would land, while a drag runs.
-    mark: Option<Zone>,
     /// The cursor over the slot: `Grab` for what can be dragged, `Grabbing`
     /// during a drag, `Pointer` otherwise.
     cursor: mouse::Interaction,
-    /// A drag runs: the slot reports the pointer's place in it.
-    dragging: bool,
 }
 
 /// The cue of the slot of `key`.
 fn cue(app: &App, key: &RailKey) -> Cue {
-    let dragging = app.rail_drag.is_dragging();
-    let may_drag = *key != RailKey::Home
-        && matches!(
-            app.sidebar.state(),
-            SidebarState::Loaded | SidebarState::Full
-        );
-    let cursor = if dragging {
+    let cursor = if app.rail_reorder.is_some() {
         mouse::Interaction::Grabbing
-    } else if may_drag {
+    } else if *key != RailKey::Home && customizable(app) {
         mouse::Interaction::Grab
     } else {
         mouse::Interaction::Pointer
     };
-    Cue {
-        mark: app
-            .rail_drag
-            .target()
-            .filter(|target| target.item == *key)
-            .map(|target| target.zone),
-        cursor,
-        dragging,
-    }
+    Cue { cursor }
 }
 
 /// Everything one slot needs.
@@ -300,18 +344,41 @@ fn folder_view<'a>(app: &'a App, folder: &RailFolder<'a>) -> Element<'a, Message
     if !folder.open {
         return head;
     }
-    let mut inside: Column<'a, Message> = Column::new().spacing(4);
+    // The spaces of an open folder reorder in a column of their own: a press
+    // on one is taken by it, so the top-level column never picks from here.
+    let id = folder.id;
+    let mut inside = sweeten::widget::Column::new()
+        .spacing(4)
+        .deadband_zone(DEADBAND)
+        .style(drag_style);
     for space in &folder.spaces {
         inside = inside.push(space_slot(app, space, SIDEBAR_WIDTH - NESTED_INDENT));
     }
-    column![
-        head,
-        container(row![space().width(NESTED_INDENT), inside])
-            .width(SIDEBAR_WIDTH)
-            .padding([4, 0])
-            .style(band_style),
-    ]
-    .spacing(4)
+    if customizable(app) {
+        inside = inside.on_drag(move |event| {
+            Message::Spaces(SpacesMessage::RailReorder(
+                RailColumn::Folder(id),
+                event.into(),
+            ))
+        });
+    }
+    // An open folder is not dragged by its head: the top-level column picks
+    // the item whose centre is nearest, and the centre of a tall open folder
+    // is far from its head, so a neighbour could be picked. The whole item
+    // takes the press instead; the folder moves from its options card.
+    mouse_area(
+        column![
+            head,
+            container(row![space().width(NESTED_INDENT), inside])
+                .width(SIDEBAR_WIDTH)
+                .padding([4, 0])
+                .style(band_style),
+        ]
+        .spacing(4),
+    )
+    .on_press(Message::Spaces(SpacesMessage::RailPressed(
+        RailKey::Folder(id),
+    )))
     .into()
 }
 
@@ -364,39 +431,18 @@ fn slot(slot: Slot<'_>) -> Element<'_, Message> {
                 }),
         );
     }
-    match cue.mark {
-        Some(Zone::Before) => layers = layers.push(drop_line(width, true)),
-        Some(Zone::After) => layers = layers.push(drop_line(width, false)),
-        Some(Zone::Into) => {
-            layers = layers.push(
-                container(ring(icon_radius(state)))
-                    .center_x(width)
-                    .center_y(SLOT_HEIGHT),
-            );
-        }
-        None => {}
-    }
     let mut area = mouse_area(layers)
         .interaction(cue.cursor)
         .on_enter(Message::Spaces(SpacesMessage::Enter(key.clone())))
         .on_exit(Message::Spaces(SpacesMessage::Exit(key.clone())))
-        .on_press(Message::Spaces(SpacesMessage::Press(key.clone())))
         .on_release(Message::Spaces(SpacesMessage::Release(key.clone())));
-    if cue.dragging {
-        let at = key.clone();
-        area = area.on_move(move |point| {
-            Message::Spaces(SpacesMessage::Over(
-                at.clone(),
-                Zone::of(point.y, SLOT_HEIGHT),
-            ))
-        });
-    }
+    let pressed = Message::Spaces(SpacesMessage::RailPressed(key.clone()));
     // A right-click opens the item's options card (Home has none).
     if key != RailKey::Home {
         area = area.on_right_press(Message::SidebarMenu(SidebarMenuMessage::Open(key)));
     }
     tooltip(
-        area,
+        press_spy(area, pressed),
         container(text(name).size(tokens::CAPTION))
             .padding(tokens::S)
             .style(kit::card_style),
@@ -404,26 +450,6 @@ fn slot(slot: Slot<'_>) -> Element<'_, Message> {
     )
     .delay(TOOLTIP_DELAY)
     .into()
-}
-
-/// The line at the top or bottom of a slot where a drop would put the
-/// dragged item: the focus colour, as wide as the slot less a margin.
-fn drop_line<'a>(width: f32, top: bool) -> Element<'a, Message> {
-    let line =
-        container(space().width(width - 16.0).height(DROP_LINE)).style(|t| container::Style {
-            background: Some(Background::Color(theme::semantic(t).focus)),
-            border: border::rounded(DROP_LINE / 2.0),
-            ..container::Style::default()
-        });
-    let slot = container(line)
-        .width(width)
-        .height(SLOT_HEIGHT)
-        .center_x(width);
-    if top {
-        slot.align_top(SLOT_HEIGHT).into()
-    } else {
-        slot.align_bottom(SLOT_HEIGHT).into()
-    }
 }
 
 /// The pill: the text colour, round on its right side only.
