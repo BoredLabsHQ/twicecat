@@ -7,7 +7,8 @@
 use std::ops::Range;
 
 use twicecat_core::api::{
-    ListDiff, RoomId, RoomListChoice, RoomListTab, RoomSortChoice, RoomSummary,
+    ListDiff, RoomId, RoomListChoice, RoomListTab, RoomNotificationModeView, RoomSortChoice,
+    RoomSummary,
 };
 
 use crate::state::App;
@@ -145,6 +146,70 @@ pub fn badge_for(room: &RoomSummary) -> Badge {
         Badge::Dot
     } else {
         Badge::None
+    }
+}
+
+/// What a channel row of a space draws before the name (plan C2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Glyph {
+    /// A text room: a "#".
+    Hash,
+    /// A voice (call) room: the speaker icon.
+    Speaker,
+    /// A direct message: the person's avatar.
+    Avatar,
+}
+
+/// The glyph of `room` in a channel row.
+pub fn channel_glyph(room: &RoomSummary) -> Glyph {
+    if room.is_call_room {
+        Glyph::Speaker
+    } else if room.is_dm {
+        Glyph::Avatar
+    } else {
+        Glyph::Hash
+    }
+}
+
+/// How a channel row's name is drawn (plan C2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emphasis {
+    /// Unread: semibold, in the text colour, with the pill at the edge.
+    Unread,
+    /// Read: in the muted colour.
+    Read,
+    /// In Mute mode: dimmed, as Discord does, even when unread.
+    Muted,
+}
+
+/// The emphasis of `room`'s name, given the notification `mode` the app knows.
+///
+/// A room in Mute mode is [`Emphasis::Muted`] whatever is unread (Discord dims
+/// a muted channel). Otherwise unread messages, notifications, highlights or
+/// a mark make it [`Emphasis::Unread`]. This is not the sort's class: the sort
+/// follows [`badge_for`], where a muted room with unread messages is unread.
+///
+/// ```
+/// use twicecat_app::room_list::{Emphasis, channel_emphasis};
+/// use twicecat_core::api::{RoomId, RoomNotificationModeView, RoomSummary};
+/// let mut room = RoomSummary::new(RoomId::from("!r:x"), "r".into());
+/// assert_eq!(channel_emphasis(&room, None), Emphasis::Read);
+/// room.unread_messages = 1;
+/// assert_eq!(channel_emphasis(&room, None), Emphasis::Unread);
+/// let mute = Some(RoomNotificationModeView::Mute);
+/// assert_eq!(channel_emphasis(&room, mute), Emphasis::Muted);
+/// ```
+pub fn channel_emphasis(room: &RoomSummary, mode: Option<RoomNotificationModeView>) -> Emphasis {
+    if mode == Some(RoomNotificationModeView::Mute) {
+        Emphasis::Muted
+    } else if room.unread_messages > 0
+        || room.unread_notifications > 0
+        || room.highlights > 0
+        || room.marked_unread
+    {
+        Emphasis::Unread
+    } else {
+        Emphasis::Read
     }
 }
 
@@ -1533,6 +1598,50 @@ mod pure_tests {
 
     fn summary() -> RoomSummary {
         RoomSummary::new(RoomId::from("!r:x"), "r".into())
+    }
+
+    // ---- channel rows (sidebar rework, Task 11) ----
+
+    #[test]
+    fn a_channels_glyph_is_a_speaker_for_a_call_room_an_avatar_for_a_dm_else_a_hash() {
+        let mut r = summary();
+        assert_eq!(channel_glyph(&r), Glyph::Hash);
+        r.is_call_room = true;
+        assert_eq!(channel_glyph(&r), Glyph::Speaker);
+        r.is_call_room = false;
+        r.is_dm = true;
+        assert_eq!(channel_glyph(&r), Glyph::Avatar);
+        // Anything else is a hash: an invite, a space, an encrypted room.
+        let mut other = summary();
+        other.is_invite = true;
+        other.is_space = true;
+        other.is_encrypted = true;
+        assert_eq!(channel_glyph(&other), Glyph::Hash);
+    }
+
+    #[test]
+    fn a_channels_emphasis_follows_unread_state_and_mute_mode() {
+        use RoomNotificationModeView::{AllMessages, MentionsAndKeywords, Mute};
+        let with = |edit: fn(&mut RoomSummary)| {
+            let mut r = summary();
+            edit(&mut r);
+            r
+        };
+        let read = summary();
+        let messages = with(|r| r.unread_messages = 2);
+        let notified = with(|r| r.unread_notifications = 1);
+        let mention = with(|r| r.highlights = 1);
+        let marked = with(|r| r.marked_unread = true);
+        for mode in [None, Some(AllMessages), Some(MentionsAndKeywords)] {
+            assert_eq!(channel_emphasis(&read, mode), Emphasis::Read, "{mode:?}");
+            for room in [&messages, &notified, &mention, &marked] {
+                assert_eq!(channel_emphasis(room, mode), Emphasis::Unread, "{mode:?}");
+            }
+        }
+        // Mute wins, whatever is unread: Discord dims a muted channel.
+        for room in [&read, &messages, &notified, &mention, &marked] {
+            assert_eq!(channel_emphasis(room, Some(Mute)), Emphasis::Muted);
+        }
     }
 
     #[test]

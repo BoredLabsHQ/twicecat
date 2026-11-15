@@ -529,6 +529,16 @@ existing shortcut keeps its meaning.
   walk, so a keyboard user steps through the rooms as they are shown, and
   Ctrl+K still finds every room. The list is a menu that Ctrl + wheel (the
   zoom gesture) cannot change. No shortcut was added or changed.
+- **A channel row says what it is in words, not only in colour or weight.** In
+  a space's list a text room has a "#", a voice room the speaker icon and, while
+  someone is in its call, the call count, a room set to Mute carries the
+  word "Muted", an invite the word "Invite", and a badge shows the count or a
+  dot. An unread name is bold and in the text colour (at least 4.5:1 against
+  the row in every theme), a read name and a header are muted (at least 3:1),
+  and the bar at the left edge is only a second sign beside the bold name and
+  the badge. A header's name is in capitals and brightens under the pointer.
+  Row heights are unchanged, so the scroll position and the Alt+Up / Alt+Down
+  walk are the same. No shortcut was added or changed.
 - **Rows and headers are pointer-only in the sectioned room list.** A room row
   and a section header there are a box that answers the pointer, not a button,
   so opening a room and collapsing or expanding a header need a click. Buttons

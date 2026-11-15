@@ -1047,6 +1047,33 @@ fn voice_channel() -> App {
     app
 }
 
+/// Board 11 (sidebar rework, Task 11): a space drawn as categories of
+/// channels. Channels (General unread with a count, Random muted with unread
+/// messages, Announcements read) is open above the Voice category, whose
+/// selected room "vocal" has three people in its call and "coworking" one;
+/// Starred (Roadmap, unread), Tech and Hobbies are shut.
+fn space_categories() -> App {
+    use twicecat_app::spaces::SpacesMessage;
+    use twicecat_core::api::{RoomNotificationModeView, SectionKey};
+    let mut app = voice_channel();
+    press(
+        &mut app,
+        Message::Spaces(SpacesMessage::ToggleSection(SectionKey::Channels)),
+    );
+    let mut rows = app.rooms.clone();
+    for row in &mut rows {
+        if row.id == room("sec-r-random") {
+            row.unread_messages = 2;
+            row.notification_mode = Some(RoomNotificationModeView::Mute);
+        }
+    }
+    feed(
+        &mut app,
+        CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: rows }]),
+    );
+    app
+}
+
 // ---- Timeline -----------------------------------------------------------
 
 fn run(text: &str, style: TextStyle) -> Inline {
@@ -4134,6 +4161,29 @@ pub fn scenarios() -> Vec<Scenario> {
                     ) && lines.iter().any(
                         |l| matches!(l, twicecat_app::sections::Line::Participant(p) if p.muted),
                     )
+                })
+        }),
+        s("space-categories", true, space_categories, |a| {
+            use twicecat_app::room_list::{Emphasis, channel_emphasis};
+            use twicecat_app::sections::Line;
+            in_main(a)
+                && a.sections_shown()
+                && a.calls.call.is_some()
+                && a.section_lines().is_some_and(|lines| {
+                    let emphasis = |name: &str| {
+                        lines.iter().find_map(|l| match l {
+                            Line::Room(r) if r.name == name => {
+                                Some(channel_emphasis(r, a.effective_room_mode(&r.id)))
+                            }
+                            _ => None,
+                        })
+                    };
+                    emphasis("General") == Some(Emphasis::Unread)
+                        && emphasis("Random") == Some(Emphasis::Muted)
+                        && emphasis("Announcements") == Some(Emphasis::Read)
+                        && lines
+                            .iter()
+                            .any(|l| matches!(l, Line::Participant(p) if p.speaking))
                 })
         }),
         s("space-sections-tags", true, space_sections_tags, |a| {
