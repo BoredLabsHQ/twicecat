@@ -887,6 +887,40 @@ impl App {
     }
 }
 
+/// What the ghost tile shows: the row or header being dragged.
+#[derive(Clone)]
+pub enum GhostItem<'a> {
+    /// A room's channel row.
+    Room(&'a RoomSummary),
+    /// A section's header.
+    Header(Header<'a>),
+}
+
+/// The ghost tile that follows the pointer during a drag in the sectioned list.
+/// `Debug` shows no name.
+#[derive(Clone)]
+pub struct Ghost<'a> {
+    /// What is dragged.
+    pub item: GhostItem<'a>,
+    /// The pointer, in window coordinates.
+    pub pointer: Point,
+    /// Where the pointer was inside the item at the press, if it was seen.
+    pub grab: Option<Point>,
+}
+
+impl std::fmt::Debug for Ghost<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self.item {
+            GhostItem::Room(_) => "Room",
+            GhostItem::Header(_) => "Header",
+        };
+        f.debug_struct("Ghost")
+            .field("item", &kind)
+            .field("pointer", &self.pointer)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use twicecat_core::api::{FolderLayout, SidebarLabel, UserId};
@@ -1216,39 +1250,5 @@ mod tests {
             model.unread_for(&RoomId::from("!s0:x")),
             counts(0, 0, false)
         );
-    }
-}
-
-/// What the ghost tile shows: the row or header being dragged.
-#[derive(Clone)]
-pub enum GhostItem<'a> {
-    /// A room's channel row.
-    Room(&'a RoomSummary),
-    /// A section's header.
-    Header(Header<'a>),
-}
-
-/// The ghost tile that follows the pointer during a drag in the sectioned list.
-/// `Debug` shows no name.
-#[derive(Clone)]
-pub struct Ghost<'a> {
-    /// What is dragged.
-    pub item: GhostItem<'a>,
-    /// The pointer, in window coordinates.
-    pub pointer: Point,
-    /// Where the pointer was inside the item at the press, if it was seen.
-    pub grab: Option<Point>,
-}
-
-impl std::fmt::Debug for Ghost<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let kind = match self.item {
-            GhostItem::Room(_) => "Room",
-            GhostItem::Header(_) => "Header",
-        };
-        f.debug_struct("Ghost")
-            .field("item", &kind)
-            .field("pointer", &self.pointer)
-            .finish_non_exhaustive()
     }
 }

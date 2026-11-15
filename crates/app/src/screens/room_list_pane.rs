@@ -1617,11 +1617,8 @@ pub fn ghost_layer<'a>(base: Element<'a, Message>, app: &'a App) -> Element<'a, 
             let density = app.density();
             let tile = ghost_tile(app, &ghost.item, density);
             let size = ghost_size(&ghost.item, density);
-            // Without a seen grab the pointer holds the tile near its left
-            // edge, in the middle of its height.
-            let grab = ghost
-                .grab
-                .unwrap_or_else(|| iced::Point::new(tokens::XL, size.height / 2.0));
+            // The grab is kept on the tile (a header's is narrower than its row).
+            let grab = crate::drag::ghost_grab(ghost.grab, size);
             let at = crate::drag::ghost_position(ghost.pointer, grab, size, window);
             iced::widget::pin(tile).x(at.x).y(at.y).into()
         })
