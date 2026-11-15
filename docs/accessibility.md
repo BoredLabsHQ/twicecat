@@ -552,8 +552,10 @@ existing shortcut keeps its meaning.
   on the homeserver, so a keyboard-only user sees the rooms a pointer user or
   another Matrix app tagged, in the sections Favourites and Low priority, and
   can still find and open every room with Ctrl+K and Alt+Up / Alt+Down. The two
-  headers collapse and move like the other headers, with a pointer. No
-  shortcut was added or changed.
+  headers collapse and move like the other headers, with a pointer. Dragging
+  a room onto Favourites or Low priority is the same entry as the one in the
+  card (and dropping it on its own section the matching Remove entry), so
+  nothing can be done only by dragging. No shortcut was added or changed.
 - **The card of a row in the flat list is pointer-only too.** A right-click on
   a room in Home, under a chip other than All, or in a search result opens a
   card with the two tag entries only, worded after the room's tags. Like the

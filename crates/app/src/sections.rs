@@ -215,6 +215,33 @@ pub fn build_sorted<'a>(
     calls: Option<&'a CallModel>,
     sorting: Sorting,
 ) -> Vec<Line<'a>> {
+    build_placed(space, spaces, rooms, layout, calls, sorting, true)
+}
+
+/// The lines with no layout and no tags: every room in the section that is
+/// its default one (Channels, a sub-space or Direct messages), whatever
+/// Matrix tags it carries. A drop uses it to tell which section is a room's
+/// own default one, also for a room that is drawn in Favourites or Low
+/// priority now.
+pub fn build_defaults<'a>(
+    space: &'a SpaceView,
+    spaces: &'a [SpaceView],
+    rooms: &'a [RoomSummary],
+) -> Vec<Line<'a>> {
+    build_placed(space, spaces, rooms, None, None, Sorting::default(), false)
+}
+
+/// [`build_sorted`], where `tags` says whether a room's Favourite and Low
+/// priority tags place it (always, except for [`build_defaults`]).
+fn build_placed<'a>(
+    space: &'a SpaceView,
+    spaces: &'a [SpaceView],
+    rooms: &'a [RoomSummary],
+    layout: Option<&'a SpaceLayout>,
+    calls: Option<&'a CallModel>,
+    sorting: Sorting,
+    tags: bool,
+) -> Vec<Line<'a>> {
     #[cfg(test)]
     BUILDS.with(|n| n.set(n.get() + 1));
     let own = &space.id;
@@ -291,11 +318,11 @@ pub fn build_sorted<'a>(
         }
         let (key, at) = if let Some(&at) = starred_at.get(&room.id) {
             (SectionKey::Starred, at)
-        } else if room.is_favourite {
+        } else if tags && room.is_favourite {
             (SectionKey::Favourites, n)
         } else if let Some(&(id, at)) = custom_at.get(&room.id) {
             (SectionKey::Custom(id), at)
-        } else if room.is_low_priority {
+        } else if tags && room.is_low_priority {
             (SectionKey::LowPriority, n)
         } else if let Some(&sub) = sub_of.get(&room.id) {
             (SectionKey::SubSpace(sub.clone()), n)
@@ -603,8 +630,8 @@ impl App {
         ))
     }
 
-    /// The lines of the sectioned list with no layout: every room in its
-    /// default section, and every section open. A drop uses it to tell which
+    /// The lines of the sectioned list with no layout and no tags: every room
+    /// in its default section, and every section open. A drop uses it to tell which
     /// section is a room's own default one; `None` while the list is flat.
     pub(crate) fn default_section_lines(&self) -> Option<Vec<Line<'_>>> {
         if !self.sections_shown() {
@@ -612,7 +639,7 @@ impl App {
         }
         let id = self.query.space.as_ref()?;
         let space = self.spaces.spaces().iter().find(|s| s.id == *id)?;
-        Some(build(space, self.spaces.spaces(), &self.rooms, None))
+        Some(build_defaults(space, self.spaces.spaces(), &self.rooms))
     }
 
     /// The rooms as the list draws them, in order: the list itself while it
@@ -3051,6 +3078,7 @@ mod tests {
         use crate::sidebar_menu::{Entry, SectionPick, SidebarMenuMessage as M};
         use crate::sidebar_store::Call;
         use crate::spaces::SpacesMessage as S;
+        use twicecat_core::api::RoomTagView;
 
         fn drag_app() -> (App, MemorySidebar, mpsc::Receiver<Command>) {
             let (mut app, rx) = space_app(None);
@@ -3327,6 +3355,156 @@ mod tests {
             assert!(app.list_drag.refused().is_some());
             send(&mut app, S::PointerReleased);
             assert_eq!(saves(&store), saved);
+        }
+
+        /// Puts these tags on the rooms of the list (name, favourite, low
+        /// priority) and feeds the list again.
+        fn tag_rooms(app: &mut App, tags: &[(&str, bool, bool)]) {
+            let mut rs = rooms();
+            for (name, favourite, low) in tags {
+                let r = rs
+                    .iter_mut()
+                    .find(|r| r.name == *name)
+                    .expect("a room of the fixture");
+                r.is_favourite = *favourite;
+                r.is_low_priority = *low;
+            }
+            feed(
+                app,
+                CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: rs }]),
+            );
+        }
+
+        /// The tag commands in the channel, as (room, tag).
+        fn tag_sent(rx: &mut mpsc::Receiver<Command>) -> Vec<(RoomId, Option<RoomTagView>)> {
+            drain(rx)
+                .into_iter()
+                .filter_map(|c| match c {
+                    Command::SetRoomTag { room_id, tag } => Some((room_id, tag)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        /// Each tag drop sends exactly the command of the matching entry of
+        /// the room's card, and saves no layout file.
+        #[test]
+        fn every_tag_drop_sends_the_command_of_the_matching_card_entry() {
+            // "t1" is a favourite and "rustroom" is low priority, so both headers
+            // are drawn.
+            let tags = [("t1", true, false), ("rustroom", false, true)];
+            let table = [
+                ("chan2", SectionKey::Favourites, Entry::AddFavourite),
+                ("chan2", SectionKey::LowPriority, Entry::MarkLowPriority),
+                ("chan1", SectionKey::Favourites, Entry::AddFavourite),
+                ("chan1", SectionKey::LowPriority, Entry::MarkLowPriority),
+                ("t1", SectionKey::LowPriority, Entry::MarkLowPriority),
+                ("rustroom", SectionKey::Favourites, Entry::AddFavourite),
+                (
+                    "t1",
+                    SectionKey::SubSpace(rid("tech")),
+                    Entry::RemoveFavourite,
+                ),
+                (
+                    "rustroom",
+                    SectionKey::SubSpace(rid("tech")),
+                    Entry::RemoveLowPriority,
+                ),
+            ];
+            let expected = [
+                Some(RoomTagView::Favourite),
+                Some(RoomTagView::LowPriority),
+                Some(RoomTagView::Favourite),
+                Some(RoomTagView::LowPriority),
+                Some(RoomTagView::LowPriority),
+                Some(RoomTagView::Favourite),
+                None,
+                None,
+            ];
+            for ((name, key, pressed), tag) in table.into_iter().zip(expected) {
+                let (mut app, store, mut rx) = arranged();
+                tag_rooms(&mut app, &tags);
+                let _ = drain(&mut rx);
+                let saved = saves(&store);
+                drag(&mut app, &room(name), &head(key.clone()), Zone::Into);
+                let by_drag = tag_sent(&mut rx);
+                assert_eq!(saves(&store), saved, "{name} onto {key:?}: no file");
+                menu(&mut app, M::OpenRoom(rid(name)));
+                menu(&mut app, M::Entry(pressed));
+                let by_card = tag_sent(&mut rx);
+                assert_eq!(by_drag, by_card, "{name} onto {key:?}");
+                assert_eq!(by_drag, [(rid(name), tag)], "{name} onto {key:?}");
+            }
+        }
+
+        #[test]
+        fn a_room_already_in_favourites_dropped_on_favourites_does_nothing() {
+            let (mut app, store, mut rx) = arranged();
+            tag_rooms(&mut app, &[("t1", true, false), ("rustroom", false, true)]);
+            let _ = drain(&mut rx);
+            let (before, saved) = (record(&app), saves(&store));
+            for (name, key) in [
+                ("t1", SectionKey::Favourites),
+                ("rustroom", SectionKey::LowPriority),
+            ] {
+                start(&mut app, &room(name));
+                send(&mut app, S::ListOver(head(key.clone()), Zone::Into));
+                assert!(app.list_drag.target().is_none(), "{key:?}: no target");
+                assert!(app.list_drag.refused().is_none(), "{key:?}: not refused");
+                send(&mut app, S::PointerReleased);
+            }
+            assert!(drain(&mut rx).is_empty(), "nothing is sent");
+            assert_eq!(record(&app), before);
+            assert_eq!(saves(&store), saved);
+        }
+
+        #[test]
+        fn a_starred_room_on_low_priority_is_refused_and_sends_nothing() {
+            let (mut app, store, mut rx) = arranged();
+            tag_rooms(&mut app, &[("dm1", false, true)]);
+            let _ = drain(&mut rx);
+            let saved = saves(&store);
+            start(&mut app, &room("starred1"));
+            send(
+                &mut app,
+                S::ListOver(head(SectionKey::LowPriority), Zone::Into),
+            );
+            assert!(app.list_drag.target().is_none(), "no target");
+            assert_eq!(
+                app.list_drag.refused().map(|t| t.item.clone()),
+                Some(head(SectionKey::LowPriority)),
+                "drawn as not allowed"
+            );
+            send(&mut app, S::PointerReleased);
+            assert!(drain(&mut rx).is_empty());
+            assert_eq!(saves(&store), saved);
+        }
+
+        #[test]
+        fn a_tag_drop_keeps_a_target_ring_and_a_default_drop_of_an_untagged_room_stays_nothing() {
+            let (mut app, _store, mut rx) = arranged();
+            tag_rooms(&mut app, &[("t1", true, false)]);
+            let _ = drain(&mut rx);
+            start(&mut app, &room("chan2"));
+            send(
+                &mut app,
+                S::ListOver(head(SectionKey::Favourites), Zone::Into),
+            );
+            assert_eq!(
+                app.list_drag.target().map(|t| t.item.clone()),
+                Some(head(SectionKey::Favourites)),
+                "the ring shows"
+            );
+            send(&mut app, S::PointerReleased);
+            // An untagged room on its own default section: nothing.
+            start(&mut app, &room("chan2"));
+            send(
+                &mut app,
+                S::ListOver(head(SectionKey::Channels), Zone::Into),
+            );
+            assert!(app.list_drag.target().is_none() && app.list_drag.refused().is_none());
+            send(&mut app, S::PointerReleased);
+            assert_eq!(tag_sent(&mut rx).len(), 1, "only the Favourites drop sent");
         }
 
         #[test]

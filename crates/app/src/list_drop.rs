@@ -15,7 +15,14 @@
 //! - a room onto the header of a sub-space, Channels or Direct messages: it
 //!   goes back to its default section, and only when that is its own default
 //!   section. Anywhere else the target is refused (drawn as not allowed): the
-//!   app has no way to put a room in a section that is not its default one;
+//!   app has no way to put a room in a section that is not its default one.
+//!   A room drawn in Favourites or Low priority loses its tag there (the
+//!   card's "Remove from favourites" or "Remove low priority");
+//! - a room onto the Favourites or Low priority header: it gets that tag
+//!   (the card's "Add to favourites" or "Mark as low priority"; the verdict
+//!   is a [`Verdict::Tag`], not layout operations). A room that already has
+//!   the tag does nothing, and a starred room is refused on Low priority
+//!   (Starred wins: the way is Unstar first);
 //! - a room between two rows of a section of the user's own: it goes there,
 //!   from wherever it was;
 //! - a section header onto another header: the section goes before or after
@@ -25,11 +32,12 @@
 
 use std::fmt;
 
-use twicecat_core::api::{RoomId, SectionKey, SidebarLayout};
+use twicecat_core::api::{RoomId, RoomTagView, SectionKey, SidebarLayout};
 
 use crate::drag::{Target, Zone};
 use crate::sections::{Line, drawn_sections, spot_of};
 use crate::sidebar::{self, Dir, Op};
+use crate::sidebar_menu::{Entry, tag_change};
 
 #[cfg(test)]
 thread_local! {
@@ -63,8 +71,8 @@ impl fmt::Debug for ListKey {
     }
 }
 
-/// What dropping would do.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What dropping would do. `Debug` hides the room ID of a tag change.
+#[derive(Clone, PartialEq, Eq)]
 pub enum Verdict {
     /// Nothing: onto itself, to where it is, or onto something that takes no
     /// drop. The place is no target.
@@ -73,6 +81,25 @@ pub enum Verdict {
     Refused,
     /// The operations to do, in order, as one change.
     Ops(Vec<Op>),
+    /// Set (`Some`) or remove (`None`) the room's Matrix tag. It is the tag
+    /// of the matching menu entry (`tag_change`), kept on the homeserver:
+    /// no sidebar file is saved.
+    Tag(RoomId, Option<RoomTagView>),
+}
+
+impl fmt::Debug for Verdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Nothing => f.write_str("Nothing"),
+            Self::Refused => f.write_str("Refused"),
+            Self::Ops(ops) => f.debug_tuple("Ops").field(ops).finish(),
+            Self::Tag(_, tag) => f
+                .debug_tuple("Tag")
+                .field(&"<redacted>")
+                .field(tag)
+                .finish(),
+        }
+    }
 }
 
 /// The zone of height `y` inside a slot `height` tall, by halves: rows and
@@ -126,6 +153,11 @@ fn room_onto_header(
     let (Some(now), true) = (spot_of(lines, room), drawn_sections(lines).contains(key)) else {
         return Verdict::Nothing;
     };
+    let tags = lines.iter().find_map(|line| match line {
+        Line::Room(r) if r.id == *room => Some((r.is_favourite, r.is_low_priority)),
+        _ => None,
+    });
+    let (is_favourite, is_low_priority) = tags.unwrap_or_default();
     let (space, room) = (space.clone(), room.clone());
     let op = match key {
         SectionKey::Starred if now.section == SectionKey::Starred => return Verdict::Nothing,
@@ -136,11 +168,15 @@ fn room_onto_header(
             room,
             section: *section,
         },
-        // The tag sections are drawn since sbr.9, but a drop onto them is
-        // sbr.10 (plan L6: SetRoomTag, like the card's entries). Until then
-        // the drop is refused, and a room already in one dropped on its
-        // default section does nothing.
-        SectionKey::Favourites | SectionKey::LowPriority => return Verdict::Refused,
+        // The tag sections take the tag, as the card's entries do (plan L6).
+        SectionKey::Favourites if is_favourite => return Verdict::Nothing,
+        SectionKey::Favourites => return tag_drop(room, Entry::AddFavourite),
+        // Starred wins over Low priority: the way there is Unstar first.
+        SectionKey::LowPriority if now.section == SectionKey::Starred => {
+            return Verdict::Refused;
+        }
+        SectionKey::LowPriority if is_low_priority => return Verdict::Nothing,
+        SectionKey::LowPriority => return tag_drop(room, Entry::MarkLowPriority),
         // A built-in section takes a room only back: it is the room's default.
         SectionKey::Channels | SectionKey::Direct | SectionKey::SubSpace(_) => {
             let home = spot_of(defaults, &room).map(|spot| spot.section);
@@ -150,17 +186,26 @@ fn room_onto_header(
             match now.section {
                 SectionKey::Starred => Op::Unstar { space, room },
                 SectionKey::Custom(_) => Op::RoomToDefault { space, room },
-                SectionKey::Channels
-                | SectionKey::Direct
-                | SectionKey::SubSpace(_)
-                | SectionKey::Favourites
-                | SectionKey::LowPriority => {
+                // Back to its default section removes the tag that put it
+                // in Favourites or Low priority: the card's "Remove ..." entry.
+                SectionKey::Favourites => return tag_drop(room, Entry::RemoveFavourite),
+                SectionKey::LowPriority => return tag_drop(room, Entry::RemoveLowPriority),
+                SectionKey::Channels | SectionKey::Direct | SectionKey::SubSpace(_) => {
                     return Verdict::Nothing;
                 }
             }
         }
     };
     Verdict::Ops(vec![op])
+}
+
+/// The tag change of the menu entry `entry`, as a verdict: the same mapping
+/// the cards use (`tag_change`), so a drop and its entry cannot differ.
+fn tag_drop(room: RoomId, entry: Entry) -> Verdict {
+    match tag_change(entry) {
+        Some(tag) => Verdict::Tag(room, tag),
+        None => Verdict::Refused,
+    }
 }
 
 /// A room onto a row of a section of the user's own: before or after it. The
@@ -305,12 +350,12 @@ fn verdict_of(ops: Vec<Op>) -> Verdict {
 #[cfg(test)]
 mod tests {
     use twicecat_core::api::{
-        CustomSection, RoomSummary, SidebarLabel, SpaceLayout, SpaceView, UserId,
+        CustomSection, RoomSummary, RoomTagView, SidebarLabel, SpaceLayout, SpaceView, UserId,
     };
 
     use super::*;
-    use crate::sections::{Spot, build};
-    use crate::sidebar_menu::{Entry, SectionPick, room_op, section_op};
+    use crate::sections::{Spot, build, build_defaults};
+    use crate::sidebar_menu::{Entry, SectionPick, room_op, section_op, tag_change};
 
     fn rid(n: &str) -> RoomId {
         RoomId::from(format!("!{n}:x"))
@@ -380,10 +425,20 @@ mod tests {
 
     /// Plans `item` on `target` against `rec`.
     fn planned(rec: &SpaceLayout, item: ListKey, target: ListKey, zone: Zone) -> Verdict {
+        planned_in(rooms(), rec, item, target, zone)
+    }
+
+    /// Like [`planned`], with the rooms the list holds given.
+    fn planned_in(
+        rooms: Vec<RoomSummary>,
+        rec: &SpaceLayout,
+        item: ListKey,
+        target: ListKey,
+        zone: Zone,
+    ) -> Verdict {
         let spaces = spaces();
-        let rooms = rooms();
         let lines = build(&spaces[0], &spaces, &rooms, Some(rec));
-        let defaults = build(&spaces[0], &spaces, &rooms, None);
+        let defaults = build_defaults(&spaces[0], &spaces, &rooms);
         plan(
             &rid("sp"),
             &layout_of(rec),
@@ -633,6 +688,153 @@ mod tests {
             planned(&plain, r("c1"), h(SectionKey::Starred), Zone::Into),
             Verdict::Nothing,
             "Starred is hidden while empty"
+        );
+    }
+
+    /// The rooms of the tests with these tags (name, favourite, low priority).
+    fn tagged_rooms(tags: &[(&str, bool, bool)]) -> Vec<RoomSummary> {
+        let mut all = rooms();
+        for (name, favourite, low) in tags {
+            let r = all.iter_mut().find(|r| r.name == *name).expect("a room");
+            r.is_favourite = *favourite;
+            r.is_low_priority = *low;
+        }
+        all
+    }
+
+    /// Every tag drop gives the command of the matching menu entry of Task 9
+    /// (`tag_change`), whatever the room and the section it is drawn in.
+    #[test]
+    fn every_tag_drop_gives_the_command_of_the_matching_menu_entry() {
+        use SectionKey::{Channels, Favourites, LowPriority, SubSpace};
+        let rec = record();
+        // c1 (saved in "Ops") is a favourite and t1 is low priority; c2 (in
+        // "Ops"), c3 (starred) and c4 carry nothing.
+        let tags = [("c1", true, false), ("t1", false, true)];
+        let tech = SubSpace(rid("tech"));
+        let cases = [
+            ("c4", Favourites, Entry::AddFavourite),
+            ("c4", LowPriority, Entry::MarkLowPriority),
+            ("c2", Favourites, Entry::AddFavourite),
+            ("c2", LowPriority, Entry::MarkLowPriority),
+            ("c3", Favourites, Entry::AddFavourite),
+            ("c1", LowPriority, Entry::MarkLowPriority),
+            ("t1", Favourites, Entry::AddFavourite),
+            ("c1", Channels, Entry::RemoveFavourite),
+            ("t1", tech, Entry::RemoveLowPriority),
+        ];
+        let expected = [
+            Some(RoomTagView::Favourite),
+            Some(RoomTagView::LowPriority),
+            Some(RoomTagView::Favourite),
+            Some(RoomTagView::LowPriority),
+            Some(RoomTagView::Favourite),
+            Some(RoomTagView::LowPriority),
+            Some(RoomTagView::Favourite),
+            None,
+            None,
+        ];
+        for ((room, key, entry), tag) in cases.into_iter().zip(expected) {
+            let verdict = planned_in(
+                tagged_rooms(&tags),
+                &rec,
+                r(room),
+                h(key.clone()),
+                Zone::Into,
+            );
+            let menu = tag_change(entry).expect("a tag entry");
+            assert_eq!(
+                menu, tag,
+                "{entry:?} is the entry meant for {room} on {key:?}"
+            );
+            assert_eq!(
+                verdict,
+                Verdict::Tag(rid(room), menu),
+                "{room} onto {key:?}"
+            );
+        }
+        // A tagged room is still refused on a section that is not its default.
+        assert_eq!(
+            planned_in(
+                tagged_rooms(&tags),
+                &rec,
+                r("c1"),
+                h(SubSpace(rid("tech"))),
+                Zone::Into
+            ),
+            Verdict::Refused
+        );
+    }
+
+    #[test]
+    fn a_room_already_in_the_tag_section_dropped_on_it_does_nothing() {
+        use SectionKey::{Favourites, LowPriority};
+        let rec = record();
+        let tags = [("c1", true, false), ("t1", false, true)];
+        for (room, key) in [("c1", Favourites), ("t1", LowPriority)] {
+            assert_eq!(
+                planned_in(
+                    tagged_rooms(&tags),
+                    &rec,
+                    r(room),
+                    h(key.clone()),
+                    Zone::Into
+                ),
+                Verdict::Nothing,
+                "{room} onto {key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_starred_room_is_refused_on_low_priority() {
+        let rec = record();
+        // c3 is starred: Starred wins, so the way is Unstar first.
+        assert_eq!(
+            planned_in(
+                tagged_rooms(&[("t1", false, true)]),
+                &rec,
+                r("c3"),
+                h(SectionKey::LowPriority),
+                Zone::Into
+            ),
+            Verdict::Refused
+        );
+    }
+
+    #[test]
+    fn a_tagged_room_dropped_on_its_default_section_loses_its_tag_and_an_untagged_one_stays() {
+        use SectionKey::{Channels, Direct, SubSpace};
+        let rec = record();
+        let tags = [("t1", false, true)];
+        assert_eq!(
+            planned_in(
+                tagged_rooms(&tags),
+                &rec,
+                r("t1"),
+                h(SubSpace(rid("tech"))),
+                Zone::Into
+            ),
+            Verdict::Tag(rid("t1"), None)
+        );
+        // An untagged DM already there: nothing.
+        assert_eq!(
+            planned_in(tagged_rooms(&tags), &rec, r("d1"), h(Direct), Zone::Into),
+            Verdict::Nothing
+        );
+        // A starred room dropped on its default section is Unstar, as before.
+        assert_eq!(
+            ops(planned_in(
+                tagged_rooms(&[("c3", true, false)]),
+                &rec,
+                r("c3"),
+                h(Channels),
+                Zone::Into
+            )),
+            [Op::Unstar {
+                space: rid("sp"),
+                room: rid("c3")
+            }]
         );
     }
 

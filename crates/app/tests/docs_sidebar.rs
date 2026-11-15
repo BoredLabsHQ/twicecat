@@ -315,3 +315,30 @@ fn the_docs_do_not_promise_what_the_sidebar_does_not_do() {
     assert!(flat.contains("no keyboard shortcut was added"));
     assert!(flat.contains("does not scroll the list"));
 }
+
+#[test]
+fn the_docs_say_a_room_can_be_dragged_onto_favourites_or_low_priority_like_the_menu_entries() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "dropping a room onto the favourites or low priority header gets that tag",
+        "dropping a room onto its own section",
+        "removes the tag it carries",
+        "a room already in favourites dropped on favourites does nothing",
+        "a starred room is not allowed on low priority",
+        "a favourite stays under favourites",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    assert!(
+        !sidebar.contains("dragging a room onto these two headers is not built yet"),
+        "sidebar.md still says the drag is not built"
+    );
+    let access = flat(&accessibility_sidebar_section());
+    assert!(
+        access.contains("dragging a room onto favourites or low priority is the same entry"),
+        "accessibility.md does not tie the tag drops to the entries"
+    );
+}
