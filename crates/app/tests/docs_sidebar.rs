@@ -536,3 +536,25 @@ fn the_docs_describe_the_ghost_tile_as_a_visual_aid() {
         );
     }
 }
+
+#[test]
+fn the_docs_say_the_empty_space_of_a_space_list_offers_new_section_and_is_pointer_only() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "empty space** under the last line of a space's list",
+        "a small card with **new section** alone",
+        "not in home, under a chip other than all, in a search result or in the narrow rail",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    assert!(
+        access.contains(
+            "a right-click on the empty space of a space's list is a pointer-only convenience"
+        ),
+        "accessibility.md does not say it"
+    );
+}

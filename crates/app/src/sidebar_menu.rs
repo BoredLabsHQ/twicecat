@@ -84,6 +84,8 @@ pub enum Target {
     /// A room row of the flat list (Home, a chip other than All, a search
     /// result): no space, no section, so only the tag buttons.
     FlatRoom(RoomId),
+    /// The empty space of a space's sectioned list: only "New section".
+    List(RoomId),
 }
 
 impl fmt::Debug for Target {
@@ -94,6 +96,7 @@ impl fmt::Debug for Target {
             Self::Section { key, .. } => f.debug_struct("Section").field("key", key).finish(),
             Self::Room { .. } => f.write_str("Room(<redacted>)"),
             Self::FlatRoom(_) => f.write_str("FlatRoom(<redacted>)"),
+            Self::List(_) => f.write_str("List(<redacted>)"),
         }
     }
 }
@@ -352,6 +355,8 @@ pub enum SidebarMenuMessage {
     OpenRoom(RoomId),
     /// A right-click on a room row of the flat list.
     OpenFlatRoom(RoomId),
+    /// A right-click on the empty space of a space's sectioned list.
+    OpenList,
     /// The **Sort** button of the room list.
     OpenSort,
     /// A choice of the Sort card's list: Activity or A to Z.
@@ -381,6 +386,7 @@ impl fmt::Debug for SidebarMenuMessage {
             Self::OpenSection(key) => f.debug_tuple("OpenSection").field(key).finish(),
             Self::OpenRoom(_) => f.write_str("OpenRoom(<redacted>)"),
             Self::OpenFlatRoom(_) => f.write_str("OpenFlatRoom(<redacted>)"),
+            Self::OpenList => f.write_str("OpenList"),
             Self::OpenSort => f.write_str("OpenSort"),
             Self::SetSort(sort) => f.debug_tuple("SetSort").field(sort).finish(),
             Self::UnreadFirst(on) => f.debug_tuple("UnreadFirst").field(on).finish(),
@@ -413,6 +419,8 @@ pub fn entries(target: &Target, in_folder: bool) -> Vec<Entry> {
         // The cards of the sectioned list have their own (`section_entries`
         // and `room_entries`), and a flat row's holds only `tag_entries`.
         Target::Section { .. } | Target::Room { .. } | Target::FlatRoom(_) => Vec::new(),
+        // The empty space of the list: the entry the headers' card has.
+        Target::List(_) => vec![Entry::NewSection],
     }
 }
 
@@ -750,6 +758,7 @@ impl App {
             SidebarMenuMessage::OpenSection(key) => self.open_section_menu(key),
             SidebarMenuMessage::OpenRoom(room) => self.open_room_menu(room),
             SidebarMenuMessage::OpenFlatRoom(room) => self.open_flat_room_menu(room),
+            SidebarMenuMessage::OpenList => self.open_list_menu(),
             SidebarMenuMessage::OpenSort => self.open_sort_card(),
             SidebarMenuMessage::SetSort(by) => {
                 let sorting = Sorting {
@@ -898,6 +907,24 @@ impl App {
         Task::none()
     }
 
+    /// A right-click on the empty space of the sectioned list: the card with
+    /// "New section" alone (the same entry as the cards of a header and a
+    /// room), for the selected space.
+    fn open_list_menu(&mut self) -> Task<Message> {
+        if !self.section_menu_can_open() || self.sidebar_menu.is_some() {
+            return Task::none();
+        }
+        let Some(space) = self.query.space.clone() else {
+            return Task::none();
+        };
+        self.list_drag.cancel();
+        self.sidebar_menu = Some(SidebarMenu::Card {
+            target: Target::List(space),
+            error: None,
+        });
+        Task::none()
+    }
+
     /// Whether a row of the flat list for `room` is drawn: the list is flat
     /// (not sectioned), it is the expanded list (the narrow rail has no
     /// card), and the room is in it.
@@ -989,7 +1016,7 @@ impl App {
                 drop(lines);
                 Some(self.run_section_op(op))
             }
-            Target::Space(_) | Target::Folder(_) | Target::FlatRoom(_) => None,
+            Target::Space(_) | Target::Folder(_) | Target::FlatRoom(_) | Target::List(_) => None,
         }
     }
 
@@ -1041,6 +1068,23 @@ impl App {
         let target = target.clone();
         if let Target::FlatRoom(room) = &target {
             return self.flat_room_entry(room, entry);
+        }
+        if let Target::List(space) = &target {
+            // The entry of the headers' card, as it is: the name dialog.
+            if entry != Entry::NewSection {
+                return Task::none();
+            }
+            if self.lines_of_space(space).is_none() {
+                self.sidebar_menu = None;
+                return Task::none();
+            }
+            return self.open_name_dialog(
+                Purpose::NewSection {
+                    space: space.clone(),
+                    room: None,
+                },
+                String::new(),
+            );
         }
         if matches!(target, Target::Section { .. } | Target::Room { .. }) {
             return match self.section_entry(&target, entry) {
@@ -1240,6 +1284,7 @@ impl App {
                 .lines_of_space(space)
                 .is_some_and(|lines| spot_of(&lines, room).is_some()),
             Target::FlatRoom(room) => !self.flat_room_drawn(room),
+            Target::List(space) => self.lines_of_space(space).is_none(),
         }
     }
 }
