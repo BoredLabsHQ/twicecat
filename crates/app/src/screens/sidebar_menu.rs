@@ -22,7 +22,7 @@ use crate::sections::{Line, drawn_sections, spot_of};
 use crate::sidebar_menu::{
     Entry, FolderChoice, NAME_ID, NameDialog, Purpose, SectionChoice, SidebarMenu,
     SidebarMenuMessage, Target, entries, folder_choices, place_of, room_entries, section_choices,
-    section_entries, tree_entry,
+    section_entries, tag_entries, tree_entry,
 };
 use crate::spaces::RailItem;
 use crate::state::{App, Message};
@@ -159,7 +159,8 @@ fn section_card<'a>(
 }
 
 /// The card of a room row: Star or Unstar, the moves inside a section of the
-/// user's own, Back to its default section, and the "Move to section" list.
+/// user's own, Back to its default section, the favourite and low priority
+/// tags, and the "Move to section" list.
 fn room_card<'a>(
     app: &'a App,
     space: &RoomId,
@@ -169,11 +170,8 @@ fn room_card<'a>(
 ) -> Element<'a, Message> {
     let lines = app.section_lines().unwrap_or_default();
     let spot = spot_of(&lines, room);
-    let title = app
-        .rooms
-        .iter()
-        .find(|r| r.id == *room)
-        .map_or_else(|| "Room".to_owned(), |r| row_name(&r.name));
+    let summary = app.rooms.iter().find(|r| r.id == *room);
+    let title = summary.map_or_else(|| "Room".to_owned(), |r| row_name(&r.name));
     let mut body: Column<'a, Message> = Column::new().spacing(tokens::S);
     let mut current = None;
     if let Some(spot) = &spot {
@@ -187,6 +185,12 @@ fn room_card<'a>(
                 _ => true,
             };
             body = body.push(entry_button(entry, enabled));
+        }
+        // The tags are kept on the homeserver; the words follow the flags.
+        let (favourite, low) =
+            summary.map_or((false, false), |r| (r.is_favourite, r.is_low_priority));
+        for entry in tag_entries(favourite, low) {
+            body = body.push(entry_button(entry, true));
         }
     }
     let custom = app

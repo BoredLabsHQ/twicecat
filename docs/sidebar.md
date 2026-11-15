@@ -60,21 +60,35 @@ Ctrl+Shift+Down, walk the rooms in the order shown. No keyboard shortcut was
 added for the sort.
 
 **The room list of a space**, drawn as sections you can collapse and expand:
-Starred, Channels (the space's own rooms), one section per sub-space, and
-Direct messages. A collapsed header shows the unread or mention count of its
-rooms.
+Starred, Favourites, Channels (the space's own rooms), one section per
+sub-space, the sections of your own, Direct messages and Low priority. A
+collapsed header shows the unread or mention count of its rooms.
 
 - **Star** a room to put it under Starred. Unstar returns it to its default
   section.
 - Make **sections of your own**: create, rename and delete them, and move rooms
   into them. Deleting a section sends its rooms back to their default sections.
+- **Favourites** and **Low priority** are Matrix room tags (`m.favourite` and
+  `m.lowpriority`). Unlike the rest of the arrangement they are **kept on the
+  homeserver**, so other Matrix apps such as Element show them too, and a room
+  you tagged there appears here. Use **Add to favourites**, **Remove from
+  favourites**, **Mark as low priority** and **Remove low priority** in a
+  room's menu; the words follow the room's tags, and a room has at most one of
+  the two. Each section shows only while it has rooms, and can be collapsed and
+  moved like the others. A room goes in the first section that applies:
+  Starred, Favourites, one of your own, Low priority, its sub-space, Direct
+  messages, Channels. Where the two sections stand and whether they are
+  collapsed is still kept on this device only. If a tag cannot be changed, a
+  line above the composer says so. Dragging a room onto these two headers is
+  not built yet: use the menu.
 - Reorder sections, and reorder rooms inside a section of your own.
 - A room can go into Starred or a section of your own, and back to its own
   default section. It cannot be moved from one built-in section to another.
 
 The rooms and spaces themselves are not changed: this is only how your copy
 of Twicecat shows them. Nobody else sees your folders and sections, and the
-server is not told about them.
+server is not told about them. The one exception is the Favourites and Low
+priority tags above.
 
 **Voice channels** list the people in the call under the room (up to eight,
 then "and N more"). The speaking ring and the muted icon are shown only for the
@@ -92,7 +106,8 @@ The menu is a card in the middle of the window with the entries Move up, Move
 down, Move to folder (which also offers a new folder), Remove from folder,
 Rename, Ungroup, Show sub-spaces and Hide sub-spaces (on a space that has
 sub-spaces), Move to section (which also offers New section), Back to its
-default section, Star, Unstar, Collapse, Expand and Delete section.
+default section, Star, Unstar, Add to favourites, Remove from favourites, Mark
+as low priority, Remove low priority, Collapse, Expand and Delete section.
 
 You can also **drag**, in two places:
 
@@ -173,6 +188,12 @@ pass one is not made.
   than 256 KiB is not read.
 
 ## "Made by a newer Twicecat" and "belongs to another account"
+
+An older Twicecat does not know the section keys for Favourites and Low
+priority, which a newer one writes: it drops the favourites and lowpriority
+keys it does not know when it reads the file, and loses only where you had
+placed or collapsed those two sections. This is not "made by a newer Twicecat"
+(below), because nothing else is lost.
 
 Two kinds of file are **left exactly as they are**. While one is in the way,
 the sidebar shows the default arrangement, it cannot be changed, and

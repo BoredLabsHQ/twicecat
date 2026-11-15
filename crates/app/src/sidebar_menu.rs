@@ -35,7 +35,8 @@ use std::fmt;
 
 use iced::Task;
 use twicecat_core::api::{
-    CustomSection, RailEntry, RoomId, RoomSortChoice, SectionKey, SidebarLabel, SidebarLabelError,
+    Command, CustomSection, RailEntry, RoomId, RoomSortChoice, RoomTagView, SectionKey,
+    SidebarLabel, SidebarLabelError,
 };
 
 use crate::keys::Shortcut;
@@ -214,6 +215,14 @@ pub enum Entry {
     Star,
     /// Take a room out of Starred.
     Unstar,
+    /// Tag a room `m.favourite` on the homeserver (plan L5).
+    AddFavourite,
+    /// Remove the room's tag.
+    RemoveFavourite,
+    /// Tag a room `m.lowpriority` on the homeserver.
+    MarkLowPriority,
+    /// Remove the room's tag.
+    RemoveLowPriority,
     /// Put a room back in its default section.
     BackToDefault,
     /// Collapse a section.
@@ -240,6 +249,10 @@ impl Entry {
             Self::Ungroup => "Ungroup",
             Self::Star => "Star",
             Self::Unstar => "Unstar",
+            Self::AddFavourite => "Add to favourites",
+            Self::RemoveFavourite => "Remove from favourites",
+            Self::MarkLowPriority => "Mark as low priority",
+            Self::RemoveLowPriority => "Remove low priority",
             Self::BackToDefault => "Back to its default section",
             Self::Collapse => "Collapse",
             Self::Expand => "Expand",
@@ -470,6 +483,37 @@ pub fn room_entries(section: &SectionKey) -> Vec<Entry> {
             Entry::BackToDefault,
         ],
         _ => vec![Entry::Star],
+    }
+}
+
+/// The two tag buttons of a room's card, in this order: the favourite one and
+/// the low priority one. Each says what it does to the room's current flag
+/// (plan L5).
+pub fn tag_entries(is_favourite: bool, is_low_priority: bool) -> [Entry; 2] {
+    [
+        if is_favourite {
+            Entry::RemoveFavourite
+        } else {
+            Entry::AddFavourite
+        },
+        if is_low_priority {
+            Entry::RemoveLowPriority
+        } else {
+            Entry::MarkLowPriority
+        },
+    ]
+}
+
+/// The tag change a button stands for: `Some(change)` for a tag button, where
+/// `change` is the tag to set or `None` to remove the room's tag; `None` for
+/// every other button. It is the command of the core, not an operation on the
+/// layout: the tag lives on the homeserver and no sidebar file is saved.
+pub fn tag_change(entry: Entry) -> Option<Option<RoomTagView>> {
+    match entry {
+        Entry::AddFavourite => Some(Some(RoomTagView::Favourite)),
+        Entry::MarkLowPriority => Some(Some(RoomTagView::LowPriority)),
+        Entry::RemoveFavourite | Entry::RemoveLowPriority => Some(None),
+        _ => None,
     }
 }
 
@@ -882,6 +926,16 @@ impl App {
             }
             Target::Room { space, room } => {
                 let spot = spot_of(&lines, room)?;
+                if let Some(tag) = tag_change(entry) {
+                    // Kept on the homeserver: one command, and the layout
+                    // file is not touched.
+                    drop(lines);
+                    self.sidebar_menu = None;
+                    return Some(self.send(Command::SetRoomTag {
+                        room_id: room.clone(),
+                        tag,
+                    }));
+                }
                 let op = room_op(space, room, entry, &spot)?;
                 drop(lines);
                 Some(self.run_section_op(op))

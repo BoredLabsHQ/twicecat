@@ -2007,6 +2007,13 @@ impl App {
                     task = self.show_notice(action, &error);
                 }
             }
+            // A tag is set from the sidebar, where the room need not be the
+            // open one: the notice is shown whichever room it was.
+            CoreEvent::ActionFailed {
+                action: ActionKind::RoomTag,
+                error,
+                ..
+            } => task = self.show_notice(ActionKind::RoomTag, &error),
             CoreEvent::ActionFailed {
                 room_id,
                 action: ActionKind::Thread,
@@ -6478,6 +6485,23 @@ mod tests {
         let _ = app.update(Message::PickerPicked(key("\u{1F604}")));
         assert!(drain(&mut rx).is_empty());
         assert!(app.actions.picker.is_none());
+    }
+
+    #[test]
+    fn a_failed_room_tag_shows_the_existing_notice_without_naming_the_room() {
+        let (mut app, _rx) = actions_app();
+        // The room of the tag need not be the open one: the user acted on it
+        // from the sidebar.
+        let _ = app.update(core(CoreEvent::ActionFailed {
+            room_id: RoomId::from("!secretroom:x"),
+            action: ActionKind::RoomTag,
+            error: CoreError::Network("offline".into()),
+        }));
+        let notice = app.actions.notice.clone().expect("a notice");
+        assert!(notice.text.contains("offline"), "{}", notice.text);
+        assert!(!notice.text.contains("secretroom"), "{}", notice.text);
+        let _ = app.update(Message::NoticeExpired(notice.seq));
+        assert!(app.actions.notice.is_none());
     }
 
     #[test]

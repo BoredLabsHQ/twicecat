@@ -921,6 +921,33 @@ fn space_sections_collapsed() -> App {
     space_sections(true)
 }
 
+/// The sections space with the Matrix tags (sidebar rework, Task 9): Starred
+/// (Roadmap), Favourites ("Random", and "Async questions" from a sub-space),
+/// Channels, the sub-spaces, Direct messages, and Low priority (the
+/// announcements and "Cooking", which has unread rooms) collapsed, so its
+/// header carries the rolled-up count.
+fn space_sections_tags() -> App {
+    use twicecat_app::spaces::SpacesMessage;
+    use twicecat_core::api::SectionKey;
+
+    let mut app = space_sections(false);
+    let mut rows = app.rooms.clone();
+    for row in &mut rows {
+        let id = row.id.clone();
+        row.is_favourite = id == room("sec-r-random") || id == room("sec-r-async");
+        row.is_low_priority = id == room("sec-r-news") || id == room("sec-r-cooking");
+    }
+    feed(
+        &mut app,
+        CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: rows }]),
+    );
+    press(
+        &mut app,
+        Message::Spaces(SpacesMessage::ToggleSection(SectionKey::LowPriority)),
+    );
+    app
+}
+
 /// Board 6: the Voice section with "vocal" (three people: one speaking, one
 /// muted, this device among them in the call) and "coworking" (one person
 /// whose name is unknown, so the localpart shows, and no marks: this device
@@ -4064,6 +4091,23 @@ pub fn scenarios() -> Vec<Scenario> {
                     ) && lines.iter().any(
                         |l| matches!(l, twicecat_app::sections::Line::Participant(p) if p.muted),
                     )
+                })
+        }),
+        s("space-sections-tags", true, space_sections_tags, |a| {
+            use twicecat_app::sections::Line;
+            use twicecat_core::api::SectionKey;
+            in_main(a)
+                && a.sections_shown()
+                && a.section_lines().is_some_and(|lines| {
+                    let header = |key: SectionKey| {
+                        lines.iter().find_map(|l| match l {
+                            Line::Header(h) if h.key == key => Some(h.collapsed),
+                            _ => None,
+                        })
+                    };
+                    header(SectionKey::Favourites) == Some(false)
+                        && header(SectionKey::LowPriority) == Some(true)
+                        && header(SectionKey::Starred) == Some(false)
                 })
         }),
         s("space-sections-custom", true, space_sections_custom, |a| {

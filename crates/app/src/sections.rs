@@ -170,8 +170,11 @@ struct Bucket<'a> {
 /// `spaces` are all the spaces the core reports: the level 1 ones whose ID is
 /// among `space.rooms` are its sub-spaces. `rooms` are the rooms of the list
 /// in its own (recent activity) order. Each room is placed once, in the first
-/// of: Starred, a custom section, its sub-space's section, Direct messages
-/// (when it is a DM), Channels. Spaces are never rows, and the selected
+/// of: Starred, Favourites (the room's `m.favourite` tag), a custom section,
+/// Low priority (`m.lowpriority`), its sub-space's section, Direct messages
+/// (when it is a DM), Channels. The default order of the sections is Starred,
+/// Favourites, Channels, the sub-spaces, the custom sections, Direct messages
+/// and Low priority (plan L4). Spaces are never rows, and the selected
 /// space's own ID, which a level 1 space lists among its rooms, is left out.
 /// Every section but a custom one is hidden while empty; an empty custom one
 /// is followed by [`Line::EmptyHint`]. A collapsed section keeps its header,
@@ -270,6 +273,7 @@ pub fn build_sorted<'a>(
         }
     };
     add(SectionKey::Starred, "Starred", true);
+    add(SectionKey::Favourites, "Favourites", true);
     add(SectionKey::Channels, "Channels", true);
     for sub in &subs {
         add(SectionKey::SubSpace(sub.id.clone()), &sub.name, true);
@@ -278,6 +282,7 @@ pub fn build_sorted<'a>(
         add(SectionKey::Custom(custom.id), custom.name.as_str(), false);
     }
     add(SectionKey::Direct, "Direct messages", true);
+    add(SectionKey::LowPriority, "Low priority", true);
 
     let mut placed: HashSet<&RoomId> = HashSet::new();
     for (n, room) in rooms.iter().enumerate() {
@@ -286,8 +291,12 @@ pub fn build_sorted<'a>(
         }
         let (key, at) = if let Some(&at) = starred_at.get(&room.id) {
             (SectionKey::Starred, at)
+        } else if room.is_favourite {
+            (SectionKey::Favourites, n)
         } else if let Some(&(id, at)) = custom_at.get(&room.id) {
             (SectionKey::Custom(id), at)
+        } else if room.is_low_priority {
+            (SectionKey::LowPriority, n)
         } else if let Some(&sub) = sub_of.get(&room.id) {
             (SectionKey::SubSpace(sub.clone()), n)
         } else if room.is_dm {
@@ -749,6 +758,227 @@ mod tests {
 
     fn label(s: &str) -> SidebarLabel {
         SidebarLabel::try_from(s).expect("a valid name")
+    }
+
+    mod tags {
+        use super::*;
+        use twicecat_core::api::RoomSortChoice;
+
+        fn tagged(rs: &mut [RoomSummary], name: &str, favourite: bool, low: bool) {
+            let r = rs
+                .iter_mut()
+                .find(|r| r.name == name)
+                .expect("a room of the fixture");
+            r.is_favourite = favourite;
+            r.is_low_priority = low;
+        }
+
+        fn heads(out: &[String]) -> Vec<&str> {
+            out.iter()
+                .filter(|l| l.starts_with('#'))
+                .map(String::as_str)
+                .collect()
+        }
+
+        fn out_with(rs: &[RoomSummary], layout: Option<&SpaceLayout>) -> Vec<String> {
+            let sp = spaces();
+            lines_of(&build(&sp[0], &sp, rs, layout))
+        }
+
+        /// The names under the header `head`.
+        fn under<'a>(out: &'a [String], head: &str) -> Vec<&'a str> {
+            let at = out
+                .iter()
+                .position(|l| l == head)
+                .unwrap_or_else(|| panic!("no header {head}"));
+            out[at + 1..]
+                .iter()
+                .take_while(|l| !l.starts_with('#'))
+                .map(String::as_str)
+                .collect()
+        }
+
+        #[test]
+        fn both_sections_are_hidden_while_empty() {
+            let out = built(None);
+            assert!(
+                !out.iter()
+                    .any(|l| l == "# Favourites" || l == "# Low priority")
+            );
+            // Rooms that carry no tag leave them empty even when collapsed.
+            let mut layout = SpaceLayout::new(rid("sp"));
+            layout.collapsed = vec![SectionKey::Favourites, SectionKey::LowPriority];
+            assert_eq!(built(Some(&layout)), out);
+        }
+
+        #[test]
+        fn the_default_order_is_starred_favourites_channels_sub_spaces_custom_direct_low_priority()
+        {
+            let mut rs = rooms();
+            tagged(&mut rs, "chan2", true, false);
+            tagged(&mut rs, "starred1", false, true);
+            let mut layout = SpaceLayout::new(rid("sp"));
+            layout.starred = vec![rid("t1")];
+            layout.custom = vec![CustomSection {
+                id: 7,
+                name: label("Mine"),
+                rooms: vec![rid("t2")],
+            }];
+            let out = out_with(&rs, Some(&layout));
+            assert_eq!(
+                heads(&out),
+                [
+                    "# Starred",
+                    "# Favourites",
+                    "# Channels",
+                    "# tech",
+                    "# voice",
+                    "# Mine",
+                    "# Direct messages",
+                    "# Low priority",
+                ]
+            );
+        }
+
+        #[test]
+        fn a_room_goes_to_the_first_section_that_applies() {
+            // Both flags on one room cannot happen on a server, but the
+            // placement is defined: Favourites comes first.
+            let mut rs = rooms();
+            tagged(&mut rs, "t1", true, true); // also starred and custom
+            tagged(&mut rs, "t2", true, false); // also custom
+            tagged(&mut rs, "chan1", false, true); // also custom
+            tagged(&mut rs, "rustroom", false, true); // in a sub-space
+            tagged(&mut rs, "dm1", false, true); // a DM
+            tagged(&mut rs, "chan2", false, true); // a channel
+            tagged(&mut rs, "techdm", true, false); // a DM in a sub-space
+            let mut layout = SpaceLayout::new(rid("sp"));
+            layout.starred = vec![rid("t1")];
+            layout.custom = vec![CustomSection {
+                id: 7,
+                name: label("Mine"),
+                rooms: vec![rid("t1"), rid("t2"), rid("chan1")],
+            }];
+            let out = out_with(&rs, Some(&layout));
+            assert_eq!(under(&out, "# Starred"), ["t1"], "Starred beats Favourites");
+            assert_eq!(
+                under(&out, "# Favourites"),
+                ["t2", "techdm"],
+                "Favourites beats custom and its sub-space"
+            );
+            assert_eq!(
+                under(&out, "# Mine"),
+                ["chan1"],
+                "a custom section beats Low priority"
+            );
+            assert_eq!(
+                under(&out, "# Low priority"),
+                ["rustroom", "chan2", "dm1"],
+                "Low priority beats a sub-space, Direct messages and Channels"
+            );
+        }
+
+        #[test]
+        fn every_room_appears_once() {
+            let mut rs = rooms();
+            tagged(&mut rs, "t1", true, true);
+            tagged(&mut rs, "t2", true, false);
+            tagged(&mut rs, "chan1", false, true);
+            tagged(&mut rs, "dm1", false, true);
+            tagged(&mut rs, "v1", true, false);
+            let mut layout = SpaceLayout::new(rid("sp"));
+            layout.starred = vec![rid("t1"), rid("chan2")];
+            layout.custom = vec![CustomSection {
+                id: 7,
+                name: label("Mine"),
+                rooms: vec![rid("t2"), rid("chan1")],
+            }];
+            let out = out_with(&rs, Some(&layout));
+            let mut seen: Vec<&str> = out
+                .iter()
+                .map(String::as_str)
+                .filter(|l| !l.starts_with('#') && *l != "~hint" && !l.starts_with("  -"))
+                .collect();
+            seen.sort_unstable();
+            let mut expected: Vec<&str> = rs
+                .iter()
+                .filter(|r| !r.is_space)
+                .map(|r| r.name.as_str())
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(seen, expected, "each room of the list once, none lost");
+        }
+
+        #[test]
+        fn a_stored_order_holding_favourites_is_kept() {
+            let mut rs = rooms();
+            tagged(&mut rs, "chan2", true, false);
+            let mut layout = SpaceLayout::new(rid("sp"));
+            layout.order = vec![
+                SectionKey::Channels,
+                SectionKey::Direct,
+                SectionKey::Favourites,
+            ];
+            let out = out_with(&rs, Some(&layout));
+            let at = |h: &str| out.iter().position(|l| l == h).expect(h);
+            assert!(at("# Channels") < at("# Direct messages"));
+            assert!(
+                at("# Direct messages") < at("# Favourites"),
+                "Favourites is where the stored order puts it: {:?}",
+                heads(&out)
+            );
+            // Hidden while empty, the key stays in the stored order and
+            // comes back at its place when a room is tagged again.
+            tagged(&mut rs, "chan2", false, false);
+            let hidden = out_with(&rs, Some(&layout));
+            assert!(!hidden.iter().any(|l| l == "# Favourites"));
+            assert_eq!(layout.order.len(), 3);
+        }
+
+        #[test]
+        fn a_collapsed_new_section_keeps_its_header_with_the_badge() {
+            let mut rs = rooms();
+            tagged(&mut rs, "chan2", false, true);
+            rs.iter_mut()
+                .find(|r| r.name == "chan2")
+                .expect("chan2")
+                .unread_notifications = 3;
+            let mut layout = SpaceLayout::new(rid("sp"));
+            layout.collapsed = vec![SectionKey::LowPriority];
+            let sp = spaces();
+            let lines = build(&sp[0], &sp, &rs, Some(&layout));
+            let header = lines
+                .iter()
+                .find_map(|l| match l {
+                    Line::Header(h) if h.key == SectionKey::LowPriority => Some(h),
+                    _ => None,
+                })
+                .expect("the Low priority header");
+            assert!(header.collapsed);
+            assert_eq!(header.badge, Badge::Count(3));
+            assert!(!lines_of(&lines).iter().any(|l| l == "chan2"));
+        }
+
+        #[test]
+        fn the_new_sections_follow_the_chosen_sort() {
+            let mut rs = rooms();
+            tagged(&mut rs, "t2", true, false);
+            tagged(&mut rs, "chan1", true, false);
+            tagged(&mut rs, "t1", true, false);
+            let sp = spaces();
+            let by_name = Sorting {
+                by: RoomSortChoice::Name,
+                unread_first: false,
+            };
+            let out = lines_of(&build_sorted(&sp[0], &sp, &rs, None, None, by_name));
+            assert_eq!(under(&out, "# Favourites"), ["chan1", "t1", "t2"]);
+            let out = lines_of(&build(&sp[0], &sp, &rs, None));
+            assert_eq!(
+                under(&out, "# Favourites"),
+                ["t1", "chan1", "t2"],
+                "the list's own order by default"
+            );
+        }
     }
 
     mod sorted {
@@ -2383,6 +2613,182 @@ mod tests {
             send(&mut app, M::OpenSection(SectionKey::Channels));
             entry(&mut app, Entry::Expand);
             assert!(!record(&app).collapsed.contains(&SectionKey::Channels));
+        }
+
+        /// Puts these tags on the rooms of the list (name, favourite, low
+        /// priority) and feeds the list again.
+        fn tag_rooms(app: &mut App, tags: &[(&str, bool, bool)]) {
+            let mut rs = rooms();
+            for (name, favourite, low) in tags {
+                let r = rs
+                    .iter_mut()
+                    .find(|r| r.name == *name)
+                    .expect("a room of the fixture");
+                r.is_favourite = *favourite;
+                r.is_low_priority = *low;
+            }
+            feed(
+                app,
+                CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: rs }]),
+            );
+        }
+
+        fn tag_commands(rx: &mut mpsc::Receiver<Command>) -> Vec<Command> {
+            drain(rx)
+                .into_iter()
+                .filter(|c| matches!(c, Command::SetRoomTag { .. }))
+                .collect()
+        }
+
+        #[test]
+        fn the_favourite_and_low_priority_entries_send_one_set_room_tag_and_save_no_file() {
+            use twicecat_core::api::RoomTagView;
+            let (mut app, store, mut rx) = menu_app();
+            let _ = drain(&mut rx);
+            let cases = [
+                (Entry::AddFavourite, Some(RoomTagView::Favourite)),
+                (Entry::RemoveFavourite, None),
+                (Entry::MarkLowPriority, Some(RoomTagView::LowPriority)),
+                (Entry::RemoveLowPriority, None),
+            ];
+            for (entry_pressed, tag) in cases {
+                send(&mut app, M::OpenRoom(rid("chan1")));
+                entry(&mut app, entry_pressed);
+                assert!(app.sidebar_menu.is_none(), "{entry_pressed:?}: card closes");
+                let sent = tag_commands(&mut rx);
+                assert_eq!(sent.len(), 1, "{entry_pressed:?}: exactly one command");
+                assert!(
+                    matches!(
+                        &sent[0],
+                        Command::SetRoomTag { room_id, tag: t }
+                            if *room_id == rid("chan1") && *t == tag
+                    ),
+                    "{entry_pressed:?}: {:?}",
+                    sent[0]
+                );
+            }
+            assert_eq!(saves(&store), 0, "a tag action saves no sidebar file");
+        }
+
+        #[test]
+        fn the_tag_entries_show_the_wording_of_the_rooms_current_flags() {
+            use crate::sidebar_menu::tag_entries;
+            let table = [
+                // (favourite, low priority) -> the two buttons
+                (
+                    (false, false),
+                    ["Add to favourites", "Mark as low priority"],
+                ),
+                (
+                    (true, false),
+                    ["Remove from favourites", "Mark as low priority"],
+                ),
+                ((false, true), ["Add to favourites", "Remove low priority"]),
+                // A server cannot hold both; the wording still follows each flag.
+                (
+                    (true, true),
+                    ["Remove from favourites", "Remove low priority"],
+                ),
+            ];
+            for ((favourite, low), words) in table {
+                let labels = tag_entries(favourite, low).map(Entry::label);
+                assert_eq!(labels, words, "favourite {favourite}, low priority {low}");
+            }
+        }
+
+        #[test]
+        fn a_tag_entry_on_a_card_that_is_gone_sends_nothing() {
+            let (mut app, _store, mut rx) = menu_app();
+            let _ = drain(&mut rx);
+            entry(&mut app, Entry::AddFavourite);
+            assert!(tag_commands(&mut rx).is_empty(), "no card open");
+            // A section's card has no tag entries.
+            send(&mut app, M::OpenSection(SectionKey::Channels));
+            entry(&mut app, Entry::AddFavourite);
+            assert!(tag_commands(&mut rx).is_empty());
+        }
+
+        #[test]
+        fn a_tagged_room_moves_into_its_section_when_the_core_reports_the_tag() {
+            let (mut app, _store, _rx) = menu_app();
+            tag_rooms(&mut app, &[("chan1", true, false), ("chan2", false, true)]);
+            let out = drawn_names(&app);
+            assert_eq!(out[0], "# Favourites");
+            assert_eq!(out[1], "chan1");
+            assert_eq!(out.last().map(String::as_str), Some("chan2"));
+            assert!(out.iter().any(|l| l == "# Low priority"));
+            // Its card still opens from the new section.
+            send(&mut app, M::OpenRoom(rid("chan1")));
+            assert!(matches!(
+                &app.sidebar_menu,
+                Some(SidebarMenu::Card {
+                    target: Target::Room { .. },
+                    ..
+                })
+            ));
+        }
+
+        #[test]
+        fn collapse_and_move_on_the_new_headers_save_like_the_other_built_in_sections() {
+            let (mut app, store, _rx) = menu_app();
+            tag_rooms(&mut app, &[("chan1", true, false), ("chan2", false, true)]);
+            let heads = |app: &App| -> Vec<String> {
+                drawn_names(app)
+                    .into_iter()
+                    .filter(|l| l.starts_with('#'))
+                    .collect()
+            };
+            assert_eq!(
+                heads(&app),
+                [
+                    "# Favourites",
+                    "# Channels",
+                    "# tech",
+                    "# voice",
+                    "# Direct messages",
+                    "# Low priority"
+                ]
+            );
+            for key in [SectionKey::Favourites, SectionKey::LowPriority] {
+                let before = saves(&store);
+                send(&mut app, M::OpenSection(key.clone()));
+                entry(&mut app, Entry::Collapse);
+                assert_eq!(saves(&store), before + 1, "collapse saves once");
+                assert!(record(&app).collapsed.contains(&key));
+                send(&mut app, M::OpenSection(key.clone()));
+                entry(&mut app, Entry::Expand);
+                assert_eq!(saves(&store), before + 2, "expand saves once");
+                assert!(!record(&app).collapsed.contains(&key));
+            }
+            // Move down on Favourites swaps it with Channels; Move up on Low
+            // priority swaps it with Direct messages.
+            let before = saves(&store);
+            send(&mut app, M::OpenSection(SectionKey::Favourites));
+            entry(&mut app, Entry::MoveDown);
+            send(&mut app, M::OpenSection(SectionKey::LowPriority));
+            entry(&mut app, Entry::MoveUp);
+            assert_eq!(saves(&store), before + 2);
+            assert_eq!(
+                heads(&app),
+                [
+                    "# Channels",
+                    "# Favourites",
+                    "# tech",
+                    "# voice",
+                    "# Low priority",
+                    "# Direct messages"
+                ]
+            );
+            let order = record(&app).order;
+            assert!(order.contains(&SectionKey::Favourites));
+            assert!(order.contains(&SectionKey::LowPriority));
+            // The first and the last cannot go further and save nothing.
+            let before = saves(&store);
+            send(&mut app, M::OpenSection(SectionKey::Channels));
+            entry(&mut app, Entry::MoveUp);
+            send(&mut app, M::OpenSection(SectionKey::Direct));
+            entry(&mut app, Entry::MoveDown);
+            assert_eq!(saves(&store), before);
         }
 
         #[test]

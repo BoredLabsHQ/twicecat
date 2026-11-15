@@ -498,7 +498,9 @@ existing shortcut keeps its meaning.
 - **The options menus are the alternative to dragging.** Every move a drag can
   make is also an entry of an options menu: Move up and Move down, Move to
   folder, Remove from folder, Ungroup, Move to section, Back to its default
-  section, Star and Unstar, Collapse and Expand, Rename and Delete section.
+  section, Star and Unstar, Add to favourites, Remove from favourites, Mark as
+  low priority and Remove low priority, Collapse and Expand, Rename and Delete
+  section.
   The menu opens with a right-click on a space, a folder, a room or a section
   header, or with the "⋯" button on a header or on the open room's row. It is a
   centred card, not a menu at the pointer.
@@ -542,6 +544,16 @@ existing shortcut keeps its meaning.
   the sidebar file and is reset at logout and restart. Keyboard-only users reach
   every room of a sub-space with Ctrl+K as before. A space whose sub-spaces are shown cannot be dragged (like an open folder); its menu moves it. The line under Home is
   decoration, not a control, and has at least 3:1 contrast with the rail.
+- **Favourites and Low priority are menu entries on a room's card.** The four
+  entries (Add to favourites, Remove from favourites, Mark as low priority,
+  Remove low priority) are buttons of the room card, so they need a pointer
+  like the rest of the card, and the card says in words which one applies (the
+  wording follows the room's tags, not a colour or an icon). The tags are kept
+  on the homeserver, so a keyboard-only user sees the rooms a pointer user or
+  another Matrix app tagged, in the sections Favourites and Low priority, and
+  can still find and open every room with Ctrl+K and Alt+Up / Alt+Down. The two
+  headers collapse and move like the other headers, with a pointer. No
+  shortcut was added or changed.
 - **No auto-scroll while dragging.** A drag does not scroll the rail or the
   list when the pointer is near an edge, so a target that is out of view
   cannot be reached by dragging. Use the options menu: it works on any item,

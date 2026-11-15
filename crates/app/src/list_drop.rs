@@ -136,8 +136,10 @@ fn room_onto_header(
             room,
             section: *section,
         },
-        // Tag sections are never drawn yet (sbr.9 and sbr.10 add them), so no
-        // drop reaches them.
+        // The tag sections are drawn since sbr.9, but a drop onto them is
+        // sbr.10 (plan L6: SetRoomTag, like the card's entries). Until then
+        // the drop is refused, and a room already in one dropped on its
+        // default section does nothing.
         SectionKey::Favourites | SectionKey::LowPriority => return Verdict::Refused,
         // A built-in section takes a room only back: it is the room's default.
         SectionKey::Channels | SectionKey::Direct | SectionKey::SubSpace(_) => {
