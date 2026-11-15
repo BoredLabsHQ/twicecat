@@ -15,6 +15,18 @@ keyboard use see [accessibility.md](accessibility.md), section "The sidebar".
 - Move a space into a folder, out of it, or into a new folder. Ungroup a folder
   to give its spaces back to the rail. A folder left with one space stays until
   you ungroup it; moving a space out of a folder with two dissolves it.
+- A short line under **Home** parts it from your spaces.
+- A space that has **sub-spaces** (the spaces it lists as its own children;
+  deeper levels are not shown) shows a small arrow at the bottom left of its
+  icon when you point at it, and always while its sub-spaces are shown. Click
+  the arrow, or use **Show sub-spaces** and **Hide sub-spaces** in the space's
+  menu, to list them under the space, in a tinted band, in the order the server
+  gives. Click a sub-space to show its rooms: the room list then shows that
+  sub-space as a space of its own (Channels, Direct messages and your own
+  sections for it). A closed space whose sub-space is selected looks selected.
+  Sub-spaces cannot be dragged, moved into a folder or given a menu. Which
+  spaces are shown open is **not saved**: after a restart or a logout every
+  space is closed again.
 
 **The room list of a space**, drawn as sections you can collapse and expand:
 Starred, Channels (the space's own rooms), one section per sub-space, and
@@ -47,7 +59,8 @@ Everything can be done through the **options menus**:
 
 The menu is a card in the middle of the window with the entries Move up, Move
 down, Move to folder (which also offers a new folder), Remove from folder,
-Rename, Ungroup, Move to section (which also offers New section), Back to its
+Rename, Ungroup, Show sub-spaces and Hide sub-spaces (on a space that has
+sub-spaces), Move to section (which also offers New section), Back to its
 default section, Star, Unstar, Collapse, Expand and Delete section.
 
 You can also **drag**, in two places:
@@ -58,8 +71,10 @@ You can also **drag**, in two places:
   folder itself is moved with its menu. Making a folder, putting a space into
   a folder and taking a space out of one are done **only** with the menu
   (Move to folder, which also offers a new folder, and Remove from folder).
-  Home cannot be dragged. Esc, leaving the window or moving the pointer out of
-  the rail ends the drag and changes nothing.
+  A space whose sub-spaces are shown moves together with them. Pressing on its
+  sub-spaces, or on the arrow, does not start a drag. Home cannot be dragged.
+  Esc, leaving the window or moving the pointer out of the rail ends the drag
+  and changes nothing.
 - **In the room list**, a room onto a section header or between the rows of
   one of your own sections, and a section header onto another header.
 

@@ -518,6 +518,14 @@ existing shortcut keeps its meaning.
   button's own look states. The flat list (a search, the DMs or Rooms tab,
   Home, the narrow rail) and the rail keep their buttons. A person listed
   under a voice room is a click target too.
+- **The space tree on the rail is mouse only, and not saved.** The arrow at the
+  bottom left of a space's icon, and the sub-spaces under it, are clicks, as
+  the rail's spaces are. The same is done with the space's options menu
+  (**Show sub-spaces**, **Hide sub-spaces**), which needs a pointer like the
+  other menus. Which spaces are shown open is kept in memory only: it is not in
+  the sidebar file and is reset at logout and restart. Keyboard-only users reach
+  every room of a sub-space with Ctrl+K as before. The line under Home is
+  decoration, not a control, and has at least 3:1 contrast with the rail.
 - **No auto-scroll while dragging.** A drag does not scroll the rail or the
   list when the pointer is near an edge, so a target that is out of view
   cannot be reached by dragging. Use the options menu: it works on any item,

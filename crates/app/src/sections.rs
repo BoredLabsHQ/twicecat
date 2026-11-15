@@ -937,6 +937,58 @@ mod tests {
     }
 
     #[test]
+    fn a_selected_sub_space_lists_its_own_rooms_in_channels_direct_messages_and_its_sections() {
+        // The sub-space `tech` of `spaces()` is the selected one (a click on
+        // it in the rail's space tree): it has no sub-space sections, its
+        // rooms (a level 2 room too) are Channels, its DMs are Direct
+        // messages, and the layout keyed by its own ID gives it sections.
+        let sp = spaces();
+        // What the core lists for `tech`: its rooms and its own row.
+        let rs: Vec<RoomSummary> = rooms()
+            .into_iter()
+            .filter(|r| {
+                ["t1", "rustroom", "t2", "techdm", "tech"]
+                    .iter()
+                    .any(|n| r.id == rid(n))
+            })
+            .collect();
+        let tech = &sp[1];
+        assert_eq!(tech.level, 1);
+        assert_eq!(
+            lines_of(&build(tech, &sp, &rs, None)),
+            [
+                "# Channels",
+                "t1",
+                "rustroom",
+                "t2",
+                "# Direct messages",
+                "techdm"
+            ],
+            "its own ID and the sub-space rows are no rows, and no sub-space section"
+        );
+        let mut layout = SpaceLayout::new(rid("tech"));
+        layout.custom = vec![CustomSection {
+            id: 4,
+            name: label("Mine"),
+            rooms: vec![rid("t2")],
+        }];
+        layout.starred = vec![rid("rustroom")];
+        assert_eq!(
+            lines_of(&build(tech, &sp, &rs, Some(&layout))),
+            [
+                "# Starred",
+                "rustroom",
+                "# Channels",
+                "t1",
+                "# Mine",
+                "t2",
+                "# Direct messages",
+                "techdm"
+            ]
+        );
+    }
+
+    #[test]
     fn a_level_1_space_in_two_sub_spaces_is_placed_once() {
         let sp = vec![
             view("sp", 0, &["a", "b"]),

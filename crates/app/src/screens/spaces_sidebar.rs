@@ -10,6 +10,14 @@
 //! press, and iced 0.14 gives buttons no keyboard focus anyway). Sub-spaces
 //! are not on the rail: they are sections of the room list.
 //!
+//! A top-level space that has level 1 sub-spaces shows a chevron at the bottom
+//! left of its icon (on hover, and while open). Clicking it lists the
+//! sub-spaces under the space in a tinted band, 32 px each. They are plain
+//! clicks (a slot there takes the press, so the column that reorders never
+//! picks one) and are not dragged: their order is the server's. Which spaces
+//! are open is kept in memory only. Under **Home** a short line parts it from
+//! the spaces, as Discord's rail does.
+//!
 //! Dragging reorders only: the top-level items are one sweeten column, and
 //! each open folder's spaces are another. Making a folder, filling it and
 //! emptying it are done in the options card.
@@ -26,7 +34,7 @@ use iced::widget::{
 };
 use iced::{Background, Color, Element, Padding, border, mouse};
 use sweeten::widget::column::Style as DragStyle;
-use twicecat_core::api::{SpaceView, UnreadCountsView};
+use twicecat_core::api::{RoomId, SpaceView, UnreadCountsView};
 
 use crate::avatars::{AvatarState, Avatars, NEUTRAL_INITIALS, initials, placeholder_color};
 use crate::rail_reorder::RailColumn;
@@ -59,14 +67,34 @@ const BADGE: f32 = 18.0;
 /// Width of the badge's outline, in the colour of the rail.
 const BADGE_OUTLINE: f32 = 2.0;
 
-/// Gap between the badge and the slot's right edge.
-const BADGE_INSET: f32 = 10.0;
-
 /// Width of the ring around the selected icon.
 const RING: f32 = 2.0;
 
 /// Indent of the spaces of an open folder, in pixels.
 const NESTED_INDENT: f32 = 4.0;
+
+/// Width and height of the line under **Home**.
+const SEPARATOR: (f32, f32) = (32.0, 2.0);
+
+/// The least alpha of the separator's text colour (plan R1: 20 %).
+const SEPARATOR_ALPHA_MIN: f32 = 0.20;
+
+/// The least contrast the separator must have against the rail (WCAG
+/// non-text contrast). A 20 % wash of the text colour is far below it in every
+/// theme, so the alpha is raised, in steps of 5 %, until it holds.
+const SEPARATOR_CONTRAST: f32 = 3.0;
+
+/// Height of a sub-space's slot, and the side of its icon.
+const SUB_SLOT_HEIGHT: f32 = 40.0;
+const SUB_ICON: f32 = 32.0;
+
+/// How far the sub-spaces of a space are indented under it, in pixels.
+const SUB_INDENT: f32 = 8.0;
+
+/// Size of the chevron's glyph, and of the round mark that holds it (the
+/// click target).
+const CHEVRON: f32 = 12.0;
+const CHEVRON_MARK: f32 = 16.0;
 
 /// Side of a space's icon in a folder's 2 x 2 preview.
 const MINI: f32 = 18.0;
@@ -177,6 +205,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     // nothing can be dropped before it.
     let items: Column<'_, Message> = column![
         slot(Slot {
+            kind: Kind::Item,
+            chevron: None,
             cue: cue(app, &RailKey::Home),
             key: RailKey::Home,
             icon: round(Icon::Home.glyph().to_owned(), None, ICON / 2.0),
@@ -189,6 +219,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
             name: "Home".to_owned(),
             width: SIDEBAR_WIDTH,
         }),
+        separator(),
         rail_column(app),
     ]
     .spacing(4)
@@ -202,6 +233,56 @@ pub fn view(app: &App) -> Element<'_, Message> {
     ]
     .height(iced::Fill)
     .into()
+}
+
+/// The line under **Home**: 32 x 2 px, centred, in the text colour. It is
+/// outside the column that reorders, so it is no part of any drag.
+fn separator<'a>() -> Element<'a, Message> {
+    container(
+        container(space().width(SEPARATOR.0).height(SEPARATOR.1)).style(|t: &iced::Theme| {
+            container::Style {
+                background: Some(Background::Color(separator_color(t))),
+                border: border::rounded(SEPARATOR.1 / 2.0),
+                ..container::Style::default()
+            }
+        }),
+    )
+    .width(SIDEBAR_WIDTH)
+    .center_x(SIDEBAR_WIDTH)
+    .into()
+}
+
+/// The colour of `top` washed over `base` at `alpha`.
+fn wash(top: Color, base: Color, alpha: f32) -> Color {
+    Color::from_rgb(
+        base.r + (top.r - base.r) * alpha,
+        base.g + (top.g - base.g) * alpha,
+        base.b + (top.b - base.b) * alpha,
+    )
+}
+
+/// The separator's alpha in `t`: 20 %, or the least more that gives it
+/// [`SEPARATOR_CONTRAST`] against the rail.
+fn separator_alpha(t: &iced::Theme) -> f32 {
+    let text = t.palette().text;
+    let rail = theme::semantic(t).sidebar;
+    let mut percent: u8 = 20;
+    // `SEPARATOR_ALPHA_MIN` as a whole percent, then 5 % at a time.
+    debug_assert!((SEPARATOR_ALPHA_MIN * 100.0 - f32::from(percent)).abs() < 0.01);
+    while percent < 100
+        && theme::contrast(wash(text, rail, f32::from(percent) / 100.0), rail) < SEPARATOR_CONTRAST
+    {
+        percent += 5;
+    }
+    f32::from(percent) / 100.0
+}
+
+/// The separator's colour: the text colour at [`separator_alpha`].
+fn separator_color(t: &iced::Theme) -> Color {
+    Color {
+        a: separator_alpha(t),
+        ..t.palette().text
+    }
 }
 
 /// Whether the layout can be changed, so that the rail can be dragged.
@@ -224,7 +305,7 @@ fn rail_column(app: &App) -> Element<'_, Message> {
         .style(drag_style);
     for item in app.spaces.rail_items(app.sidebar.layout()) {
         items = match item {
-            RailItem::Space(space) => items.push(space_slot(app, space, SIDEBAR_WIDTH)),
+            RailItem::Space(space) => items.push(space_item(app, space, SIDEBAR_WIDTH, false)),
             RailItem::Folder(folder) => items.push(folder_view(app, &folder)),
         };
     }
@@ -287,8 +368,48 @@ fn cue(app: &App, key: &RailKey) -> Cue {
     Cue { cursor }
 }
 
+/// What kind of slot it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A top-level item (Home, a space, a folder): 48 px high with a 44 px
+    /// icon. It reports the press without taking it, so the column that
+    /// reorders can pick it, and a click is its release.
+    Item,
+    /// A sub-space under its space: 40 px high with a 32 px icon. It takes
+    /// the press (a click is the press), so nothing is picked from it.
+    Sub,
+}
+
+impl Kind {
+    /// The side of the icon.
+    fn icon(self) -> f32 {
+        match self {
+            Self::Item => ICON,
+            Self::Sub => SUB_ICON,
+        }
+    }
+
+    /// The height of the slot.
+    fn height(self) -> f32 {
+        match self {
+            Self::Item => SLOT_HEIGHT,
+            Self::Sub => SUB_SLOT_HEIGHT,
+        }
+    }
+}
+
+/// The chevron of a space that has sub-spaces.
+struct Chevron {
+    space: RoomId,
+    /// Its sub-spaces are shown.
+    open: bool,
+    /// The pointer is on the slot.
+    hover: bool,
+}
+
 /// Everything one slot needs.
 struct Slot<'a> {
+    kind: Kind,
     cue: Cue,
     key: RailKey,
     icon: Element<'a, Message>,
@@ -296,17 +417,72 @@ struct Slot<'a> {
     counts: UnreadCountsView,
     name: String,
     width: f32,
+    chevron: Option<Chevron>,
 }
 
-fn space_slot<'a>(app: &'a App, space: &'a SpaceView, width: f32) -> Element<'a, Message> {
+/// A top-level space, or one inside an open folder (`nested`): its slot, and
+/// when its tree is open the band of its sub-spaces under it. The two are one
+/// item of the column that reorders, so they move together.
+fn space_item<'a>(
+    app: &'a App,
+    parent: &'a SpaceView,
+    width: f32,
+    nested: bool,
+) -> Element<'a, Message> {
+    let subs = app.spaces.sub_spaces(&parent.id);
+    if subs.is_empty() {
+        return space_slot(app, parent, width, None);
+    }
+    let open = app.rail_expanded.contains(&parent.id);
+    let head = space_slot(app, parent, width, Some(open));
+    if !open {
+        return head;
+    }
+    let slots = subs
+        .into_iter()
+        .map(|sub| sub_slot(app, sub, width - SUB_INDENT));
+    let band = container(row![
+        space().width(SUB_INDENT),
+        Column::with_children(slots).spacing(2)
+    ])
+    .width(width)
+    .padding([4, 0])
+    .style(move |t: &iced::Theme| tree_band_style(t, nested));
+    column![head, band].spacing(4).into()
+}
+
+/// How the slot of a top-level `space` looks. `tree` is `None` when the
+/// space has no sub-spaces, else whether its tree is open: a closed parent
+/// stands for the sub-space that is selected, as a closed folder does for the
+/// space it holds.
+pub fn space_state(app: &App, space: &SpaceView, tree: Option<bool>) -> ItemState {
+    let key = RailKey::Space(space.id.clone());
+    let selected = app.query.space.as_ref() == Some(&space.id)
+        || (tree == Some(false)
+            && app
+                .spaces
+                .holds_selected(&space.id, app.query.space.as_ref()));
+    ItemState::of(
+        selected,
+        app.rail_hover.as_ref() == Some(&key),
+        is_unread(&app.spaces.unread_for(&space.id)),
+    )
+}
+
+/// `tree`: `None` when the space has no sub-spaces, else whether its tree is
+/// open.
+fn space_slot<'a>(
+    app: &'a App,
+    space: &'a SpaceView,
+    width: f32,
+    tree: Option<bool>,
+) -> Element<'a, Message> {
     let key = RailKey::Space(space.id.clone());
     let counts = app.spaces.unread_for(&space.id);
-    let state = ItemState::of(
-        app.query.space.as_ref() == Some(&space.id),
-        app.rail_hover.as_ref() == Some(&key),
-        is_unread(&counts),
-    );
+    let hover = app.rail_hover.as_ref() == Some(&key);
+    let state = space_state(app, space, tree);
     slot(Slot {
+        kind: Kind::Item,
         cue: cue(app, &key),
         key,
         icon: space_icon(space, ICON, icon_radius(state), &app.avatars),
@@ -314,7 +490,60 @@ fn space_slot<'a>(app: &'a App, space: &'a SpaceView, width: f32) -> Element<'a,
         counts,
         name: space_name(space),
         width,
+        chevron: tree.map(|open| Chevron {
+            space: space.id.clone(),
+            open,
+            hover,
+        }),
     })
+}
+
+/// A sub-space under its space: selected by a click.
+fn sub_slot<'a>(app: &'a App, sub: &'a SpaceView, width: f32) -> Element<'a, Message> {
+    let key = RailKey::Space(sub.id.clone());
+    let counts = app.spaces.unread_for(&sub.id);
+    let state = ItemState::of(
+        app.query.space.as_ref() == Some(&sub.id),
+        app.rail_hover.as_ref() == Some(&key),
+        is_unread(&counts),
+    );
+    slot(Slot {
+        kind: Kind::Sub,
+        cue: Cue {
+            cursor: mouse::Interaction::Pointer,
+        },
+        key,
+        icon: space_icon(sub, SUB_ICON, sub_icon_radius(state), &app.avatars),
+        state,
+        counts,
+        name: space_name(sub),
+        width,
+        chevron: None,
+    })
+}
+
+/// Corner radius of a sub-space's icon: a circle idle, a squircle when hovered
+/// or selected (as [`icon_radius`], for the smaller icon).
+fn sub_icon_radius(state: ItemState) -> f32 {
+    match state {
+        ItemState::Default | ItemState::Unread => SUB_ICON / 2.0,
+        ItemState::Hover | ItemState::Selected => 10.0,
+    }
+}
+
+/// The band behind the sub-spaces of a space: the open folder's tint, one
+/// step up inside a folder (so that it parts from the folder's own band).
+fn tree_band_style(t: &iced::Theme, nested: bool) -> container::Style {
+    let sem = theme::semantic(t);
+    container::Style {
+        background: Some(Background::Color(if nested {
+            sem.surface_raised
+        } else {
+            sem.surface
+        })),
+        border: border::rounded(tokens::LARGE),
+        ..container::Style::default()
+    }
 }
 
 /// A folder: its icon, and when it is open its spaces in a tinted band.
@@ -322,17 +551,20 @@ fn folder_view<'a>(app: &'a App, folder: &RailFolder<'a>) -> Element<'a, Message
     let key = RailKey::Folder(folder.id);
     let counts = app.spaces.folder_counts(folder);
     // A closed folder holding the selected space stands for it.
-    let holds_selected = app
-        .query
-        .space
-        .as_ref()
-        .is_some_and(|sel| folder.spaces.iter().any(|space| space.id == *sel));
+    let holds_selected = app.query.space.as_ref().is_some_and(|sel| {
+        folder
+            .spaces
+            .iter()
+            .any(|space| space.id == *sel || app.spaces.holds_selected(&space.id, Some(sel)))
+    });
     let state = ItemState::of(
         !folder.open && holds_selected,
         app.rail_hover.as_ref() == Some(&key),
         is_unread(&counts),
     );
     let head = slot(Slot {
+        kind: Kind::Item,
+        chevron: None,
         cue: cue(app, &key),
         key,
         icon: folder_icon(folder, icon_radius(state), &app.avatars),
@@ -352,7 +584,7 @@ fn folder_view<'a>(app: &'a App, folder: &RailFolder<'a>) -> Element<'a, Message
         .deadband_zone(DEADBAND)
         .style(drag_style);
     for space in &folder.spaces {
-        inside = inside.push(space_slot(app, space, SIDEBAR_WIDTH - NESTED_INDENT));
+        inside = inside.push(space_item(app, space, SIDEBAR_WIDTH - NESTED_INDENT, true));
     }
     if customizable(app) {
         inside = inside.on_drag(move |event| {
@@ -395,6 +627,7 @@ fn band_style(t: &iced::Theme) -> container::Style {
 /// the bottom right, in a `mouse_area` and a tooltip.
 fn slot(slot: Slot<'_>) -> Element<'_, Message> {
     let Slot {
+        kind,
         cue,
         key,
         icon,
@@ -402,47 +635,70 @@ fn slot(slot: Slot<'_>) -> Element<'_, Message> {
         counts,
         name,
         width,
+        chevron,
     } = slot;
+    let (icon_side, height) = (kind.icon(), kind.height());
+    let radius = match kind {
+        Kind::Item => icon_radius(state),
+        Kind::Sub => sub_icon_radius(state),
+    };
     let icon = if state == ItemState::Selected {
-        iced::widget::stack![icon, ring(icon_radius(state))].into()
+        iced::widget::stack![icon, ring(icon_side, radius)].into()
     } else {
         icon
     };
     let mut layers: Stack<'_, Message> = Stack::new()
         .width(width)
-        .height(SLOT_HEIGHT)
-        .push(container(icon).center_x(width).center_y(SLOT_HEIGHT));
+        .height(height)
+        .push(container(icon).center_x(width).center_y(height));
     let pill = pill_height(state);
     if pill > 0.0 {
         layers = layers.push(
             container(container(space().width(PILL_WIDTH).height(pill)).style(pill_style))
-                .height(SLOT_HEIGHT)
-                .center_y(SLOT_HEIGHT),
+                .height(height)
+                .center_y(height),
         );
     }
     if let Some(badge) = badge_text(&counts) {
+        // The badge sits 4 px beyond the icon's right edge.
         layers = layers.push(
             container(badge_view(badge))
                 .align_right(width)
-                .align_bottom(SLOT_HEIGHT)
+                .align_bottom(height)
                 .padding(Padding {
-                    right: BADGE_INSET,
+                    right: (width - icon_side) / 2.0 - 4.0,
                     ..Padding::ZERO
                 }),
         );
     }
+    // The chevron is the topmost layer and takes its own press, so a click on
+    // it neither picks the item up nor selects it.
+    if let Some(chevron) = chevron.filter(|c| c.open || c.hover) {
+        layers = layers.push(chevron_view(chevron, width, height));
+    }
     let mut area = mouse_area(layers)
         .interaction(cue.cursor)
         .on_enter(Message::Spaces(SpacesMessage::Enter(key.clone())))
-        .on_exit(Message::Spaces(SpacesMessage::Exit(key.clone())))
-        .on_release(Message::Spaces(SpacesMessage::Release(key.clone())));
-    let pressed = Message::Spaces(SpacesMessage::RailPressed(key.clone()));
-    // A right-click opens the item's options card (Home has none).
-    if key != RailKey::Home {
-        area = area.on_right_press(Message::SidebarMenu(SidebarMenuMessage::Open(key)));
-    }
+        .on_exit(Message::Spaces(SpacesMessage::Exit(key.clone())));
+    let reported: Element<'_, Message> = match (kind, &key) {
+        (Kind::Sub, RailKey::Space(id)) => {
+            // A click is the press: this takes it, so the column that
+            // reorders the rail never picks from a sub-space.
+            let select = Message::Spaces(SpacesMessage::Select(Some(id.clone())));
+            area.on_press(select).into()
+        }
+        _ => {
+            area = area.on_release(Message::Spaces(SpacesMessage::Release(key.clone())));
+            let pressed = Message::Spaces(SpacesMessage::RailPressed(key.clone()));
+            // A right-click opens the item's options card (Home has none).
+            if key != RailKey::Home {
+                area = area.on_right_press(Message::SidebarMenu(SidebarMenuMessage::Open(key)));
+            }
+            press_spy(area, pressed)
+        }
+    };
     tooltip(
-        press_spy(area, pressed),
+        reported,
         container(text(name).size(tokens::CAPTION))
             .padding(tokens::S)
             .style(kit::card_style),
@@ -450,6 +706,41 @@ fn slot(slot: Slot<'_>) -> Element<'_, Message> {
     )
     .delay(TOOLTIP_DELAY)
     .into()
+}
+
+/// The chevron of a slot: a small round mark at the icon's bottom left that
+/// shows or hides the sub-spaces.
+fn chevron_view<'a>(chevron: Chevron, width: f32, height: f32) -> Element<'a, Message> {
+    let glyph = if chevron.open {
+        Icon::SectionOpen
+    } else {
+        Icon::SectionClosed
+    };
+    let mark = container(text(glyph.glyph()).size(CHEVRON))
+        .width(CHEVRON_MARK)
+        .height(CHEVRON_MARK)
+        .center_x(CHEVRON_MARK)
+        .center_y(CHEVRON_MARK)
+        .style(|t: &iced::Theme| container::Style {
+            background: Some(Background::Color(theme::semantic(t).sidebar)),
+            text_color: Some(t.palette().text),
+            border: border::rounded(CHEVRON_MARK / 2.0),
+            ..container::Style::default()
+        });
+    let press = mouse_area(mark)
+        .interaction(mouse::Interaction::Pointer)
+        .on_press(Message::Spaces(SpacesMessage::ToggleTree(chevron.space)));
+    container(press)
+        .width(width)
+        .height(height)
+        .align_x(iced::alignment::Horizontal::Left)
+        .align_y(iced::alignment::Vertical::Bottom)
+        .padding(Padding {
+            left: (width - ICON) / 2.0 - 4.0,
+            bottom: 2.0,
+            ..Padding::ZERO
+        })
+        .into()
 }
 
 /// The pill: the text colour, round on its right side only.
@@ -465,10 +756,10 @@ fn pill_style(t: &iced::Theme) -> container::Style {
 }
 
 /// The ring of the selected icon: the focus colour, inside the icon's box.
-fn ring<'a>(radius: f32) -> Element<'a, Message> {
+fn ring<'a>(side: f32, radius: f32) -> Element<'a, Message> {
     container(space())
-        .width(ICON)
-        .height(ICON)
+        .width(side)
+        .height(side)
         .style(move |t| container::Style {
             border: border::rounded(radius)
                 .color(theme::semantic(t).focus)
@@ -537,10 +828,12 @@ fn space_icon<'a>(
             let name = space_name(space);
             let label = initials(&name);
             let fill = (label != NEUTRAL_INITIALS).then(|| placeholder_color(&space.id));
-            if size < ICON {
+            if size <= MINI {
                 // A small preview carries one letter only.
                 let first: String = label.chars().take(1).collect();
                 mini_round(first, fill, size, radius)
+            } else if size < ICON {
+                sized_round(label, fill, size, radius, 12)
             } else {
                 round(label, fill, radius)
             }
@@ -712,6 +1005,32 @@ mod tests {
         assert!(is_unread(&counts(0, 0, true)));
         assert!(is_unread(&counts(1, 0, false)));
         assert!(is_unread(&counts(0, 1, false)));
+    }
+
+    #[test]
+    fn the_separator_is_at_least_3_to_1_against_the_rail_in_every_test_theme() {
+        for t in theme::test_themes() {
+            let rail = theme::semantic(&t).sidebar;
+            let drawn = separator_color(&t);
+            let alpha = separator_alpha(&t);
+            assert_eq!(drawn.a, alpha);
+            assert!(alpha >= SEPARATOR_ALPHA_MIN, "never fainter than 20 %");
+            // What the renderer paints: the colour at that alpha over the rail.
+            let seen = wash(drawn, rail, drawn.a);
+            let ratio = theme::contrast(seen, rail);
+            assert!(
+                ratio >= 3.0,
+                "separator on the rail: {ratio} (alpha {alpha})"
+            );
+            // The least alpha that does it: one step less would not.
+            if alpha > SEPARATOR_ALPHA_MIN + 0.001 {
+                let weaker = wash(drawn, rail, alpha - 0.05);
+                assert!(
+                    theme::contrast(weaker, rail) < 3.0,
+                    "{alpha} is more than needed"
+                );
+            }
+        }
     }
 
     #[test]

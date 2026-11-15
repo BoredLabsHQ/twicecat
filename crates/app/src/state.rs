@@ -4,7 +4,7 @@
 //! [`Task`]s. It never awaits, never touches the network and never sees an SDK
 //! type.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -576,6 +576,10 @@ pub struct App {
     /// values, which makes iced drop sweeten's state and so ends the drag it
     /// still holds: sweeten has no way to cancel (plan S3).
     pub rail_generation: u32,
+    /// The top-level spaces whose sub-spaces the rail shows under them (the
+    /// space tree). Memory only: not in the sidebar file, empty at the start
+    /// and at logout (sidebar rework plan, T5).
+    pub rail_expanded: HashSet<RoomId>,
     /// The room row or section header of the sectioned list under the pointer.
     pub list_hover: Option<ListKey>,
     /// The same state machine (`drag.rs`) for the sectioned room list: a
@@ -753,6 +757,7 @@ impl App {
             rail_press: None,
             rail_reorder: None,
             rail_generation: 0,
+            rail_expanded: HashSet::new(),
             list_hover: None,
             list_drag: Drag::default(),
             threads: ThreadsModel::default(),
@@ -2804,6 +2809,7 @@ impl App {
         self.notification_settings = None;
         self.spaces.clear();
         self.rail_hover = None;
+        self.rail_expanded.clear();
         self.cancel_rail_reorder();
         self.list_hover = None;
         self.list_drag = Drag::default();
@@ -4520,6 +4526,181 @@ mod tests {
             open_on(&mut app, RailKey::Space(rid("!a:x")));
             let _ = app.update(core(CoreEvent::LoggedOut));
             assert!(app.sidebar_menu.is_none());
+        }
+    }
+
+    mod space_tree {
+        use super::sidebar_menu_flow::{menu_app, rid, saves, top_space};
+        use super::*;
+        use crate::sidebar_menu::{
+            Entry, SidebarMenu, SidebarMenuMessage as M, Target, tree_entry,
+        };
+        use crate::sidebar_store::MemorySidebar;
+        use crate::spaces::{RailKey, SpacesMessage as S};
+        use twicecat_core::api::{SectionKey, SpaceView};
+
+        fn send(app: &mut App, message: S) {
+            let _ = app.update(Message::Spaces(message));
+        }
+
+        /// `!p:x` with the sub-spaces `!s1:x` and `!s2:x`, and `!lonely:x`
+        /// with none, on a rail that is loaded.
+        fn tree_app() -> (App, MemorySidebar) {
+            let (mut app, store) = menu_app(&["!p:x", "!lonely:x"], Vec::new());
+            let held = |id: &str, level, rooms: &[&str]| SpaceView {
+                level,
+                rooms: rooms.iter().map(|r| rid(r)).collect(),
+                ..top_space(id)
+            };
+            let _ = app.update(core(CoreEvent::Spaces(vec![
+                held("!p:x", 0, &["!s1:x", "!s2:x", "!room:x"]),
+                held("!s1:x", 1, &["!a:x", "!s1:x"]),
+                held("!s2:x", 1, &["!s2:x"]),
+                held("!lonely:x", 0, &["!room2:x"]),
+            ])));
+            (app, store)
+        }
+
+        fn calls(store: &MemorySidebar) -> usize {
+            store.calls().len()
+        }
+
+        #[test]
+        fn a_click_on_the_chevron_toggles_the_tree_and_saves_nothing() {
+            let (mut app, store) = tree_app();
+            let before = calls(&store);
+            assert!(app.rail_expanded.is_empty(), "closed at the start");
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert!(app.rail_expanded.contains(&rid("!p:x")));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert!(app.rail_expanded.is_empty());
+            assert_eq!(calls(&store), before, "no store call at all");
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn a_space_with_no_sub_spaces_and_an_unknown_space_do_not_toggle() {
+            let (mut app, _store) = tree_app();
+            send(&mut app, S::ToggleTree(rid("!lonely:x")));
+            send(&mut app, S::ToggleTree(rid("!s1:x")));
+            send(&mut app, S::ToggleTree(rid("!nope:x")));
+            assert!(app.rail_expanded.is_empty());
+        }
+
+        #[test]
+        fn the_tree_toggle_ends_a_rail_drag_and_forgets_a_press() {
+            let (mut app, _store) = tree_app();
+            send(&mut app, S::RailPressed(RailKey::Space(rid("!p:x"))));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert!(app.rail_press.is_none());
+        }
+
+        #[test]
+        fn the_card_entries_show_and_hide_the_tree_and_save_nothing() {
+            let (mut app, store) = tree_app();
+            let before = calls(&store);
+            let open = |app: &mut App, id: &str| {
+                let _ = app.update(Message::SidebarMenu(M::Open(RailKey::Space(rid(id)))));
+                assert!(matches!(
+                    &app.sidebar_menu,
+                    Some(SidebarMenu::Card {
+                        target: Target::Space(_),
+                        ..
+                    })
+                ));
+            };
+            open(&mut app, "!p:x");
+            let _ = app.update(Message::SidebarMenu(M::Entry(Entry::ShowSubSpaces)));
+            assert!(app.rail_expanded.contains(&rid("!p:x")));
+            assert!(
+                app.sidebar_menu.is_none(),
+                "the card closes, as after any entry"
+            );
+            open(&mut app, "!p:x");
+            let _ = app.update(Message::SidebarMenu(M::Entry(Entry::HideSubSpaces)));
+            assert!(app.rail_expanded.is_empty());
+            assert_eq!(calls(&store), before, "no store call");
+            // On a space with no sub-spaces the entries do nothing.
+            open(&mut app, "!lonely:x");
+            let _ = app.update(Message::SidebarMenu(M::Entry(Entry::ShowSubSpaces)));
+            assert!(app.rail_expanded.is_empty());
+        }
+
+        #[test]
+        fn the_card_offers_one_tree_entry_only_to_a_space_that_has_sub_spaces() {
+            assert_eq!(tree_entry(false, false), None);
+            assert_eq!(tree_entry(false, true), None);
+            assert_eq!(tree_entry(true, false), Some(Entry::ShowSubSpaces));
+            assert_eq!(tree_entry(true, true), Some(Entry::HideSubSpaces));
+            assert_eq!(Entry::ShowSubSpaces.label(), "Show sub-spaces");
+            assert_eq!(Entry::HideSubSpaces.label(), "Hide sub-spaces");
+        }
+
+        #[test]
+        fn logout_and_session_expiry_empty_the_tree() {
+            for event in [CoreEvent::LoggedOut, CoreEvent::SessionExpired] {
+                let (mut app, _store) = tree_app();
+                send(&mut app, S::ToggleTree(rid("!p:x")));
+                assert!(!app.rail_expanded.is_empty());
+                let _ = app.update(core(event));
+                assert!(app.rail_expanded.is_empty());
+            }
+        }
+
+        #[test]
+        fn a_sub_spaces_hover_survives_while_its_parent_is_open_and_goes_when_it_closes() {
+            let (mut app, _store) = tree_app();
+            let sub = RailKey::Space(rid("!s1:x"));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            send(&mut app, S::Enter(sub.clone()));
+            // Something else changes the rail: the open tree's slot is still drawn.
+            let _ = app.update(core(CoreEvent::SpaceUnread {
+                spaces: Vec::new(),
+                outside: Default::default(),
+            }));
+            app.clear_stale_rail_keys();
+            assert_eq!(app.rail_hover, Some(sub.clone()));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert_eq!(app.rail_hover, None, "its slot is not drawn any more");
+        }
+
+        #[test]
+        fn selecting_a_sub_space_filters_the_list_to_it_and_sections_it() {
+            let (mut app, store) = tree_app();
+            let before = calls(&store);
+            send(&mut app, S::Select(Some(rid("!s1:x"))));
+            assert_eq!(app.query.space, Some(rid("!s1:x")));
+            assert!(app.sections_shown(), "the sub-space's list is sectioned");
+            let lines = app.section_lines().expect("sections");
+            let own: Vec<_> = lines
+                .iter()
+                .filter_map(|l| match l {
+                    crate::sections::Line::Header(h) => Some(h.key.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                own.iter().all(|k| !matches!(k, SectionKey::SubSpace(_))),
+                "a level 1 space has no sub-space sections"
+            );
+            assert_eq!(calls(&store), before, "choosing a space saves nothing");
+            // A click is a press and a release on the sub-space's slot.
+            send(&mut app, S::Select(None));
+            assert_eq!(app.query.space, None);
+        }
+
+        #[test]
+        fn a_selected_sub_space_survives_its_tree_closing() {
+            let (mut app, _store) = tree_app();
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            send(&mut app, S::Select(Some(rid("!s2:x"))));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert_eq!(app.query.space, Some(rid("!s2:x")));
+            assert!(
+                app.spaces
+                    .holds_selected(&rid("!p:x"), app.query.space.as_ref()),
+                "the closed parent stands for it"
+            );
         }
     }
 

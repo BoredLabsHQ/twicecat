@@ -400,6 +400,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "switcher-empty",
         "switcher-long",
         "rail-dragging",
+        "rail-tree",
         "rail-menu",
         "rail-folder-name",
         "space-sections",
@@ -1422,6 +1423,163 @@ fn rail_states_draws_every_slot_whole_and_apart_at_every_width() {
             }
         }
     }
+}
+
+/// The slots of the rail with a tree, in window coordinates: the outermost
+/// nodes that are 48 px high and 72 (or 68) wide, or 40 px high and 64 (or
+/// 60) wide, which is a sub-space's.
+fn tree_slots(node: &Node, at: iced::Point, out: &mut Vec<(Rectangle, bool)>) {
+    let b = node.bounds();
+    let here = iced::Point::new(at.x + b.x, at.y + b.y);
+    let top = b.height == 48.0 && (b.width == 72.0 || b.width == 68.0);
+    let sub = b.height == 40.0 && (b.width == 64.0 || b.width == 60.0);
+    if top || sub {
+        out.push((Rectangle::new(here, b.size()), sub));
+        return;
+    }
+    for child in node.children() {
+        tree_slots(child, here, out);
+    }
+}
+
+/// The 32 x 2 px line under Home, in window coordinates.
+fn separators(node: &Node, at: iced::Point, out: &mut Vec<Rectangle>) {
+    let b = node.bounds();
+    let here = iced::Point::new(at.x + b.x, at.y + b.y);
+    if b.width == 32.0 && b.height == 2.0 {
+        out.push(Rectangle::new(here, b.size()));
+        return;
+    }
+    for child in node.children() {
+        separators(child, here, out);
+    }
+}
+
+#[test]
+fn rail_tree_draws_the_separator_and_every_slot_whole_and_apart_at_every_width() {
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "rail-tree")
+        .expect("the rail-tree scenario");
+    for variant in variants(true) {
+        let mut app = (scenario.build)();
+        apply(&mut app, variant);
+        for width in [1280.0, 1000.0, 720.0] {
+            let size = Size::new(width, 800.0);
+            app.window_width = width;
+            let shown = app.pane_layout().sidebar;
+            let laid = Laid::new(&app, &renderer, size);
+            let what = format!("{} at {width}", variant.tag());
+            let pane = &panes_row(&laid).children()[0];
+            let mut slots = Vec::new();
+            tree_slots(pane, iced::Point::ORIGIN, &mut slots);
+            let mut lines = Vec::new();
+            separators(pane, iced::Point::ORIGIN, &mut lines);
+            if !shown {
+                assert!(slots.is_empty() && lines.is_empty(), "{what}: hidden");
+                continue;
+            }
+            // Home, Quartz, its two sub-spaces, Bravo and the folder.
+            assert_eq!(slots.len(), 6, "{what}");
+            assert_eq!(slots.iter().filter(|(_, sub)| *sub).count(), 2, "{what}");
+            for (i, (a, _)) in slots.iter().enumerate() {
+                assert!(
+                    a.x >= -0.5 && a.x + a.width <= 72.5,
+                    "{what}: slot {i} is outside the rail: {a:?}"
+                );
+                for (b, _) in &slots[i + 1..] {
+                    assert!(!overlap(a, b), "{what}: {a:?} overlaps {b:?}");
+                }
+            }
+            // The separator: one, 32 x 2 and centred, 4 px under Home and 4 px
+            // above the first item, outside every slot.
+            assert_eq!(lines.len(), 1, "{what}: one separator");
+            let line = lines[0];
+            let (home, quartz) = (slots[0].0, slots[1].0);
+            assert!(
+                (line.x - 20.0).abs() < 0.5,
+                "{what}: centred in 72: {line:?}"
+            );
+            assert!(
+                (line.y - (home.y + home.height + 4.0)).abs() < 0.5,
+                "{what}: {line:?}"
+            );
+            assert!(
+                (quartz.y - (line.y + line.height + 4.0)).abs() < 0.5,
+                "{what}: {line:?}"
+            );
+            assert!(slots.iter().all(|(r, _)| !overlap(r, &line)), "{what}");
+            // Each sub-space is indented 8 px under its parent, inside the
+            // band that is under the parent's slot.
+            let subs: Vec<Rectangle> = slots.iter().filter(|(_, s)| *s).map(|(r, _)| *r).collect();
+            for sub in &subs {
+                assert!((sub.x - 8.0).abs() < 0.5, "{what}: indented 8 px: {sub:?}");
+                assert!(sub.y > quartz.y + quartz.height, "{what}: under the parent");
+            }
+            // Every part of a slot (icon, pill, badge, chevron) is inside it.
+            for (i, (rect, _)) in slots.iter().enumerate() {
+                let mut nodes = Vec::new();
+                fn find(node: &Node, at: iced::Point, rect: &Rectangle, out: &mut Vec<Rectangle>) {
+                    let b = node.bounds();
+                    let here = iced::Point::new(at.x + b.x, at.y + b.y);
+                    if (here.x - rect.x).abs() < 0.5
+                        && (here.y - rect.y).abs() < 0.5
+                        && (b.width - rect.width).abs() < 0.5
+                        && (b.height - rect.height).abs() < 0.5
+                    {
+                        painted_leaves(node, iced::Point::new(here.x - b.x, here.y - b.y), out);
+                        return;
+                    }
+                    for child in node.children() {
+                        find(child, here, rect, out);
+                    }
+                }
+                find(pane, iced::Point::ORIGIN, rect, &mut nodes);
+                assert!(!nodes.is_empty(), "{what}: slot {i} draws nothing");
+                for leaf in nodes {
+                    assert!(
+                        leaf.x >= rect.x - 0.5
+                            && leaf.y >= rect.y - 0.5
+                            && leaf.x + leaf.width <= rect.x + rect.width + 0.5
+                            && leaf.y + leaf.height <= rect.y + rect.height + 0.5,
+                        "{what}: slot {i}: {leaf:?} is outside {rect:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn a_closed_parent_stands_for_its_selected_sub_space_and_an_open_one_does_not() {
+    use twicecat_app::screens::spaces_sidebar::{ItemState, space_state};
+    use twicecat_app::spaces::SpacesMessage;
+    let mut app = fixture::rail_tree_app();
+    let quartz = app
+        .spaces
+        .spaces()
+        .iter()
+        .find(|s| s.id == fixture::rail_space("qa"))
+        .expect("Quartz")
+        .clone();
+    let select = |app: &mut App, id| {
+        let _ = app.update(Message::Spaces(SpacesMessage::Select(id)));
+    };
+    select(&mut app, Some(fixture::rail_space("sd")));
+    assert_eq!(space_state(&app, &quartz, Some(true)), ItemState::Unread);
+    assert_eq!(
+        space_state(&app, &quartz, Some(false)),
+        ItemState::Selected,
+        "closed, it stands for Delta"
+    );
+    // Its own selection and a sub-space of another parent.
+    select(&mut app, Some(fixture::rail_space("qa")));
+    assert_eq!(space_state(&app, &quartz, Some(true)), ItemState::Selected);
+    select(&mut app, Some(fixture::rail_space("sz")));
+    assert_eq!(space_state(&app, &quartz, Some(false)), ItemState::Unread);
+    select(&mut app, None);
+    assert_eq!(space_state(&app, &quartz, Some(false)), ItemState::Unread);
 }
 
 // ---- Sections inside a space (sidebar plan, Task 8) -----------------------
@@ -7659,5 +7817,191 @@ mod rail_reorder_drag {
         let up = rig.release();
         assert_eq!(up.dropped, 0, "the drag was ended with the old keys");
         assert_eq!(rig.saves(), 0);
+    }
+
+    // ---- The space tree (sidebar rework plan, Task 6) ----
+
+    fn tree_rig() -> Rig {
+        Rig::new(fixture::rail_tree_app())
+    }
+
+    impl Rig {
+        /// How many rail texts say `word` right now.
+        fn count(&mut self, word: &str) -> usize {
+            let mut element = self.app.view();
+            self.tree.diff(element.as_widget());
+            let node = element.as_widget_mut().layout(
+                &mut self.tree,
+                &self.renderer,
+                &Limits::new(Size::ZERO, WIDE),
+            );
+            let mut op = Texts(Vec::new());
+            element.as_widget_mut().operate(
+                &mut self.tree,
+                Layout::new(&node),
+                &self.renderer,
+                &mut op,
+            );
+            op.0.iter()
+                .filter(|(text, at)| text == word && at.x < SIDEBAR_WIDTH)
+                .count()
+        }
+    }
+
+    const TREE_ORDER: [&str; 3] = ["qa", "bb", "[fa,fb]"];
+
+    #[test]
+    fn a_press_on_a_sub_space_a_10_px_move_and_a_release_start_no_drag() {
+        let mut rig = tree_rig();
+        let delta = rig.slot("D");
+        rig.move_to(delta);
+        let down = rig.press();
+        assert_eq!(down, Seen::default());
+        let moved = rig.move_to(Point::new(delta.x + 10.0, delta.y));
+        assert_eq!(moved, Seen::default(), "no sweeten drag starts");
+        let up = rig.release();
+        assert_eq!((up.picked, up.dropped, up.canceled), (0, 0, 0));
+        assert!(rig.app.rail_reorder.is_none());
+        assert_eq!(rig.order(), TREE_ORDER, "the rail order is unchanged");
+        assert_eq!(rig.saves(), 0, "and unsaved");
+    }
+
+    #[test]
+    fn a_sub_space_cannot_be_dragged_even_onto_another_item() {
+        let mut rig = tree_rig();
+        let delta = rig.slot("D");
+        let bravo = rig.slot("B");
+        let up = drag(&mut rig, delta, bravo);
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert_eq!(rig.order(), TREE_ORDER);
+        assert_eq!(rig.saves(), 0);
+    }
+
+    #[test]
+    fn a_click_on_a_sub_space_selects_it_and_saves_nothing() {
+        let mut rig = tree_rig();
+        let echo = rig.slot("E");
+        assert_eq!(rig.cursor_at(echo), mouse::Interaction::Pointer);
+        rig.move_to(echo);
+        rig.press();
+        assert_eq!(rig.selected(), Some(fixture::rail_space("se")), "the press");
+        rig.release();
+        assert_eq!(rig.selected(), Some(fixture::rail_space("se")));
+        assert_eq!(rig.saves(), 0);
+        assert!(
+            rig.app.section_lines().is_some(),
+            "the sub-space's list is sectioned"
+        );
+    }
+
+    #[test]
+    fn a_top_level_drag_of_the_expanded_parent_moves_it_and_its_band_as_one_item() {
+        let mut rig = tree_rig();
+        let quartz = rig.slot("Q");
+        let bravo = rig.slot("B");
+        rig.move_to(quartz);
+        rig.press();
+        assert_eq!(rig.move_to(nudge(quartz)).picked, 1);
+        let reorder = rig.app.rail_reorder.as_ref().expect("a drag runs");
+        assert_eq!(
+            reorder.keys.len(),
+            3,
+            "Quartz with its band is one item, with Bravo and the folder"
+        );
+        rig.move_to(bravo);
+        let up = rig.release();
+        assert_eq!(up.dropped, 1);
+        assert_eq!(rig.order(), ["bb", "qa", "[fa,fb]"]);
+        assert_eq!(rig.saves(), 1, "one save");
+        // The band went with the parent: it is still right under it.
+        let (bravo, quartz) = (rig.slot("B"), rig.slot("Q"));
+        let (delta, echo) = (rig.slot("D"), rig.slot("E"));
+        assert!(bravo.y < quartz.y && quartz.y < delta.y && delta.y < echo.y);
+        assert!(rig.app.rail_expanded.contains(&fixture::rail_space("qa")));
+    }
+
+    #[test]
+    fn the_parent_below_an_open_tree_can_be_dragged_up_over_it() {
+        let mut rig = tree_rig();
+        let quartz = rig.slot("Q");
+        let bravo = rig.slot("B");
+        drag(&mut rig, bravo, quartz);
+        assert_eq!(rig.order(), ["bb", "qa", "[fa,fb]"]);
+        assert_eq!(rig.saves(), 1);
+    }
+
+    #[test]
+    fn a_click_on_the_parent_selects_it_and_does_not_open_or_close_its_tree() {
+        let mut rig = tree_rig();
+        let quartz = rig.slot("Q");
+        rig.move_to(quartz);
+        rig.press();
+        let up = rig.release();
+        assert_eq!((up.picked, up.dropped), (0, 0));
+        assert_eq!(rig.selected(), Some(fixture::rail_space("qa")));
+        assert!(rig.app.rail_expanded.contains(&fixture::rail_space("qa")));
+        assert_eq!(rig.saves(), 0);
+    }
+
+    #[test]
+    fn a_click_on_the_chevron_toggles_the_tree_and_selects_and_saves_nothing() {
+        let mut rig = tree_rig();
+        let quartz = fixture::rail_space("qa");
+        let open = Icon::SectionOpen.glyph();
+        // The tree is open: its chevron shows without the pointer on it.
+        assert_eq!(rig.count(open), 1);
+        let chevron = rig.slot(open);
+        assert_eq!(rig.cursor_at(chevron), mouse::Interaction::Pointer);
+        rig.move_to(chevron);
+        let down = rig.press();
+        assert_eq!(down, Seen::default());
+        rig.release();
+        assert!(rig.app.rail_expanded.is_empty(), "the tree closed");
+        assert_eq!(
+            rig.selected(),
+            None,
+            "the click on the chevron selects nothing"
+        );
+        assert_eq!(rig.saves(), 0);
+        assert_eq!(rig.order(), TREE_ORDER);
+        assert_eq!(rig.count("D"), 0, "the band is gone");
+        // The pointer is still on the slot: the closed chevron shows.
+        let closed = Icon::SectionClosed.glyph();
+        let chevron = rig.slot_nth(closed, 0);
+        rig.move_to(chevron);
+        rig.press();
+        rig.release();
+        assert!(rig.app.rail_expanded.contains(&quartz), "it opened again");
+        assert_eq!(rig.count("D"), 1);
+        assert_eq!(rig.selected(), None);
+        assert_eq!(rig.saves(), 0);
+    }
+
+    #[test]
+    fn a_closed_chevron_shows_on_hover_only_and_a_drag_never_starts_from_it() {
+        let mut rig = tree_rig();
+        let (open, closed) = (Icon::SectionOpen.glyph(), Icon::SectionClosed.glyph());
+        assert_eq!(rig.count(closed), 0, "Bravo is not under the pointer");
+        let bravo = rig.slot("B");
+        rig.move_to(bravo);
+        assert_eq!(rig.count(closed), 1, "on hover");
+        assert_eq!(rig.count(open), 1, "Quartz keeps its own");
+        rig.move_to(Point::new(bravo.x, bravo.y + 200.0));
+        assert_eq!(rig.count(closed), 0, "gone with the pointer");
+        // A folder and a space with no sub-space have no chevron.
+        let folder = rig.slot("R");
+        rig.move_to(folder);
+        assert_eq!(rig.count(closed), 0);
+    }
+
+    #[test]
+    fn a_press_on_the_chevron_then_a_move_starts_no_drag() {
+        let mut rig = tree_rig();
+        let chevron = rig.slot(Icon::SectionOpen.glyph());
+        rig.move_to(chevron);
+        rig.press();
+        let moved = rig.move_to(Point::new(chevron.x + 12.0, chevron.y + 30.0));
+        assert_eq!(moved, Seen::default());
+        assert!(rig.app.rail_reorder.is_none());
     }
 }
