@@ -4,9 +4,12 @@
 //! must not promise what does not exist (a sync of the layout, or a file that
 //! is removed at logout).
 
-use twicecat_app::sidebar_menu::Entry;
-use twicecat_core::api::SidebarLabel;
+use twicecat_app::room_list::SortOption;
+use twicecat_app::sidebar_menu::{
+    Entry, Target, entries, room_entries, section_entries, tag_entries, tree_entry,
+};
 use twicecat_core::api::sidebar::limits;
+use twicecat_core::api::{RoomId, SectionKey, SidebarLabel};
 
 fn doc(name: &str) -> String {
     let path = format!("{}/../../docs/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -265,6 +268,107 @@ fn sidebar_md_names_the_menu_entries_the_app_has() {
         let label = entry.label().trim_end_matches('\u{2026}').to_lowercase();
         assert!(flat.contains(&label), "{label:?} is not in sidebar.md");
     }
+}
+
+/// Every words-on-a-button of every options card, taken from the builders that
+/// draw the cards (not a hand list): the rail cards, the section header cards
+/// for every section key and both states, the room cards for every section,
+/// the flat-list room card for every tag state, the Sort card, and the pick
+/// lists with their last choice.
+fn every_card_label() -> Vec<String> {
+    let id = RoomId::from("!x:example.org");
+    let mut found: Vec<Entry> = Vec::new();
+    for in_folder in [false, true] {
+        for target in [Target::Space(id.clone()), Target::Folder(1)] {
+            found.extend(entries(&target, in_folder));
+        }
+    }
+    for (has, open) in [(true, false), (true, true), (false, false)] {
+        found.extend(tree_entry(has, open));
+    }
+    let keys = [
+        SectionKey::Favourites,
+        SectionKey::LowPriority,
+        SectionKey::Starred,
+        SectionKey::Channels,
+        SectionKey::Direct,
+        SectionKey::SubSpace(id.clone()),
+        SectionKey::Custom(1),
+    ];
+    for key in &keys {
+        for collapsed in [false, true] {
+            found.extend(section_entries(key, collapsed));
+        }
+        found.extend(room_entries(key));
+    }
+    for fav in [false, true] {
+        for low in [false, true] {
+            found.extend(tag_entries(fav, low));
+        }
+    }
+    let mut out: Vec<String> = found
+        .into_iter()
+        .map(|entry| entry.label().trim_end_matches('\u{2026}').to_lowercase())
+        .collect();
+    out.extend(
+        SortOption::ALL
+            .iter()
+            .map(|option| option.to_string().to_lowercase()),
+    );
+    // The words the card screens draw outside the builders: the Sort card's
+    // switch and the headings of the two pick lists.
+    out.extend(["unreads first", "move to folder", "move to section"].map(str::to_owned));
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn every_entry_of_every_options_card_is_in_sidebar_md() {
+    let flat = flat(&doc("sidebar.md"));
+    let labels = every_card_label();
+    assert!(labels.len() >= 23, "the builders gave {labels:?}");
+    for label in labels {
+        assert!(flat.contains(&label), "{label:?} is not in sidebar.md");
+    }
+}
+
+#[test]
+fn the_docs_say_what_a_tag_does_next_to_the_layout() {
+    let flat = flat(&doc("sidebar.md"));
+    for wanted in [
+        // Where each thing is kept.
+        "the tags are kept on the homeserver",
+        "the layout and the sort are kept on this device",
+        "which spaces are shown open on the rail is not saved at all",
+        // The tag wins over the layout.
+        "a favourite that you moved into a section of your own stays under favourites",
+        "a room that is the only one in its own section leaves that header hidden",
+        "so there is nothing to drop on",
+        "a starred room dropped on favourites gets the tag and stays under starred",
+        "a favourite that is also saved in a section of your own, dropped on channels",
+        "removes the tag and the room reappears in that section",
+        // Pointer only.
+        "tagging is done with a pointer only",
+        "an open folder and a space whose sub-spaces are shown are not dragged",
+        "a finger on a touch screen does not reorder the rail either",
+    ] {
+        assert!(flat.contains(wanted), "sidebar.md does not say {wanted:?}");
+    }
+    let access = flat_accessibility();
+    for wanted in [
+        "a favourite that you moved into a section of your own stays under favourites",
+        "an open folder and a space whose sub-spaces are shown are not dragged",
+    ] {
+        assert!(
+            access.contains(wanted),
+            "the sidebar section of accessibility.md does not say {wanted:?}"
+        );
+    }
+}
+
+fn flat_accessibility() -> String {
+    flat(&accessibility_sidebar_section())
 }
 
 #[test]
