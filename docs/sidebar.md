@@ -200,8 +200,10 @@ target that is out of view. Esc, or leaving the window, cancels a drag.
 No keyboard shortcut was added for any of this. The menus open with a pointer
 (a right-click or a click), so someone who uses only the keyboard sees the
 arrangement but cannot change it. Tagging is done with a pointer only, too, in
-a space's list and in the flat list: the tags a pointer user or another Matrix
-app set are shown to everyone, and every room is still found with Ctrl+K.
+a space's list and in the flat list. The tags are private to the account, not
+public: every user of Twicecat on that account sees them in the Favourites and
+Low priority sections, keyboard-only users included, whether they were set
+here or in another Matrix app, and every room is still found with Ctrl+K.
 
 ## Where it is kept: on this device, and the two tags on the homeserver
 
@@ -211,10 +213,11 @@ there shows here. The layout and the sort are kept on this device: the layout
 in the sidebar file below, the sort in `settings.json`. Which spaces are shown
 open on the rail is not saved at all.
 
-The arrangement is kept **on this device only**. It is not sent to your
-homeserver and it is not shared with your other devices or other Matrix
-clients: a second computer starts with the default sidebar and has its own
-arrangement.
+The arrangement (the order, the folders, the sections and the names you gave
+them) is kept **on this device only**. Only the two tags above reach your
+homeserver; the arrangement is not sent to it and it is not shared with your
+other devices or other Matrix clients: a second computer starts with the
+default sidebar and has its own arrangement.
 
 There is **one file per account**, in the same folder as `settings.json`,
 named `sidebar-<digest>.json`, where `<digest>` is 16 characters (0 to 9 and
