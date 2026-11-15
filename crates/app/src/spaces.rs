@@ -15,8 +15,8 @@ use std::fmt;
 
 use iced::{Point, Subscription, Task, mouse, touch};
 use twicecat_core::api::{
-    Command, RailEntry, RoomId, RoomListQuery, SectionKey, SidebarLayout, SpaceUnreadView,
-    SpaceView, UnreadCountsView,
+    Command, RailEntry, RoomId, RoomListQuery, RoomSummary, SectionKey, SidebarLayout,
+    SpaceUnreadView, SpaceView, UnreadCountsView,
 };
 
 use crate::drag::{Outcome, Target, Zone};
@@ -24,7 +24,7 @@ use crate::keys::Shortcut;
 use crate::list_drop::{self, ListKey, Verdict};
 use crate::rail_drop;
 use crate::rail_reorder::{self, RailColumn, RailReorder, ReorderEvent};
-use crate::sections::Line;
+use crate::sections::{Header, Line};
 use crate::sidebar::{Op as SidebarOp, SidebarState};
 use crate::state::{App, Message};
 
@@ -376,6 +376,9 @@ pub enum SpacesMessage {
     /// While a drag runs in the list: the pointer moved over a row or a
     /// header, in this part of it.
     ListOver(ListKey, Zone),
+    /// The pointer is at this place inside a row or header it pressed (before
+    /// a drag starts): where the ghost is held.
+    ListGrab(ListKey, Point),
     /// While the button is down: the pointer moved (window coordinates).
     PointerMoved(Point),
     /// The left button, or a finger, went down anywhere in the window while a
@@ -491,6 +494,10 @@ impl App {
                 self.list_over(key, zone);
                 Task::none()
             }
+            SpacesMessage::ListGrab(key, local) => {
+                self.list_drag.grab(&key, local);
+                Task::none()
+            }
             SpacesMessage::PointerMoved(at) => {
                 let _ = self.list_drag.moved(at);
                 Task::none()
@@ -603,6 +610,28 @@ impl App {
             Ok(save) => Task::batch([save.discard(), self.after_list_change()]),
             Err(_) => Task::none(),
         }
+    }
+
+    /// The ghost tile of the item being dragged, while a drag runs: `None`
+    /// before the 4 px threshold, after a drop or cancel, and when the item is
+    /// no longer in the list. Derived from the drag state, so every path that
+    /// ends the drag ends the ghost.
+    pub fn ghost(&self) -> Option<Ghost<'_>> {
+        let key = self.list_drag.dragged()?;
+        let pointer = self.list_drag.pointer()?;
+        let lines = self.section_lines()?;
+        let item = lines.into_iter().find_map(|line| match (line, key) {
+            (Line::Room(room), ListKey::Room(id)) if room.id == *id => Some(GhostItem::Room(room)),
+            (Line::Header(header), ListKey::Header(section)) if header.key == *section => {
+                Some(GhostItem::Header(header))
+            }
+            _ => None,
+        })?;
+        Some(Ghost {
+            item,
+            pointer,
+            grab: self.list_drag.grab_offset(),
+        })
     }
 
     /// Forgets the hover, press and drag of a row or header the list no
@@ -1187,5 +1216,39 @@ mod tests {
             model.unread_for(&RoomId::from("!s0:x")),
             counts(0, 0, false)
         );
+    }
+}
+
+/// What the ghost tile shows: the row or header being dragged.
+#[derive(Clone)]
+pub enum GhostItem<'a> {
+    /// A room's channel row.
+    Room(&'a RoomSummary),
+    /// A section's header.
+    Header(Header<'a>),
+}
+
+/// The ghost tile that follows the pointer during a drag in the sectioned list.
+/// `Debug` shows no name.
+#[derive(Clone)]
+pub struct Ghost<'a> {
+    /// What is dragged.
+    pub item: GhostItem<'a>,
+    /// The pointer, in window coordinates.
+    pub pointer: Point,
+    /// Where the pointer was inside the item at the press, if it was seen.
+    pub grab: Option<Point>,
+}
+
+impl std::fmt::Debug for Ghost<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self.item {
+            GhostItem::Room(_) => "Room",
+            GhostItem::Header(_) => "Header",
+        };
+        f.debug_struct("Ghost")
+            .field("item", &kind)
+            .field("pointer", &self.pointer)
+            .finish_non_exhaustive()
     }
 }

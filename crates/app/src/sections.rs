@@ -3973,6 +3973,7 @@ mod tests {
             send(&mut app, S::PointerMoved(Point::new(0.0, 0.0)));
             send(&mut app, S::PointerMoved(Point::new(50.0, 50.0)));
             assert!(!app.list_drag.is_dragging());
+            assert!(app.ghost().is_none(), "no ghost in the flat list");
             // So does the People tab.
             let (mut app, _store, _rx) = arranged();
             let _ = app.update(Message::ChipClicked(RoomListTab::People));
@@ -4019,6 +4020,88 @@ mod tests {
                 assert!(!app.list_drag.is_active(), "{cancel}");
                 send(&mut app, S::PointerReleased);
                 assert_eq!(saves(&store), saved, "{cancel}");
+            }
+        }
+
+        #[test]
+        fn the_ghost_is_there_exactly_while_a_drag_runs_and_follows_the_pointer() {
+            use crate::spaces::GhostItem;
+            let (mut app, _store, _rx) = arranged();
+            assert!(app.ghost().is_none(), "idle");
+            let item = room("chan2");
+            send(&mut app, S::ListEnter(item.clone()));
+            send(&mut app, S::ListPress(item.clone()));
+            send(&mut app, S::ListGrab(item.clone(), Point::new(30.0, 12.0)));
+            assert!(app.ghost().is_none(), "pressed");
+            send(&mut app, S::PointerMoved(Point::new(10.0, 10.0)));
+            send(&mut app, S::PointerMoved(Point::new(12.0, 11.0)));
+            assert!(app.ghost().is_none(), "under the 4 px threshold: a click");
+            send(&mut app, S::PointerMoved(Point::new(40.0, 10.0)));
+            let ghost = app.ghost().expect("dragging");
+            assert!(matches!(ghost.item, GhostItem::Room(r) if r.id == rid("chan2")));
+            assert_eq!(ghost.pointer, Point::new(40.0, 10.0));
+            assert_eq!(ghost.grab, Some(Point::new(30.0, 12.0)));
+            send(&mut app, S::PointerMoved(Point::new(60.0, 70.0)));
+            assert_eq!(app.ghost().expect("still").pointer, Point::new(60.0, 70.0));
+            // A drop ends it.
+            send(&mut app, S::PointerReleased);
+            assert!(app.ghost().is_none(), "dropped");
+        }
+
+        #[test]
+        fn a_dragged_header_has_a_ghost_too() {
+            use crate::spaces::GhostItem;
+            let (mut app, _store, _rx) = arranged();
+            start(&mut app, &head(SectionKey::Custom(0)));
+            let ghost = app.ghost().expect("dragging a header");
+            assert!(matches!(ghost.item, GhostItem::Header(h) if h.key == SectionKey::Custom(0)));
+            assert_eq!(ghost.grab, None, "no grab was seen: the tile has a default");
+        }
+
+        #[test]
+        fn every_way_a_drag_ends_ends_the_ghost() {
+            for how in [
+                "esc",
+                "focus",
+                "second press",
+                "logout",
+                "the room leaves",
+                "rail press",
+                "release",
+            ] {
+                let (mut app, _store, _rx) = arranged();
+                start(&mut app, &room("chan2"));
+                assert!(app.ghost().is_some(), "{how}: before");
+                match how {
+                    "esc" => {
+                        let _ = app.update(Message::Shortcut {
+                            shortcut: Shortcut::Escape,
+                            captured: false,
+                        });
+                    }
+                    "focus" => {
+                        let _ = app.update(Message::WindowFocus(false));
+                    }
+                    "second press" => send(&mut app, S::PointerPressed),
+                    "logout" => {
+                        feed(&mut app, CoreEvent::LoggedOut);
+                    }
+                    "the room leaves" => {
+                        let rest: Vec<RoomSummary> = app
+                            .rooms
+                            .iter()
+                            .filter(|r| r.id != rid("chan2"))
+                            .cloned()
+                            .collect();
+                        feed(
+                            &mut app,
+                            CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: rest }]),
+                        );
+                    }
+                    "rail press" => send(&mut app, S::RailPressed(crate::spaces::RailKey::Home)),
+                    _ => send(&mut app, S::PointerReleased),
+                }
+                assert!(app.ghost().is_none(), "{how}: after");
             }
         }
 

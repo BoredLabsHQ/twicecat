@@ -511,3 +511,28 @@ fn the_docs_say_voice_follows_text_and_a_collapsed_category_keeps_the_open_room_
         );
     }
 }
+
+#[test]
+fn the_docs_describe_the_ghost_tile_as_a_visual_aid() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "a ghost tile (a see-through copy of the row, or of the header's name) follows the pointer",
+        "so a click never shows it",
+        "the rail shows no ghost tile",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "the ghost tile of a drag is a visual aid only",
+        "it takes no pointer event and no focus",
+    ] {
+        assert!(
+            access.contains(wanted),
+            "accessibility.md does not say {wanted:?}"
+        );
+    }
+}

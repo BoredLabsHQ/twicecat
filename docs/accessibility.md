@@ -590,6 +590,12 @@ existing shortcut keeps its meaning.
   there and keeps Ctrl+K and Alt+Up / Alt+Down to reach every room. The narrow
   rail's rows have no card at all; widen the list to tag a room. A right-click
   does not change what a left click does on the row.
+- **The ghost tile of a drag is a visual aid only.** While a room or a section
+  header is dragged in the room list, a see-through copy of it follows the
+  pointer. It takes no pointer event and no focus, says nothing a screen reader
+  would need, and the drop is decided by the row or header under the pointer as
+  before; nothing was added for the keyboard, and the options menus remain the
+  alternative to dragging.
 - **No auto-scroll while dragging.** A drag does not scroll the rail or the
   list when the pointer is near an edge, so a target that is out of view
   cannot be reached by dragging. Use the options menu: it works on any item,

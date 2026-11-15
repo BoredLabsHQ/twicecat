@@ -167,7 +167,12 @@ You can also **drag**, in two places:
   Esc, leaving the window or moving the pointer out of the rail ends the drag
   and changes nothing.
 - **In the room list**, a room onto a section header or between the rows of
-  one of your own sections, and a section header onto another header. Dropping
+  one of your own sections, and a section header onto another header. While
+  you drag, a ghost tile (a see-through copy of the row, or of the header's
+  name) follows the pointer, held where you grabbed it; it shows nothing until
+  the pointer has moved a few pixels, so a click never shows it, and it
+  disappears when you drop, press Esc, leave the window or the item leaves the
+  list. The rail shows no ghost tile. Dropping
   a room onto the Favourites or Low priority header gets that tag, as "Add to
   favourites" or "Mark as low priority" do, and it is kept on the homeserver
   (no sidebar file is saved). Dropping a room onto its own section (the one it
