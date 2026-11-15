@@ -2013,7 +2013,11 @@ impl App {
                 action: ActionKind::RoomTag,
                 error,
                 ..
-            } => task = self.show_notice(ActionKind::RoomTag, &error),
+            } => {
+                // Fixed words only: an error's text can name a room.
+                let reason = actions::room_tag_reason(&error);
+                task = self.show_notice_detail(ActionKind::RoomTag, reason);
+            }
             CoreEvent::ActionFailed {
                 room_id,
                 action: ActionKind::Thread,
@@ -2725,7 +2729,12 @@ impl App {
 
     /// Shows the failure line of a delete or reaction for 5 seconds.
     fn show_notice(&mut self, action: ActionKind, error: &CoreError) -> Task<Message> {
-        let Some(text) = actions::notice_text(action, &safe_line(&error.to_string())) else {
+        self.show_notice_detail(action, &safe_line(&error.to_string()))
+    }
+
+    /// [`Self::show_notice`] with the detail already chosen.
+    fn show_notice_detail(&mut self, action: ActionKind, detail: &str) -> Task<Message> {
+        let Some(text) = actions::notice_text(action, detail) else {
             return Task::none();
         };
         self.show_notice_text(text)
@@ -6498,10 +6507,43 @@ mod tests {
             error: CoreError::Network("offline".into()),
         }));
         let notice = app.actions.notice.clone().expect("a notice");
-        assert!(notice.text.contains("offline"), "{}", notice.text);
+        assert!(notice.text.contains("try again later"), "{}", notice.text);
         assert!(!notice.text.contains("secretroom"), "{}", notice.text);
         let _ = app.update(Message::NoticeExpired(notice.seq));
         assert!(app.actions.notice.is_none());
+    }
+
+    #[test]
+    fn a_failed_room_tag_notice_never_carries_an_error_text() {
+        let (mut app, _rx) = actions_app();
+        let errors = [
+            CoreError::UnknownRoom(RoomId::from("!secretroom:x")),
+            CoreError::UnknownRoom(RoomId::from("secretroom \u{202E}\nmalformed")),
+            CoreError::Network("secretroom".into()),
+            CoreError::Internal("secretroom".into()),
+        ];
+        for error in errors {
+            let _ = app.update(core(CoreEvent::ActionFailed {
+                room_id: RoomId::from("!secretroom:x"),
+                action: ActionKind::RoomTag,
+                error,
+            }));
+            let text = app.actions.notice.take().expect("a notice").text;
+            assert!(!text.contains("secretroom"), "{text}");
+            assert!(text.starts_with("Could not update the favourite"), "{text}");
+        }
+        for (error, word) in [
+            (CoreError::NotAllowed, "not allowed"),
+            (CoreError::NotLoggedIn, "not logged in"),
+        ] {
+            let _ = app.update(core(CoreEvent::ActionFailed {
+                room_id: RoomId::from("!a:x"),
+                action: ActionKind::RoomTag,
+                error,
+            }));
+            let text = app.actions.notice.take().expect("a notice").text;
+            assert!(text.ends_with(word), "{text}");
+        }
     }
 
     #[test]

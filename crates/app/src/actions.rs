@@ -171,6 +171,18 @@ pub fn notice_text(action: ActionKind, detail: &str) -> Option<String> {
     Some(format!("{what}: {detail}"))
 }
 
+/// The words after a failed room tag's notice. Fixed text, never the error's
+/// own: `CoreError::UnknownRoom` (and others) can carry a room ID or a
+/// server's words.
+pub fn room_tag_reason(error: &twicecat_core::api::CoreError) -> &'static str {
+    use twicecat_core::api::CoreError;
+    match error {
+        CoreError::NotAllowed => "not allowed",
+        CoreError::NotLoggedIn => "not logged in",
+        _ => "try again later",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

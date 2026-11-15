@@ -536,6 +536,32 @@ Acceptance criteria:
 
 Evidence: `TWICECAT_GALLERY_ONLY=space-sections-tags` writes the PNGs. In a running app, "Add to favourites" moves the room into Favourites, and Element on the same test account shows it as a favourite.
 
+### Task 9b: A room card in the flat list (added after Task 9, by the human's ruling)
+Added to the plan on the human's ruling after the Task 9 review: L5 says the tag menus exist for "every room (flat and sectioned)", but Task 9 builds them only on the room card of a space's sectioned list (`Target::Room { space, room }`). Home, every chip other than All, an active search and the narrow rail show flat rows with no card, so a room there (including a favourite under the Favourites chip) cannot be tagged or un-tagged. This task closes that gap. It is new scope: the human chose it over documenting the limit.
+
+Language: rust
+Files:
+- `crates/app/src/sidebar_menu.rs` and `screens/sidebar_menu.rs`: a room card that needs no space (a new target for a flat row, or `Target::Room` with an optional space), with the four tag entries of Task 9 (same wording table, same `SetRoomTag` commands, same one-command rule). Entries that only make sense in a sectioned list (move to a section, hide from a custom section and the like) are not offered.
+- `crates/app/src/screens/room_list_pane.rs`: how a flat row opens the card (right-click, as the other cards do; check the pinned iced 0.14 sources for what a row can capture without breaking the row's click, selection and the windowed list).
+- `crates/app/src/state.rs` if a message or the open-card state needs it.
+- `crates/app/tests/ui_gallery.rs`: a scenario with the flat card open (`room-list-card`), and the existing flat-list scenarios unchanged.
+- `crates/app/tests/menus_ignore_the_wheel.rs` if the card holds a list.
+- `docs/sidebar.md` and `docs/accessibility.md`: tags can be changed from the flat list too; the keyboard-only limit stays as documented (A1) and is stated for this card.
+- `PROGRESS.md` and the ledger.
+
+Depends on: Task 9
+Acceptance criteria:
+- A right-click on a flat row (Home, a chip other than All, a search result) opens the card for that room; a click, a double-click and the windowed list's scrolling still behave as before (the existing flat-list tests pass unchanged).
+- The card's entries follow the room's current flags (the Task 9 table test is reused), and each sends exactly one `SetRoomTag`, closes the card, and saves no sidebar file.
+- A card opened for a room that is no longer in the list as drawn sends nothing (as for the sectioned card).
+- Under the Favourites chip, "Remove from favourites" removes the tag and the room leaves that list on the next room-list event.
+- In the narrow rail the rows have no card (the limit is documented), or the plan's rail rule is followed if it says otherwise.
+- Every existing menu, `sidebar_menu` and gallery test passes unchanged; `menus_ignore_the_wheel.rs` covers any new list.
+- Mutation, recorded and reverted: sending `Favourite` for a low-priority entry fails the table test.
+- The gate passes. Commit: `feat(app): a room card in the flat list for favourites and low priority`, with `Step: sbr.9b`.
+
+Evidence: `TWICECAT_GALLERY_ONLY=room-list-card` writes the PNGs. In a running app, a right-click on a room in Home opens the card and "Add to favourites" puts it under the Favourites chip.
+
 ### Task 10: Dragging a room onto Favourites or Low priority
 Language: rust
 Files:

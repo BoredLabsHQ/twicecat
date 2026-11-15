@@ -4318,6 +4318,10 @@ Three reviews (core messaging and sync, calls and audio, app UI) found the bugs 
   - The flat list and Home have no room card, so a room there cannot be tagged from the app (see the conflict above).
   - Task 4's open point about `list_drop.rs` stays for Task 10 (L6).
   - Task 1's Low note stands: removing a tag decides from the cached flags, so a tag set on another device and not yet synced is left in place.
+### Step 9 follow-up: a failed room tag notice names no room (sbr.9, second commit)
+- **Fixed (security audit Low):** `ActionFailed { RoomTag }` built its notice from `error.to_string()`, and `CoreError::UnknownRoom(id)` displays the room ID. The notice now uses `actions::room_tag_reason`: "not allowed" (`NotAllowed`), "not logged in" (`NotLoggedIn`), "try again later" for every other error (so `Network`, `Internal` and `UnknownRoom` text never reaches the notice). It still goes through `notice_text` and `show_notice_text`, so it looks and expires like the other notices.
+- **Test (red first):** `state::tests::a_failed_room_tag_notice_never_carries_an_error_text` (`UnknownRoom` with a normal and a malformed ID, `Network` and `Internal` holding the same word, and the two fixed reasons); the earlier test now expects "try again later" for `Network`. Both failed before the fix ("unknown room !secretroom:x").
+- **Not done (ledger item):** "Remove low priority" removing the favourite tag of a room that carries both needs a core API change.
 
 ## Sidebar rework human checkpoint
 - [ ] **(Task 5) The rail's drag in a real window** (Linux Wayland and X11, Windows, macOS; none of this can be seen headlessly, the gallery is tiny-skia and has no pointer):
