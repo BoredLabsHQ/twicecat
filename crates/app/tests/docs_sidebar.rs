@@ -430,6 +430,7 @@ fn the_docs_say_a_room_can_be_dragged_onto_favourites_or_low_priority_like_the_m
         "a room already in favourites dropped on favourites does nothing",
         "a starred room is not allowed on low priority",
         "a favourite stays under favourites",
+        "dropping a room on a row of a built-in section works like dropping it on that section's header",
     ] {
         assert!(
             sidebar.contains(wanted),

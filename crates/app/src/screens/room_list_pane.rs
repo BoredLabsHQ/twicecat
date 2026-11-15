@@ -741,11 +741,47 @@ fn with_mark<'a>(content: Element<'a, Message>, mark: Mark, height: f32) -> Elem
             layer.align_bottom(Length::Fixed(height)).into()
         }
     };
+    // A ring over the whole row: a row of a section that is not the user's
+    // own is a target like its header (it takes the room into the section).
+    let ring = |refused: bool| -> Element<'a, Message> {
+        let outline = container(space().width(Fill).height(Fill))
+            .width(Fill)
+            .height(Length::Fixed(height))
+            .style(move |t: &iced::Theme| container::Style {
+                border: border::rounded(tokens::SMALL)
+                    .color(if refused {
+                        t.palette().danger
+                    } else {
+                        theme::semantic(t).focus
+                    })
+                    .width(MARK_RING),
+                ..container::Style::default()
+            });
+        if refused {
+            // Not by colour alone.
+            let words = container(
+                text(NOT_ALLOWED)
+                    .size(tokens::CAPTION)
+                    .style(iced::widget::text::danger)
+                    .wrapping(Wrapping::None),
+            )
+            .width(Fill)
+            .height(Length::Fixed(height))
+            .padding([0.0, tokens::S])
+            .align_right(Fill)
+            .center_y(Length::Fixed(height));
+            stack![outline, words].into()
+        } else {
+            outline.into()
+        }
+    };
     let mut layers = stack![content].width(Fill).height(Length::Fixed(height));
     match mark {
         Mark::Before => layers = layers.push(line(true)),
         Mark::After => layers = layers.push(line(false)),
-        Mark::None | Mark::Into | Mark::Refused => {}
+        Mark::Into => layers = layers.push(ring(false)),
+        Mark::Refused => layers = layers.push(ring(true)),
+        Mark::None => {}
     }
     layers.into()
 }
@@ -882,6 +918,11 @@ fn section_header<'a>(app: &App, header: &Header<'a>, density: Density) -> Eleme
     ]
     .align_y(iced::Center)
     .height(Length::Fixed(height));
+    // The header draws its own ring above: `list_area` adds none over it.
+    let cue = ListCue {
+        mark: Mark::None,
+        ..cue
+    };
     list_area(line.into(), key, cue, height, open)
 }
 
