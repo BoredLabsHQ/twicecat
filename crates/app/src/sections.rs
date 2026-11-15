@@ -19,7 +19,7 @@ use twicecat_core::api::{
 };
 
 use crate::calls::CallModel;
-use crate::room_list::{Badge, Glyph, Sorting, channel_glyph, clamp_window, order, row_height};
+use crate::room_list::{Badge, Sorting, clamp_window, order, row_height, voice_badge};
 use crate::state::App;
 use crate::ui::tokens::Density;
 
@@ -393,10 +393,8 @@ fn build_placed<'a>(
         if !matches!(bucket.key, SectionKey::Starred | SectionKey::Custom(_)) {
             // Voice after text (plan C3): a stable partition, so each group
             // keeps the order the sort gave it.
-            let (voice, text): (Vec<_>, Vec<_>) = bucket
-                .rooms
-                .iter()
-                .partition(|(_, room)| channel_glyph(room) == Glyph::Speaker);
+            let (voice, text): (Vec<_>, Vec<_>) =
+                bucket.rooms.iter().partition(|(_, room)| voice_badge(room));
             bucket.rooms = text.into_iter().chain(voice).copied().collect();
         }
     }
@@ -2381,6 +2379,38 @@ mod tests {
         assert!(!asked(&mut rx), "t1 is in a collapsed section: not in view");
         let _ = app.update(Message::Spaces(SpacesMessage::ToggleSection(tech)));
         assert!(asked(&mut rx), "expanded: now in view");
+    }
+
+    #[test]
+    fn the_avatars_of_the_channel_rows_drawn_are_asked_for_and_none_for_hidden_rooms() {
+        use twicecat_core::api::AvatarId;
+        let (mut app, mut rx) = space_app(None);
+        collapse(&mut app, SectionKey::SubSpace(rid("tech")));
+        let _ = drain(&mut rx);
+        let mut rows = app.rooms.clone();
+        for r in &mut rows {
+            // A voice room in view, a text room in a collapsed section.
+            if r.id == rid("v1") {
+                r.is_call_room = true;
+                r.avatar = Some(AvatarId::from("mxc://x/v1"));
+            } else if r.id == rid("t1") {
+                r.avatar = Some(AvatarId::from("mxc://x/t1"));
+            }
+        }
+        feed(
+            &mut app,
+            CoreEvent::RoomListChanged(vec![ListDiff::Reset { values: rows }]),
+        );
+        let asked: Vec<AvatarId> = drain(&mut rx)
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::FetchAvatars(ids) => Some(ids),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(asked.contains(&AvatarId::from("mxc://x/v1")), "{asked:?}");
+        assert!(!asked.contains(&AvatarId::from("mxc://x/t1")), "{asked:?}");
     }
 
     // ---- toggling ----

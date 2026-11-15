@@ -67,8 +67,10 @@ collapsed header shows the unread or mention count of its rooms.
 The list is drawn like Discord's categories. A header is the section's name in
 capitals, small and muted, with its arrow on the left; the name turns to the
 normal text colour under the pointer, and the "⋯" button stays. A room is a
-**channel row**: a "#" before a text room, the speaker before a voice room, and
-the person's picture before a direct message, which keeps its usual row. A
+**channel row**: the room's picture before its name, or its first letter when
+it has none (as in the flat list), and a small speaker at the bottom right
+corner of the picture on a voice room. A direct message has its picture too
+and keeps its usual row. A
 channel row has no message preview and no time, and it is as tall as before in
 both densities. A room with unread messages, notifications or a mark has its
 name in bold in the normal text colour, with a small bar at the left edge of
