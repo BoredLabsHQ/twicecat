@@ -3237,6 +3237,198 @@ mod tests {
             assert!(!app.list_drag.is_active());
         }
 
+        /// Every room the layout keeps, in its sections of the user's own and
+        /// Starred, as (section, rooms) pairs.
+        fn stored(app: &App) -> Vec<(String, Vec<RoomId>)> {
+            let rec = record(app);
+            let mut all = vec![("starred".to_owned(), rec.starred.clone())];
+            all.extend(
+                rec.custom
+                    .iter()
+                    .map(|c| (format!("custom{}", c.id), c.rooms.clone())),
+            );
+            all
+        }
+
+        fn every_room(app: &App) -> Vec<RoomId> {
+            let mut rooms: Vec<RoomId> = stored(app).into_iter().flat_map(|(_, r)| r).collect();
+            rooms.sort();
+            rooms
+        }
+
+        fn without(rooms: &[RoomId], kept: &[&str]) -> Vec<RoomId> {
+            rooms
+                .iter()
+                .filter(|r| !kept.iter().any(|k| **r == rid(k)))
+                .cloned()
+                .collect()
+        }
+
+        /// "Ops" (0) holds, in this order, chan1, t1, chan2, t2 and rustroom;
+        /// t1 is the open room and t2 is the room of this device's call. It is
+        /// collapsed, so only t1 and t2 are drawn.
+        fn collapsed_custom() -> (App, MemorySidebar, mpsc::Receiver<Command>) {
+            let (mut app, store, rx) = drag_app();
+            let label = SidebarLabel::try_from("Ops").expect("a name");
+            assert!(
+                app.apply_sidebar(Op::NewSection {
+                    space: rid("sp"),
+                    name: label,
+                    room: Some(rid("chan1")),
+                })
+                .is_ok()
+            );
+            for r in ["t1", "chan2", "t2", "rustroom"] {
+                assert!(
+                    app.apply_sidebar(Op::MoveRoomToSection {
+                        space: rid("sp"),
+                        room: rid(r),
+                        section: 0,
+                    })
+                    .is_ok()
+                );
+            }
+            let _ = app.update(Message::SelectRoom(rid("t1")));
+            app.calls.call = Some(crate::calls::CurrentCall::new(
+                rid("t2"),
+                crate::calls::CallPhase::Joining,
+            ));
+            collapse(&mut app, SectionKey::Custom(0));
+            assert_eq!(
+                drawn_names(&app)
+                    .into_iter()
+                    .skip_while(|l| l != "# Ops")
+                    .take(3)
+                    .collect::<Vec<_>>(),
+                ["# Ops", "t1", "t2"]
+            );
+            (app, store, rx)
+        }
+
+        #[test]
+        fn dragging_a_kept_room_in_a_collapsed_custom_section_keeps_the_hidden_rooms_in_place() {
+            let hidden = ["chan1", "chan2", "rustroom"];
+            let before = {
+                let (app, ..) = collapsed_custom();
+                let ops: Vec<RoomId> = record(&app).custom[0].rooms.clone();
+                assert_eq!(ops.len(), 5);
+                ops
+            };
+            let hidden_ids = without(&before, &["t1", "t2"]);
+            assert_eq!(hidden_ids, hidden.map(rid));
+            // Beside the other kept room, both ways, and onto its own header.
+            for (item, target, zone) in [
+                (room("t1"), room("t2"), Zone::After),
+                (room("t2"), room("t1"), Zone::Before),
+                (room("t1"), head(SectionKey::Custom(0)), Zone::Into),
+            ] {
+                let (mut app, ..) = collapsed_custom();
+                drag(&mut app, &item, &target, zone);
+                let now = record(&app).custom[0].rooms.clone();
+                assert_eq!(now.len(), 5, "no room is lost or doubled: {now:?}");
+                assert_eq!(
+                    without(&now, &["t1", "t2"]),
+                    hidden_ids,
+                    "hidden rooms stay"
+                );
+            }
+            // Out of the collapsed section, into another: the hidden rooms stay.
+            let (mut app, ..) = collapsed_custom();
+            let later = SidebarLabel::try_from("Later").expect("a name");
+            assert!(
+                app.apply_sidebar(Op::NewSection {
+                    space: rid("sp"),
+                    name: later,
+                    room: None,
+                })
+                .is_ok()
+            );
+            let all = every_room(&app);
+            drag(
+                &mut app,
+                &room("t1"),
+                &head(SectionKey::Custom(1)),
+                Zone::Into,
+            );
+            assert_eq!(record(&app).custom[1].rooms, [rid("t1")]);
+            let now = record(&app).custom[0].rooms.clone();
+            assert_eq!(now, without(&before, &["t1"]), "the rest keeps its order");
+            assert_eq!(every_room(&app), all, "no room lost or doubled");
+        }
+
+        #[test]
+        fn dropping_on_a_collapsed_custom_section_loses_no_room() {
+            let (mut app, ..) = collapsed_custom();
+            let before = record(&app).custom[0].rooms.clone();
+            // A free room onto the collapsed header, and onto its kept row.
+            drag(
+                &mut app,
+                &room("starred1"),
+                &head(SectionKey::Custom(0)),
+                Zone::Into,
+            );
+            let after_header = record(&app).custom[0].rooms.clone();
+            assert_eq!(&after_header[..5], before.as_slice());
+            assert_eq!(after_header.len(), 6);
+            drag(&mut app, &room("dm1"), &room("t1"), Zone::After);
+            let now = record(&app).custom[0].rooms.clone();
+            assert_eq!(now.len(), 7, "{now:?}");
+            assert_eq!(
+                without(&now, &["dm1", "t1", "t2", "starred1"]),
+                without(&before, &["t1", "t2"]),
+                "the hidden rooms keep their order"
+            );
+        }
+
+        #[test]
+        fn dragging_the_kept_room_of_a_collapsed_starred_keeps_the_hidden_rooms_in_place() {
+            let build = || {
+                let (mut app, store, rx) = drag_app();
+                let label = SidebarLabel::try_from("Ops").expect("a name");
+                assert!(
+                    app.apply_sidebar(Op::NewSection {
+                        space: rid("sp"),
+                        name: label,
+                        room: None,
+                    })
+                    .is_ok()
+                );
+                for r in ["chan1", "chan2", "t2"] {
+                    assert!(
+                        app.apply_sidebar(Op::Star {
+                            space: rid("sp"),
+                            room: rid(r),
+                        })
+                        .is_ok()
+                    );
+                }
+                let _ = app.update(Message::SelectRoom(rid("chan2")));
+                collapse(&mut app, SectionKey::Starred);
+                let drawn = drawn_names(&app);
+                assert_eq!(&drawn[..2], ["# Starred", "chan2"], "{drawn:?}");
+                (app, store, rx)
+            };
+            let hidden = [rid("chan1"), rid("t2")];
+            // Onto its own header, onto Channels (back to default), onto Ops.
+            for (target, expect_starred) in [
+                (head(SectionKey::Starred), vec!["chan1", "chan2", "t2"]),
+                (head(SectionKey::Channels), vec!["chan1", "t2"]),
+                (head(SectionKey::Custom(0)), vec!["chan1", "t2"]),
+            ] {
+                let (mut app, ..) = build();
+                drag(&mut app, &room("chan2"), &target, Zone::Into);
+                let rec = record(&app);
+                let want: Vec<RoomId> = expect_starred.iter().map(|r| rid(r)).collect();
+                assert_eq!(rec.starred, want, "{target:?}");
+                assert_eq!(without(&rec.starred, &["chan2"]), hidden);
+                let in_ops = rec.custom[0].rooms.contains(&rid("chan2"));
+                assert_eq!(
+                    in_ops,
+                    matches!(target, ListKey::Header(SectionKey::Custom(0)))
+                );
+            }
+        }
+
         /// How the drop of every kind of target compares with the card.
         #[test]
         fn every_kind_of_drop_gives_the_layout_of_the_matching_card_operation() {
@@ -4229,6 +4421,29 @@ mod tests {
         }
 
         #[test]
+        fn low_priority_puts_voice_after_text_under_two_sorts() {
+            let (sp, mut rs) = fixture();
+            for r in &mut rs {
+                r.is_low_priority = true;
+            }
+            let run = |by| {
+                let sorting = Sorting {
+                    by,
+                    unread_first: false,
+                };
+                lines_of(&build_sorted(&sp[0], &sp, &rs, None, None, sorting))
+            };
+            assert_eq!(
+                run(RoomSortChoice::Activity),
+                ["# Low priority", "d", "b", "c", "a"]
+            );
+            assert_eq!(
+                run(RoomSortChoice::Name),
+                ["# Low priority", "b", "d", "a", "c"]
+            );
+        }
+
+        #[test]
         fn every_section_the_user_does_not_order_puts_voice_after_text() {
             let (sp, mut rs) = fixture();
             for r in &mut rs {
@@ -4434,39 +4649,37 @@ mod tests {
 
         #[test]
         fn alt_down_skips_the_hidden_rooms_and_reaches_the_kept_one() {
+            use crate::calls::{CallPhase, CurrentCall};
             let (mut app, _rx) = space_app(None);
-            collapse(&mut app, SectionKey::Channels);
-            // The open room of the collapsed Channels is kept.
-            let _ = app.update(Message::SelectRoom(rid("chan2")));
+            // Direct messages is collapsed with this device's call in dm1's
+            // section: the call room is the kept one, drawn after the hidden
+            // rooms of Channels and Tech, and the hidden rooms of Voice sit
+            // between the call room and the room drawn before it.
+            collapse(&mut app, SectionKey::SubSpace(rid("tech")));
+            collapse(&mut app, SectionKey::SubSpace(rid("voice")));
+            app.calls.call = Some(CurrentCall::new(rid("v1"), CallPhase::Joining));
+            let _ = app.update(Message::SelectRoom(rid("starred1")));
             assert_eq!(
                 drawn_names(&app),
                 [
                     "# Channels",
+                    "chan1",
                     "chan2",
+                    "starred1",
                     "# tech",
-                    "t1",
-                    "rustroom",
-                    "t2",
-                    "techdm",
                     "# voice",
                     "v1",
                     "# Direct messages",
                     "dm1"
                 ]
             );
-            // The open room is kept: Alt+Down leaves it for the next drawn
-            // room and Alt+Up wraps to the last one.
+            // Tech's t1, t2, rustroom and techdm are hidden between the rooms
+            // of Channels and Voice: Alt+Down from starred1 lands on v1.
             press(&mut app, Shortcut::NextRoom);
-            assert_eq!(app.selected, Some(rid("t1")));
-            // Now chan2 is hidden: the three hidden rooms of Channels are
-            // skipped, and the next one drawn is the first of the next section.
-            let _ = app.update(Message::SelectRoom(rid("dm1")));
+            assert_eq!(app.selected, Some(rid("v1")), "t1 .. techdm are skipped");
+            // v1 is open now and still kept; the next drawn room is dm1.
             press(&mut app, Shortcut::NextRoom);
-            assert_eq!(
-                app.selected,
-                Some(rid("t1")),
-                "wraps past the hidden Channels"
-            );
+            assert_eq!(app.selected, Some(rid("dm1")));
         }
 
         #[test]
