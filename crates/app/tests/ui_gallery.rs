@@ -413,6 +413,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "space-sections-collapsed",
         "space-sections-tags",
         "voice-channel",
+        "space-categories",
         "space-sections-custom",
         "space-sections-dragging",
         "space-sections-dragging-line",
@@ -1692,6 +1693,7 @@ fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes()
         "space-sections-collapsed",
         "space-sections-tags",
         "voice-channel",
+        "space-categories",
         "space-sections-custom",
         "space-sections-dragging",
         "space-sections-dragging-line",
@@ -1782,6 +1784,60 @@ fn space_sections_draw_every_line_whole_and_apart_in_both_densities_and_themes()
                 }
             }
         }
+    }
+}
+
+/// Sidebar rework, Task 11: a space's list is drawn as categories. Capitals
+/// on the headers, a "#" before every text channel, the speaker before a voice
+/// one, and neither a preview nor a time on a channel row, in both densities
+/// and every test theme.
+#[test]
+fn space_categories_draw_headers_in_capitals_and_channels_without_previews() {
+    use twicecat_app::ui::icons::Icon;
+    let renderer = renderer();
+    let scenario = fixture::scenarios()
+        .into_iter()
+        .find(|s| s.name == "space-categories")
+        .expect("the scenario");
+    for variant in variants(true)
+        .into_iter()
+        .filter(|v| v.list == RoomListChoice::Expanded)
+    {
+        let mut app = (scenario.build)();
+        apply(&mut app, variant);
+        let what = variant.tag();
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let words: Vec<String> = texts(&mut laid, &renderer)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect();
+        let count = |w: &str| words.iter().filter(|t| t.as_str() == w).count();
+        for header in ["STARRED", "CHANNELS", "VOICE", "TECH"] {
+            assert_eq!(count(header), 1, "{what}: header {header}");
+        }
+        assert_eq!(count("Channels"), 0, "{what}: no header in mixed case");
+        // General, Random and Announcements; the voice rooms have the speaker.
+        assert_eq!(count("#"), 3, "{what}: a hash per text channel");
+        assert!(
+            count(Icon::Speaker.glyph()) >= 2,
+            "{what}: a speaker per voice room"
+        );
+        for name in ["General", "Random", "Announcements"] {
+            assert_eq!(count(name), 1, "{what}: {name}");
+        }
+        // The open voice room is named in the header and the call bar too.
+        for name in ["vocal", "coworking"] {
+            assert!(count(name) >= 1, "{what}: {name}");
+        }
+        // Every room of the fixture has a preview; only the direct message
+        // (Alice, which keeps its row) shows it, in the comfortable density.
+        let previews = words
+            .iter()
+            .filter(|t| t.contains("Sounds good to me"))
+            .count();
+        let expected = usize::from(app.density() == twicecat_app::ui::tokens::Density::Comfortable);
+        assert_eq!(previews, expected, "{what}: only the DM row has a preview");
     }
 }
 
@@ -7643,7 +7699,7 @@ mod real_drag {
         let mut tree = Tree::empty();
         let before = app.section_lines().map(|l| l.len());
         let from = find(&app, &renderer, &mut tree, "General").center();
-        let to = find(&app, &renderer, &mut tree, "Reading list").center();
+        let to = find(&app, &renderer, &mut tree, "READING LIST").center();
         let steps = [
             from,
             iced::Point::new(from.x, from.y + 6.0),

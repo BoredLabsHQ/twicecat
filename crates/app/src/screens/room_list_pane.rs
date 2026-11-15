@@ -29,8 +29,9 @@ use crate::drag::Zone;
 use crate::list_drop::{self, ListKey};
 use crate::notifications::muted_mark;
 use crate::room_list::{
-    Badge, OVERSCAN_ROWS, RAIL_ROW_HEIGHT, SortOption, badge_for, empty_label, preview_line,
-    row_height, row_name, spacer_heights, visible_range,
+    Badge, Emphasis, Glyph, OVERSCAN_ROWS, RAIL_ROW_HEIGHT, SortOption, badge_for,
+    channel_emphasis, channel_glyph, empty_label, preview_line, row_height, row_name,
+    spacer_heights, visible_range,
 };
 use crate::rooms::RoomsMessage;
 use crate::screens::{call, main_view};
@@ -545,8 +546,8 @@ fn scroller<'a>(
 }
 
 /// The sectioned list (a space is selected): headers, rooms and hints, each
-/// at its own height, with only the lines near the viewport built. Rooms keep
-/// today's row.
+/// at its own height, with only the lines near the viewport built. A channel
+/// is drawn by [`channel_row`]; a DM keeps today's row.
 fn sectioned_list<'a>(app: &'a App, lines: &[Line<'a>]) -> Element<'a, Message> {
     let density = app.density();
     let offsets = line_offsets(lines, density);
@@ -573,13 +574,14 @@ fn sectioned_list<'a>(app: &'a App, lines: &[Line<'a>]) -> Element<'a, Message> 
                 hovered: cue.hovered,
                 dragged: cue.dragged,
             };
-            sectioned_room_row(
-                room_row_in(room, &env, selected, mode, call, pointer),
-                room,
-                selected,
-                density,
-                cue,
-            )
+            // A DM keeps its avatar and today's row; any other room is a
+            // channel of its category (plan C2).
+            let row_view = if room.is_dm {
+                room_row_in(room, &env, selected, mode, call, pointer)
+            } else {
+                channel_row(room, &env, selected, mode, call, cue)
+            };
+            sectioned_room_row(row_view, room, selected, density, cue)
         }
         Line::Participant(person) => person_line(app, person, density),
         Line::More(more) => more_line(more, density),
@@ -819,17 +821,23 @@ fn section_header<'a>(app: &App, header: &Header<'a>, density: Density) -> Eleme
     } else {
         Icon::SectionOpen
     };
+    // The name is in capitals and turns to the text colour under the pointer
+    // (plan C1); a drag over it counts as the pointer.
+    let lit = cue.hovered || cue.dragged;
+    let name_style = move |t: &iced::Theme| text::Style {
+        color: Some(header_name_color(t, lit)),
+    };
     let mut content = row![
         text(chevron.glyph())
             .size(tokens::CAPTION)
-            .style(kit::muted)
+            .style(name_style)
             .width(Length::Fixed(14.0))
             .wrapping(Wrapping::None),
         container(
-            text(row_name(header.name))
+            text(row_name(header.name).to_uppercase())
                 .size(tokens::CAPTION)
                 .font(fonts::BODY_SEMIBOLD)
-                .style(kit::muted)
+                .style(name_style)
                 .wrapping(Wrapping::None)
         )
         .width(Fill)
@@ -1116,6 +1124,196 @@ fn room_row_in<'a>(
             .into(),
     };
     row![accent_bar(selected), body]
+        .height(Length::Fixed(height))
+        .into()
+}
+
+/// The colour of a channel row's name (plan C2): the text colour when
+/// unread, the muted colour when read, and the muted colour pulled toward the
+/// background, as far as it keeps 3:1 on every background a row has, when the
+/// room is in Mute mode.
+pub(crate) fn channel_name_color(theme: &iced::Theme, emphasis: Emphasis) -> Color {
+    let sem = theme::semantic(theme);
+    match emphasis {
+        Emphasis::Unread => theme.palette().text,
+        Emphasis::Read => sem.muted,
+        Emphasis::Muted => dimmed(theme, sem.muted),
+    }
+}
+
+/// The colour of a category header's name: muted, the text colour under the
+/// pointer (plan C1).
+pub(crate) fn header_name_color(theme: &iced::Theme, hovered: bool) -> Color {
+    if hovered {
+        theme.palette().text
+    } else {
+        theme::semantic(theme).muted
+    }
+}
+
+/// `color` mixed toward the list's background in 5 % steps up to 40 %, the
+/// furthest that still reads at [`DIM_CONTRAST`] on the list, the hover and
+/// the selection. `color` itself when no step does.
+fn dimmed(theme: &iced::Theme, color: Color) -> Color {
+    let sem = theme::semantic(theme);
+    let back = theme.palette().background;
+    let grounds = [back, sem.message_hover, sem.selection];
+    (1..=8u8)
+        .rev()
+        .map(|step| {
+            let t = f32::from(step) / 20.0;
+            Color::from_rgb(
+                color.r + (back.r - color.r) * t,
+                color.g + (back.g - color.g) * t,
+                color.b + (back.b - color.b) * t,
+            )
+        })
+        .find(|mixed| {
+            grounds
+                .iter()
+                .all(|ground| theme::contrast(*mixed, *ground) >= DIM_CONTRAST)
+        })
+        .unwrap_or(color)
+}
+
+/// The least contrast a dimmed (muted-mode) name keeps: a little over the 3:1
+/// that a read name must reach, so the dimming never turns a name unreadable.
+const DIM_CONTRAST: f32 = 3.0;
+
+/// What a channel row shows at its right, besides the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ChannelMarks {
+    /// The badge: always [`badge_for`]'s.
+    pub badge: Badge,
+    /// The room is an invite.
+    pub invite: bool,
+    /// "Muted", while the room is in Mute mode.
+    pub muted: Option<&'static str>,
+    /// The lock, when the room is known to be encrypted.
+    pub lock: Option<&'static str>,
+}
+
+/// The marks of the channel row of `room`.
+pub(crate) fn channel_marks(
+    room: &RoomSummary,
+    mode: Option<RoomNotificationModeView>,
+) -> ChannelMarks {
+    ChannelMarks {
+        badge: badge_for(room),
+        invite: room.is_invite,
+        muted: muted_mark(mode),
+        lock: encrypted_mark(room),
+    }
+}
+
+/// Width of the slot at a channel row's left edge: the unread pill, or the
+/// selection's accent bar.
+const CHANNEL_EDGE: f32 = 4.0;
+
+/// Width of the glyph slot of a channel row: the "#", the speaker or the
+/// avatar.
+const CHANNEL_GLYPH_SLOT: f32 = 20.0;
+
+/// The 4 x 8 px pill at the list's left edge of an unread channel, or the
+/// 3 px accent bar of the selected one, in a slot that is always the same
+/// width so the row keeps its shape.
+fn channel_edge<'a>(selected: bool, emphasis: Emphasis) -> Element<'a, Message> {
+    let slot = container(accent_bar(selected))
+        .width(CHANNEL_EDGE)
+        .height(Fill);
+    if selected || emphasis != Emphasis::Unread {
+        return slot.into();
+    }
+    container(
+        container(space().width(CHANNEL_EDGE).height(8.0)).style(|t: &iced::Theme| {
+            container::Style {
+                background: Some(Background::Color(t.palette().text)),
+                border: border::rounded(CHANNEL_EDGE / 2.0),
+                ..container::Style::default()
+            }
+        }),
+    )
+    .width(CHANNEL_EDGE)
+    .height(Fill)
+    .center_y(Fill)
+    .into()
+}
+
+/// One row of a space's list: a glyph (a "#", the speaker of a voice room, a
+/// person's avatar), the name, and the marks. No preview and no time. An
+/// unread room's name is semibold in the text colour with the pill at the
+/// left edge, a read one's is muted, and a muted room's is dimmed. The row is
+/// as tall as [`room_row`], so the windowing is the same (plan C2).
+fn channel_row<'a>(
+    room: &'a RoomSummary,
+    env: &RowEnv<'_>,
+    selected: bool,
+    mode: Option<RoomNotificationModeView>,
+    call: Option<CallPill>,
+    cue: ListCue,
+) -> Element<'a, Message> {
+    let name = row_name(&room.name);
+    let emphasis = channel_emphasis(room, mode);
+    let marks = channel_marks(room, mode);
+    let glyph: Element<'a, Message> = match channel_glyph(room) {
+        Glyph::Hash => text("#")
+            .size(tokens::BODY)
+            .font(fonts::BODY)
+            .wrapping(Wrapping::None)
+            .style(move |t: &iced::Theme| text::Style {
+                color: Some(channel_name_color(t, emphasis)),
+            })
+            .into(),
+        Glyph::Speaker => text(Icon::Speaker.glyph())
+            .size(tokens::BODY)
+            .wrapping(Wrapping::None)
+            .style(move |t: &iced::Theme| text::Style {
+                color: Some(channel_name_color(t, emphasis)),
+            })
+            .into(),
+        Glyph::Avatar => avatar_view(room, &name, env.avatars, CHANNEL_GLYPH_SLOT),
+    };
+    let weight = if emphasis == Emphasis::Unread {
+        fonts::BODY_SEMIBOLD
+    } else {
+        fonts::BODY
+    };
+    let mut line = row![
+        container(glyph).width(CHANNEL_GLYPH_SLOT),
+        container(
+            text(name)
+                .size(tokens::BODY)
+                .font(weight)
+                .wrapping(Wrapping::None)
+                .style(move |t: &iced::Theme| text::Style {
+                    color: Some(channel_name_color(t, emphasis)),
+                })
+        )
+        .width(Fill)
+        .clip(true),
+    ]
+    .spacing(tokens::S)
+    .align_y(iced::Center);
+    if let Some(lock) = marks.lock {
+        line = line.push(text(lock).size(tokens::CAPTION));
+    }
+    if marks.invite {
+        line = line.push(kit::tag("Invite"));
+    }
+    if let Some(mark) = marks.muted {
+        line = line.push(kit::tag(mark));
+    }
+    line = line
+        .push(call_pill(call))
+        .push(badge_view(marks.badge, marks.muted.is_some()));
+    let height = row_height(env.density);
+    let body = container(line)
+        .width(Fill)
+        .center_y(Length::Fixed(height))
+        .padding([tokens::XS, tokens::S])
+        .clip(true)
+        .style(row_box_style(selected, cue.hovered || cue.dragged));
+    row![channel_edge(selected, emphasis), body]
         .height(Length::Fixed(height))
         .into()
 }
@@ -1669,6 +1867,150 @@ mod tests {
         }
         for selected in [false, true] {
             let _: Element<'_, Message> = rail_row(&room, &avatars, selected, None, call);
+        }
+    }
+
+    // ---- channel rows and category headers (sidebar rework, Task 11) ----
+
+    /// The backgrounds a row's name can sit on: the list's, the hover and the
+    /// selection.
+    fn row_backgrounds(theme: &iced::Theme) -> [Color; 3] {
+        let sem = theme::semantic(theme);
+        [theme.palette().background, sem.message_hover, sem.selection]
+    }
+
+    #[test]
+    fn unread_names_read_at_4_5_and_read_names_and_headers_at_3_in_every_theme() {
+        for theme in theme::test_themes() {
+            let name = theme.to_string();
+            for back in row_backgrounds(&theme) {
+                let unread = channel_name_color(&theme, Emphasis::Unread);
+                let ratio = theme::contrast(unread, back);
+                assert!(ratio >= 4.5, "{name}: an unread name {ratio:.2}");
+                for emphasis in [Emphasis::Read, Emphasis::Muted] {
+                    let ratio = theme::contrast(channel_name_color(&theme, emphasis), back);
+                    assert!(ratio >= 3.0, "{name}: a {emphasis:?} name {ratio:.2}");
+                }
+                let ratio = theme::contrast(header_name_color(&theme, false), back);
+                assert!(ratio >= 3.0, "{name}: a header {ratio:.2}");
+                let ratio = theme::contrast(header_name_color(&theme, true), back);
+                assert!(ratio >= 4.5, "{name}: a hovered header {ratio:.2}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_contrast_probe_fails_a_worse_colour() {
+        // The same check, on a colour pulled most of the way to the row's
+        // background, must fail (so the test above can fail).
+        for theme in theme::test_themes() {
+            let back = theme.palette().background;
+            let worse = |c: Color| {
+                Color::from_rgb(
+                    c.r + (back.r - c.r) * 0.9,
+                    c.g + (back.g - c.g) * 0.9,
+                    c.b + (back.b - c.b) * 0.9,
+                )
+            };
+            assert!(
+                theme::contrast(worse(channel_name_color(&theme, Emphasis::Unread)), back) < 4.5,
+                "{theme}: unread"
+            );
+            assert!(
+                theme::contrast(worse(channel_name_color(&theme, Emphasis::Read)), back) < 3.0,
+                "{theme}: read"
+            );
+            assert!(
+                theme::contrast(worse(header_name_color(&theme, false)), back) < 3.0,
+                "{theme}: header"
+            );
+        }
+    }
+
+    #[test]
+    fn emphasis_differs_in_colour_unread_from_read_and_muted_from_read() {
+        for theme in theme::test_themes() {
+            let c = |e| channel_name_color(&theme, e);
+            assert_ne!(c(Emphasis::Unread), c(Emphasis::Read), "{theme}");
+            assert_ne!(c(Emphasis::Muted), c(Emphasis::Read), "{theme}");
+            assert_ne!(
+                header_name_color(&theme, true),
+                header_name_color(&theme, false),
+                "{theme}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_badge_of_a_channel_row_is_badge_for_of_the_same_room() {
+        use RoomNotificationModeView::{AllMessages, Mute};
+        let room = |edit: fn(&mut RoomSummary)| {
+            let mut r = RoomSummary::new(twicecat_core::api::RoomId::from("!r:x"), "r".to_owned());
+            edit(&mut r);
+            r
+        };
+        let rooms = [
+            room(|_| {}),
+            room(|r| r.unread_messages = 3),
+            room(|r| r.unread_notifications = 4),
+            room(|r| r.highlights = 2),
+            room(|r| r.marked_unread = true),
+            room(|r| {
+                r.unread_notifications = 4;
+                r.highlights = 1;
+            }),
+            room(|r| {
+                r.is_call_room = true;
+                r.unread_messages = 1;
+            }),
+            room(|r| r.is_invite = true),
+        ];
+        for r in &rooms {
+            for mode in [None, Some(AllMessages), Some(Mute)] {
+                assert_eq!(channel_marks(r, mode).badge, badge_for(r), "{mode:?}");
+            }
+        }
+        let muted = channel_marks(&rooms[2], Some(Mute));
+        assert_eq!(muted.badge, Badge::Count(4), "a muted room keeps its count");
+        assert_eq!(muted.muted, Some("Muted"));
+        assert!(channel_marks(&rooms[7], None).invite);
+        assert_eq!(channel_marks(&rooms[0], None).lock, None);
+    }
+
+    #[test]
+    fn channel_rows_and_headers_build_in_every_state() {
+        let avatars = Avatars::default();
+        let mut room = RoomSummary::new(twicecat_core::api::RoomId::from("!r:x"), "r".to_owned());
+        for density in [Density::Comfortable, Density::Compact] {
+            for (call, dm, unread) in [
+                (false, false, false),
+                (true, false, true),
+                (false, true, true),
+            ] {
+                room.is_call_room = call;
+                room.is_dm = dm;
+                room.unread_messages = u64::from(unread);
+                for selected in [false, true] {
+                    let _: Element<'_, Message> = channel_row(
+                        &room,
+                        &RowEnv {
+                            avatars: &avatars,
+                            density,
+                            now_ms: 0,
+                        },
+                        selected,
+                        Some(RoomNotificationModeView::Mute),
+                        None,
+                        ListCue {
+                            mark: Mark::None,
+                            cursor: mouse::Interaction::Grab,
+                            dragging: false,
+                            hovered: selected,
+                            dragged: false,
+                        },
+                    );
+                }
+            }
         }
     }
 }

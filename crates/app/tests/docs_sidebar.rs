@@ -342,3 +342,34 @@ fn the_docs_say_a_room_can_be_dragged_onto_favourites_or_low_priority_like_the_m
         "accessibility.md does not tie the tag drops to the entries"
     );
 }
+
+#[test]
+fn the_docs_describe_the_discord_category_look_and_its_words() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "a header is the section's name in capitals",
+        "a \"#\" before a text room",
+        "the speaker before a voice room",
+        "no message preview and no time",
+        "as tall as before in both densities",
+        "a room set to mute has its name dimmed even when it has unread messages",
+        "still counts a muted room with unread messages as unread",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "a channel row says what it is in words, not only in colour or weight",
+        "at least 4.5:1 against the row in every theme",
+        "a read name and a header are muted (at least 3:1)",
+        "row heights are unchanged",
+    ] {
+        assert!(
+            access.contains(wanted),
+            "accessibility.md does not say {wanted:?}"
+        );
+    }
+}
