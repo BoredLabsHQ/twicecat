@@ -204,6 +204,33 @@ fn sidebar_md_says_favourites_and_low_priority_are_kept_on_the_homeserver() {
 }
 
 #[test]
+fn the_docs_say_the_flat_list_has_a_tag_card_and_the_narrow_rail_has_none() {
+    let flat_sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "tags can be changed from the flat list too",
+        "right-click a room in home, in the list under a chip other than all, or in a search result",
+        "the same two tag entries, with the same words, and nothing else",
+        "the narrow rail (a room list collapsed to icons) has no card",
+    ] {
+        assert!(
+            flat_sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let section = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "the card of a row in the flat list is pointer-only too",
+        "a keyboard-only user cannot tag from there",
+        "the narrow rail's rows have no card at all",
+    ] {
+        assert!(
+            section.contains(wanted),
+            "the sidebar section of accessibility.md does not say {wanted:?}"
+        );
+    }
+}
+
+#[test]
 fn sidebar_md_says_an_older_twicecat_drops_the_two_section_keys_it_does_not_know() {
     let flat = flat(&doc("sidebar.md"));
     for wanted in [

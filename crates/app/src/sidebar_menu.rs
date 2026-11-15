@@ -35,8 +35,8 @@ use std::fmt;
 
 use iced::Task;
 use twicecat_core::api::{
-    Command, CustomSection, RailEntry, RoomId, RoomSortChoice, RoomTagView, SectionKey,
-    SidebarLabel, SidebarLabelError,
+    Command, CustomSection, RailEntry, RoomId, RoomListChoice, RoomSortChoice, RoomTagView,
+    SectionKey, SidebarLabel, SidebarLabelError,
 };
 
 use crate::keys::Shortcut;
@@ -81,6 +81,9 @@ pub enum Target {
         /// The room.
         room: RoomId,
     },
+    /// A room row of the flat list (Home, a chip other than All, a search
+    /// result): no space, no section, so only the tag buttons.
+    FlatRoom(RoomId),
 }
 
 impl fmt::Debug for Target {
@@ -90,6 +93,7 @@ impl fmt::Debug for Target {
             Self::Folder(id) => f.debug_tuple("Folder").field(id).finish(),
             Self::Section { key, .. } => f.debug_struct("Section").field("key", key).finish(),
             Self::Room { .. } => f.write_str("Room(<redacted>)"),
+            Self::FlatRoom(_) => f.write_str("FlatRoom(<redacted>)"),
         }
     }
 }
@@ -346,6 +350,8 @@ pub enum SidebarMenuMessage {
     /// A right-click, or the "⋯" button, on a room row of the
     /// sectioned list.
     OpenRoom(RoomId),
+    /// A right-click on a room row of the flat list.
+    OpenFlatRoom(RoomId),
     /// The **Sort** button of the room list.
     OpenSort,
     /// A choice of the Sort card's list: Activity or A to Z.
@@ -374,6 +380,7 @@ impl fmt::Debug for SidebarMenuMessage {
             Self::Open(key) => f.debug_tuple("Open").field(key).finish(),
             Self::OpenSection(key) => f.debug_tuple("OpenSection").field(key).finish(),
             Self::OpenRoom(_) => f.write_str("OpenRoom(<redacted>)"),
+            Self::OpenFlatRoom(_) => f.write_str("OpenFlatRoom(<redacted>)"),
             Self::OpenSort => f.write_str("OpenSort"),
             Self::SetSort(sort) => f.debug_tuple("SetSort").field(sort).finish(),
             Self::UnreadFirst(on) => f.debug_tuple("UnreadFirst").field(on).finish(),
@@ -404,8 +411,8 @@ pub fn entries(target: &Target, in_folder: bool) -> Vec<Entry> {
             Entry::Ungroup,
         ],
         // The cards of the sectioned list have their own (`section_entries`
-        // and `room_entries`).
-        Target::Section { .. } | Target::Room { .. } => Vec::new(),
+        // and `room_entries`), and a flat row's holds only `tag_entries`.
+        Target::Section { .. } | Target::Room { .. } | Target::FlatRoom(_) => Vec::new(),
     }
 }
 
@@ -742,6 +749,7 @@ impl App {
             SidebarMenuMessage::Open(key) => self.open_sidebar_menu(&key),
             SidebarMenuMessage::OpenSection(key) => self.open_section_menu(key),
             SidebarMenuMessage::OpenRoom(room) => self.open_room_menu(room),
+            SidebarMenuMessage::OpenFlatRoom(room) => self.open_flat_room_menu(room),
             SidebarMenuMessage::OpenSort => self.open_sort_card(),
             SidebarMenuMessage::SetSort(by) => {
                 let sorting = Sorting {
@@ -890,6 +898,47 @@ impl App {
         Task::none()
     }
 
+    /// Whether a row of the flat list for `room` is drawn: the list is flat
+    /// (not sectioned), it is the expanded list (the narrow rail has no
+    /// card), and the room is in it.
+    fn flat_room_drawn(&self, room: &RoomId) -> bool {
+        !self.sections_shown()
+            && self.pane_layout().list == RoomListChoice::Expanded
+            && self.rooms.iter().any(|r| r.id == *room)
+    }
+
+    /// A right-click on a room row of the flat list. The tags live on the
+    /// homeserver, so unlike the sectioned card it needs no sidebar layout.
+    fn open_flat_room_menu(&mut self, room: RoomId) -> Task<Message> {
+        if self.screen != Screen::Main || self.any_overlay_open() || !self.flat_room_drawn(&room) {
+            return Task::none();
+        }
+        self.list_drag.cancel();
+        self.sidebar_menu = Some(SidebarMenu::Card {
+            target: Target::FlatRoom(room),
+            error: None,
+        });
+        Task::none()
+    }
+
+    /// A button of a flat row's card: a tag change, for a room that is still
+    /// in the list as drawn. Anything else does nothing.
+    fn flat_room_entry(&mut self, room: &RoomId, entry: Entry) -> Task<Message> {
+        if !self.flat_room_drawn(room) {
+            // What the card is about is gone.
+            self.sidebar_menu = None;
+            return Task::none();
+        }
+        let Some(tag) = tag_change(entry) else {
+            return Task::none();
+        };
+        self.sidebar_menu = None;
+        self.send(Command::SetRoomTag {
+            room_id: room.clone(),
+            tag,
+        })
+    }
+
     /// The operation and the dialog behind a button of a section or room
     /// card, worked out from the list as it is drawn now. `None` when what
     /// the card is about is not drawn any more.
@@ -940,7 +989,7 @@ impl App {
                 drop(lines);
                 Some(self.run_section_op(op))
             }
-            Target::Space(_) | Target::Folder(_) => None,
+            Target::Space(_) | Target::Folder(_) | Target::FlatRoom(_) => None,
         }
     }
 
@@ -990,6 +1039,9 @@ impl App {
             return Task::none();
         };
         let target = target.clone();
+        if let Target::FlatRoom(room) = &target {
+            return self.flat_room_entry(room, entry);
+        }
         if matches!(target, Target::Section { .. } | Target::Room { .. }) {
             return match self.section_entry(&target, entry) {
                 Some(task) => task,
@@ -1187,6 +1239,7 @@ impl App {
             Target::Room { space, room } => !self
                 .lines_of_space(space)
                 .is_some_and(|lines| spot_of(&lines, room).is_some()),
+            Target::FlatRoom(room) => !self.flat_room_drawn(room),
         }
     }
 }

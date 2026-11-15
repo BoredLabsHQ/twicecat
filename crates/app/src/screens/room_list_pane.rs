@@ -501,10 +501,23 @@ fn windowed_list(app: &App) -> Element<'_, Message> {
         if rail {
             rail_row(room, env.avatars, selected, mode, call)
         } else {
-            room_row(room, &env, selected, mode, call)
+            flat_room_row(room_row(room, &env, selected, mode, call), room)
         }
     });
     scroller(top, rows, bottom)
+}
+
+/// A row of the flat list with its options: a right-click opens the room's
+/// card (the tags). The area asks for nothing else, so the row's button keeps
+/// the left press and the scrollable keeps the wheel: iced's `mouse_area`
+/// updates its content first and only looks at the right button, and a button
+/// takes only the left one.
+fn flat_room_row<'a>(row_view: Element<'a, Message>, room: &RoomSummary) -> Element<'a, Message> {
+    mouse_area(row_view)
+        .on_right_press(Message::SidebarMenu(SidebarMenuMessage::OpenFlatRoom(
+            room.id.clone(),
+        )))
+        .into()
 }
 
 /// The scrollable of both lists: `rows` between two spacers that keep its

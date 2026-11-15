@@ -81,6 +81,14 @@ collapsed header shows the unread or mention count of its rooms.
   collapsed is still kept on this device only. If a tag cannot be changed, a
   line above the composer says so. Dragging a room onto these two headers is
   not built yet: use the menu.
+- **Tags can be changed from the flat list too.** Right-click a room in Home, in
+  the list under a chip other than All, or in a search result, and its card
+  offers the same two tag entries, with the same words, and nothing else: a
+  move, Star and sections need a space's sectioned list. A tag button changes
+  the tag, closes the card and saves no sidebar file; under the Favourites chip
+  "Remove from favourites" makes the room leave that list when the server
+  reports it. The narrow rail (a room list collapsed to icons) has no card: widen
+  the list to tag a room.
 - Reorder sections, and reorder rooms inside a section of your own.
 - A room can go into Starred or a section of your own, and back to its own
   default section. It cannot be moved from one built-in section to another.
