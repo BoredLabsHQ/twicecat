@@ -918,9 +918,13 @@ fn section_header<'a>(app: &App, header: &Header<'a>, density: Density) -> Eleme
     ]
     .align_y(iced::Center)
     .height(Length::Fixed(height));
-    // The header draws its own ring above: `list_area` adds none over it.
+    // The header draws its own ring above: `list_area` adds no ring over it,
+    // only the line of a before or after mark.
     let cue = ListCue {
-        mark: Mark::None,
+        mark: match cue.mark {
+            Mark::Before | Mark::After => cue.mark,
+            Mark::None | Mark::Into | Mark::Refused => Mark::None,
+        },
         ..cue
     };
     list_area(line.into(), key, cue, height, open)
