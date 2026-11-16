@@ -1,6 +1,6 @@
 # Twicecat
 
-[![CI](https://github.com/ga-lep/twicecat/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ga-lep/twicecat/actions/workflows/ci.yml)
+[![CI](https://github.com/BoredLabsHQ/twicecat/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/BoredLabsHQ/twicecat/actions/workflows/ci.yml)
 
 A native desktop [Matrix](https://matrix.org) client, written in Rust with [iced](https://iced.rs). It talks to the same rooms, encryption and calls as Element, without a webview. It runs on Linux (Wayland and X11), Windows and macOS:
 
@@ -18,7 +18,7 @@ The screenshots come from the headless UI gallery (below), drawn by tiny-skia, n
 
 ## Status
 
-Twicecat is in early development. The first pre-release, [v0.1.0-alpha](https://github.com/ga-lep/twicecat/releases/tag/v0.1.0-alpha), has packages for Linux on x86_64 and aarch64 (AppImage, `.deb`, `.rpm`, Flatpak, `.tar.zst`), Windows (MSI) and macOS on Apple Silicon (DMG). They are not signed yet. It is built in phases. Each phase has a plan in [`docs/plans/`](docs/plans/), and [`PROGRESS.md`](PROGRESS.md) records what was done, what was checked and what is left.
+Twicecat is in early development. The first pre-release, [v0.1.0-alpha](https://github.com/BoredLabsHQ/twicecat/releases/tag/v0.1.0-alpha), has packages for Linux on x86_64 and aarch64 (AppImage, `.deb`, `.rpm`, Flatpak, `.tar.zst`), Windows (MSI) and macOS on Apple Silicon (DMG). They are not signed yet. It is built in phases. Each phase has a plan in [`docs/plans/`](docs/plans/), and [`PROGRESS.md`](PROGRESS.md) records what was done, what was checked and what is left.
 
 | Phase | What | Where it stands |
 | --- | --- | --- |
@@ -130,6 +130,6 @@ It bundles the Inter typeface under the SIL Open Font License 1.1; [`THIRD-PARTY
 
 ## Security
 
-Please report a vulnerability privately, through **Report a vulnerability** on the repository's [Security tab](https://github.com/ga-lep/twicecat/security), not in a public issue. [`SECURITY.md`](SECURITY.md) has the details.
+Please report a vulnerability privately, through **Report a vulnerability** on the repository's [Security tab](https://github.com/BoredLabsHQ/twicecat/security), not in a public issue. [`SECURITY.md`](SECURITY.md) has the details.
 
 Twicecat must never log access tokens, keys or message bodies, at any log level, and tests check for it. A secret in a log is a vulnerability: report it the same way.

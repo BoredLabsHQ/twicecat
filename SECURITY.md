@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Report it privately: on the repository's [Security tab](https://github.com/ga-lep/twicecat/security), choose **Report a vulnerability**. Please don't open a public issue, pull request or discussion for it.
+Report it privately: on the repository's [Security tab](https://github.com/BoredLabsHQ/twicecat/security), choose **Report a vulnerability**. Please don't open a public issue, pull request or discussion for it.
 
 Say what you found, the version or commit, the OS, and how to reproduce it. Leave real access tokens, recovery keys, passwords and message contents out of the report; a made-up or redacted value shows the problem just as well.
 

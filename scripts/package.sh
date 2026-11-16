@@ -282,7 +282,7 @@ config = {
     "version": version,
     "identifier": app_id,
     "description": "Encrypted chat and voice calls on Matrix",
-    "homepage": "https://github.com/ga-lep/twicecat",
+    "homepage": "https://github.com/BoredLabsHQ/twicecat",
     "authors": ["The Twicecat developers"],
     "publisher": "The Twicecat developers",
     "licenseFile": os.path.join(repo, "LICENSE"),

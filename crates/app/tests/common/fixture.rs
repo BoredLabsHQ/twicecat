@@ -2863,7 +2863,7 @@ fn update_available() -> App {
         &mut app,
         CoreEvent::UpdateAvailable {
             version: "0.2.0".into(),
-            url: "https://github.com/ga-lep/twicecat/releases/tag/v0.2.0".into(),
+            url: "https://github.com/BoredLabsHQ/twicecat/releases/tag/v0.2.0".into(),
             installable: false,
         },
     );
