@@ -19,9 +19,11 @@ pub const ICON_SIZE: u32 = 64;
 /// Colour of the unread dot.
 pub const DOT_RED: [u8; 4] = [220, 38, 38, 255];
 
-const BACKGROUND: [u8; 4] = [45, 91, 227, 255];
 const FOREGROUND: [u8; 4] = [255, 255, 255, 255];
-const CLEAR: [u8; 4] = [0, 0, 0, 0];
+
+/// The app icon rendered at [`ICON_SIZE`] by `scripts/make-icons.sh`.
+const BASE_PNG: &[u8] =
+    include_bytes!("../../../packaging/icons/hicolor/64x64/apps/io.github.ga_lep.Twicecat.png");
 
 /// The tooltip for `unread` unread notifications.
 pub fn tray_tooltip(unread: u64) -> String {
@@ -37,56 +39,45 @@ pub fn dot_center(size: u32) -> (u32, u32) {
     (size * 3 / 4, size / 4)
 }
 
-/// The icon as `size * size` RGBA pixels: a rounded square with a "T", and
-/// with `badge` a red dot at [`dot_center`].
-pub fn icon_rgba(size: u32, badge: bool) -> Vec<u8> {
-    let n = size as usize;
-    let mut pixels = vec![0_u8; n * n * 4];
-    let corner = size / 5;
-    let dot = dot_center(size);
-    let ring = size / 4;
-    let dot_radius = size / 5;
-    for y in 0..size {
-        for x in 0..size {
-            let mut colour = CLEAR;
-            if inside_rounded_square(x, y, size, corner) {
-                colour = BACKGROUND;
-                if in_t(x, y, size) {
-                    colour = FOREGROUND;
-                }
-            }
-            if badge {
+/// The icon as `ICON_SIZE * ICON_SIZE` RGBA pixels: the app icon, and with
+/// `badge` a red dot with a white ring at [`dot_center`]. `None` if the
+/// embedded PNG does not decode to that size, so the tray fails instead of
+/// showing nothing.
+pub fn icon_rgba(badge: bool) -> Option<Vec<u8>> {
+    let size = ICON_SIZE;
+    let pixels = image::load_from_memory_with_format(BASE_PNG, image::ImageFormat::Png)
+        .ok()?
+        .into_rgba8();
+    if pixels.dimensions() != (size, size) {
+        return None;
+    }
+    let mut pixels = pixels.into_raw();
+    if badge {
+        let dot = dot_center(size);
+        let ring = size / 4;
+        let dot_radius = size / 5;
+        for y in 0..size {
+            for x in 0..size {
                 let d = distance_squared((x, y), dot);
-                if d <= ring * ring {
-                    colour = FOREGROUND;
-                }
-                if d <= dot_radius * dot_radius {
-                    colour = DOT_RED;
-                }
+                let colour = if d <= dot_radius * dot_radius {
+                    DOT_RED
+                } else if d <= ring * ring {
+                    FOREGROUND
+                } else {
+                    continue;
+                };
+                let at = ((y * size + x) * 4) as usize;
+                pixels[at..at + 4].copy_from_slice(&colour);
             }
-            let at = (y as usize * n + x as usize) * 4;
-            pixels[at..at + 4].copy_from_slice(&colour);
         }
     }
-    pixels
+    Some(pixels)
 }
 
 fn distance_squared(a: (u32, u32), b: (u32, u32)) -> u32 {
     let dx = a.0.abs_diff(b.0);
     let dy = a.1.abs_diff(b.1);
     dx * dx + dy * dy
-}
-
-fn inside_rounded_square(x: u32, y: u32, size: u32, corner: u32) -> bool {
-    let cx = x.clamp(corner, size - 1 - corner);
-    let cy = y.clamp(corner, size - 1 - corner);
-    distance_squared((x, y), (cx, cy)) <= corner * corner
-}
-
-fn in_t(x: u32, y: u32, size: u32) -> bool {
-    let bar = x >= size / 4 && x < size * 3 / 4 && y >= size * 7 / 25 && y < size * 2 / 5;
-    let stem = x >= size * 9 / 20 && x < size * 11 / 20 && y >= size * 7 / 25 && y < size * 4 / 5;
-    bar || stem
 }
 
 /// What the tray looks like.
@@ -252,7 +243,8 @@ struct SystemTray {
 }
 
 fn icon(badge: bool) -> Result<Icon, TrayError> {
-    Icon::from_rgba(icon_rgba(ICON_SIZE, badge), ICON_SIZE, ICON_SIZE).map_err(|_| TrayError)
+    let pixels = icon_rgba(badge).ok_or(TrayError)?;
+    Icon::from_rgba(pixels, ICON_SIZE, ICON_SIZE).map_err(|_| TrayError)
 }
 
 impl TrayFactory for SystemTrayFactory {
@@ -409,35 +401,12 @@ mod fake {
 mod tests {
     use super::*;
 
-    /// The packaged icon (`packaging/icons/`) is this drawing as a vector:
-    /// same colours, corner radius and "T" on the 64-unit grid.
     #[test]
-    fn the_packaged_icon_draws_the_same_shape_in_the_same_colours() {
-        let svg = include_str!("../../../packaging/icons/io.github.ga_lep.Twicecat.svg");
-        let hex = |c: [u8; 4]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
-        assert!(svg.contains(&format!("fill=\"{}\"", hex(BACKGROUND))));
-        assert!(svg.contains(&format!("fill=\"{}\"", hex(FOREGROUND))));
-        let size = 64.0_f64;
-        assert!(svg.contains(&format!("rx=\"{}\"", size / 5.0)));
-        // Bar: x 1/4..3/4, y 7/25..2/5; stem: x 9/20..11/20, down to 4/5.
-        let bar = format!(
-            "M{} {}h{}v{}H{}z",
-            size / 4.0,
-            size * 7.0 / 25.0,
-            size / 2.0,
-            size * 2.0 / 5.0 - size * 7.0 / 25.0,
-            size / 4.0
-        );
-        let stem = format!(
-            "M{} {}h{}v{}h-{}z",
-            size * 9.0 / 20.0,
-            size * 2.0 / 5.0,
-            size / 10.0,
-            size * 4.0 / 5.0 - size * 2.0 / 5.0,
-            size / 10.0
-        );
-        assert!(svg.contains(&bar), "{bar}");
-        assert!(svg.contains(&stem), "{stem}");
+    fn the_tray_icon_is_the_packaged_icon() {
+        let plain = icon_rgba(false).expect("the embedded PNG decodes");
+        assert_eq!(plain.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
+        // Something is drawn.
+        assert!(plain.chunks(4).any(|p| p[3] == 255));
     }
 
     fn pixel(rgba: &[u8], size: u32, (x, y): (u32, u32)) -> [u8; 4] {
@@ -456,25 +425,24 @@ mod tests {
     }
 
     #[test]
-    fn icons_have_the_right_size_and_a_red_dot_only_in_the_badge_variant() {
-        for size in [32, 64] {
-            let plain = icon_rgba(size, false);
-            let badge = icon_rgba(size, true);
-            assert_eq!(plain.len(), (size * size * 4) as usize);
-            assert_eq!(badge.len(), plain.len());
-            let center = dot_center(size);
-            assert_eq!(pixel(&badge, size, center), DOT_RED, "size {size}");
-            assert_ne!(pixel(&plain, size, center), DOT_RED, "size {size}");
-            assert!(
-                !plain.chunks(4).any(|p| p == DOT_RED),
-                "no red anywhere in the plain icon"
-            );
-            // The two differ only around the dot.
-            assert_ne!(plain, badge);
-            // Something is drawn, and the corners stay transparent.
-            assert_eq!(pixel(&plain, size, (0, 0))[3], 0);
-            assert!(plain.chunks(4).any(|p| p[3] == 255));
-        }
+    fn the_badge_variant_has_a_red_dot_the_plain_one_lacks() {
+        let size = ICON_SIZE;
+        let plain = icon_rgba(false).expect("decodes");
+        let badge = icon_rgba(true).expect("decodes");
+        assert_eq!(badge.len(), plain.len());
+        let center = dot_center(size);
+        assert_eq!(pixel(&badge, size, center), DOT_RED);
+        assert_ne!(pixel(&plain, size, center), DOT_RED);
+        assert!(
+            !plain.chunks(4).any(|p| p == DOT_RED),
+            "no red anywhere in the plain icon"
+        );
+        // The ring keeps the dot clear of the art on light and dark panels.
+        let ring = (center.0 + size / 5 + 1, center.1);
+        assert_eq!(pixel(&badge, size, ring), FOREGROUND);
+        assert_ne!(plain, badge);
+        // The corners stay transparent.
+        assert_eq!(pixel(&plain, size, (0, 0))[3], 0);
     }
 
     #[test]

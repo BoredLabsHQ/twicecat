@@ -209,7 +209,7 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    const REPO: &str = "https://github.com/ga-lep/twicecat";
+    const REPO: &str = "https://github.com/BoredLabsHQ/twicecat";
 
     fn release(tag: &str, url: &str) -> Vec<u8> {
         format!(r#"{{"tag_name":"{tag}","html_url":"{url}","body":"notes","assets":[]}}"#)
@@ -220,7 +220,7 @@ mod tests {
     fn the_endpoint_is_this_repositorys_latest_release() {
         assert_eq!(
             endpoint(),
-            "https://api.github.com/repos/ga-lep/twicecat/releases/latest"
+            "https://api.github.com/repos/BoredLabsHQ/twicecat/releases/latest"
         );
     }
 
@@ -228,13 +228,13 @@ mod tests {
     fn a_release_must_link_to_this_repositorys_releases() {
         let ok = release(
             "v0.2.0",
-            "https://github.com/ga-lep/twicecat/releases/tag/v0.2.0",
+            "https://github.com/BoredLabsHQ/twicecat/releases/tag/v0.2.0",
         );
         assert_eq!(
             parse_release(&ok, REPO),
             Ok(Release {
                 tag: "v0.2.0".into(),
-                url: "https://github.com/ga-lep/twicecat/releases/tag/v0.2.0".into()
+                url: "https://github.com/BoredLabsHQ/twicecat/releases/tag/v0.2.0".into()
             })
         );
         for (tag, url) in [
@@ -244,25 +244,25 @@ mod tests {
             ),
             (
                 "v0.2.0",
-                "https://github.com/ga-lep/twicecat-evil/releases/tag/v0.2.0",
+                "https://github.com/BoredLabsHQ/twicecat-evil/releases/tag/v0.2.0",
             ),
             (
                 "v0.2.0",
-                "http://github.com/ga-lep/twicecat/releases/tag/v0.2.0",
+                "http://github.com/BoredLabsHQ/twicecat/releases/tag/v0.2.0",
             ),
             (
                 "v0.2.0",
-                "https://github.com/ga-lep/twicecat/releases/tag/v0.3.0",
+                "https://github.com/BoredLabsHQ/twicecat/releases/tag/v0.3.0",
             ),
             (
                 "v0.2.0",
-                "https://github.com/ga-lep/twicecat/releases/tag/v0.2.0?x=1",
+                "https://github.com/BoredLabsHQ/twicecat/releases/tag/v0.2.0?x=1",
             ),
             (
                 "../../x",
-                "https://github.com/ga-lep/twicecat/releases/tag/../../x",
+                "https://github.com/BoredLabsHQ/twicecat/releases/tag/../../x",
             ),
-            ("", "https://github.com/ga-lep/twicecat/releases/tag/"),
+            ("", "https://github.com/BoredLabsHQ/twicecat/releases/tag/"),
         ] {
             assert_eq!(
                 parse_release(&release(tag, url), REPO),
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn only_a_newer_release_is_announced() {
-        let url = "https://github.com/ga-lep/twicecat/releases/tag/v0.2.0".to_owned();
+        let url = "https://github.com/BoredLabsHQ/twicecat/releases/tag/v0.2.0".to_owned();
         let newer = Release {
             tag: "v0.2.0".into(),
             url: url.clone(),
@@ -432,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_check_reads_the_reply_and_its_failures() {
-        let page = "https://github.com/ga-lep/twicecat/releases/tag/v9.0.0";
+        let page = "https://github.com/BoredLabsHQ/twicecat/releases/tag/v9.0.0";
         let url = serve("200 OK", release("v9.0.0", page)).await;
         assert_eq!(
             latest_release(&url, REPO).await.map(|r| r.tag),

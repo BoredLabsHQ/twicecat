@@ -196,7 +196,10 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(client_metadata().json().get()).unwrap();
         assert_eq!(json["application_type"], "native");
         assert_eq!(json["client_name"], "Twicecat");
-        assert_eq!(json["client_uri"], "https://github.com/ga-lep/twicecat");
+        assert_eq!(
+            json["client_uri"],
+            "https://github.com/BoredLabsHQ/twicecat"
+        );
         let grants: Vec<&str> = json["grant_types"]
             .as_array()
             .unwrap()

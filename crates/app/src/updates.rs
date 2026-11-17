@@ -245,7 +245,7 @@ mod tests {
     use crate::settings::RecordingSettings;
     use crate::state::{App, Message, Startup};
 
-    const PAGE: &str = "https://github.com/ga-lep/twicecat/releases/tag/v9.0.0";
+    const PAGE: &str = "https://github.com/BoredLabsHQ/twicecat/releases/tag/v9.0.0";
 
     fn app(mechanism: UpdateMechanism) -> (App, mpsc::Receiver<Command>, RecordingSettings) {
         let (tx, rx) = mpsc::channel(16);

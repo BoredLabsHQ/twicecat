@@ -558,7 +558,7 @@ mod tests {
     fn the_issue_link_carries_the_report_encoded_and_cut_to_fit() {
         let url = issue_url("Panic: x & y = 1?\nAt: crates/a.rs:1");
         assert!(url.starts_with(
-            "https://github.com/ga-lep/twicecat/issues/new?title=Crash%20report%20%28Twicecat%20"
+            "https://github.com/BoredLabsHQ/twicecat/issues/new?title=Crash%20report%20%28Twicecat%20"
         ));
         assert!(url.contains("&body=%60%60%60%0APanic%3A%20x%20%26%20y%20%3D%201%3F%0AAt%3A%20crates%2Fa.rs%3A1%0A%60%60%60"));
         assert!(crate::links::check_link_url(&url).is_ok());

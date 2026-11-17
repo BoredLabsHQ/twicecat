@@ -110,7 +110,7 @@ pre {{ white-space: pre-wrap; max-height: 20rem; overflow-y: auto; background: #
 <h1>Twicecat {e(version)}: third-party notices</h1>
 <p>Twicecat is free software under the GNU General Public License, version 3 or later
 (the LICENSE file beside this one). Its source code for this version is at
-<a href="https://github.com/ga-lep/twicecat/tree/v{e(version)}">github.com/ga-lep/twicecat/tree/v{e(version)}</a>.
+<a href="https://github.com/BoredLabsHQ/twicecat/tree/v{e(version)}">github.com/BoredLabsHQ/twicecat/tree/v{e(version)}</a>.
 This build ({e(target)}) includes the software below, under the licences shown.</p>
 <h2>Rust crates</h2>
 <ul>"""]
