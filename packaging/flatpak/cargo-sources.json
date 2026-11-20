@@ -262,14 +262,14 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
-        "url": "https://static.crates.io/crates/arboard/arboard-3.6.1.crate",
-        "sha256": "0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf",
-        "dest": "cargo/vendor/arboard-3.6.1"
+        "url": "https://static.crates.io/crates/arboard/arboard-3.7.0.crate",
+        "sha256": "aeb9553e62312c8756a5979254fc6d7da8bbeb5986a1e17037fab932f7037917",
+        "dest": "cargo/vendor/arboard-3.7.0"
     },
     {
         "type": "inline",
-        "contents": "{\"package\": \"0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf\", \"files\": {}}",
-        "dest": "cargo/vendor/arboard-3.6.1",
+        "contents": "{\"package\": \"aeb9553e62312c8756a5979254fc6d7da8bbeb5986a1e17037fab932f7037917\", \"files\": {}}",
+        "dest": "cargo/vendor/arboard-3.7.0",
         "dest-filename": ".cargo-checksum.json"
     },
     {
