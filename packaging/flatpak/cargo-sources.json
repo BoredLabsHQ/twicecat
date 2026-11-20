@@ -8023,14 +8023,14 @@
     {
         "type": "archive",
         "archive-type": "tar-gzip",
-        "url": "https://static.crates.io/crates/rtrb/rtrb-0.4.0.crate",
-        "sha256": "9278fb35b3e730abe136e9b395b5b81b96d06b9f5478a50f0c8430a2237b22de",
-        "dest": "cargo/vendor/rtrb-0.4.0"
+        "url": "https://static.crates.io/crates/rtrb/rtrb-0.4.1.crate",
+        "sha256": "5974e397833d890f2f74963408e0d4a6cd8eda2f6a445ae06750291b5d7a997e",
+        "dest": "cargo/vendor/rtrb-0.4.1"
     },
     {
         "type": "inline",
-        "contents": "{\"package\": \"9278fb35b3e730abe136e9b395b5b81b96d06b9f5478a50f0c8430a2237b22de\", \"files\": {}}",
-        "dest": "cargo/vendor/rtrb-0.4.0",
+        "contents": "{\"package\": \"5974e397833d890f2f74963408e0d4a6cd8eda2f6a445ae06750291b5d7a997e\", \"files\": {}}",
+        "dest": "cargo/vendor/rtrb-0.4.1",
         "dest-filename": ".cargo-checksum.json"
     },
     {
