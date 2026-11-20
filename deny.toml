@@ -12,6 +12,12 @@ ignore = [
     { id = "RUSTSEC-2026-0368", reason = "zip 0.6.6 symlink targets on extract; only webrtc-sys-build's download path, never run (LK_CUSTOM_WEBRTC)" },
     { id = "RUSTSEC-2026-0369", reason = "zip 0.6.6 permissions through symlinks; only webrtc-sys-build's download path, never run (LK_CUSTOM_WEBRTC)" },
     { id = "RUSTSEC-2026-0429", reason = "zip 0.6.6 abort on a large symlink entry in extract; only webrtc-sys-build's download path, never run (LK_CUSTOM_WEBRTC)" },
+    { id = "RUSTSEC-2026-0545", reason = "zip 0.6.6 AES entries returned without an authentication check; only webrtc-sys-build's download path, never run (LK_CUSTOM_WEBRTC)" },
+    { id = "RUSTSEC-2026-0548", reason = "zip 0.6.6 ZipStreamReader local-header names; only webrtc-sys-build's download path, never run (LK_CUSTOM_WEBRTC)" },
+    # chrono 0.4.45 is flagged unmaintained. It is a direct dependency of
+    # crates/app and comes in through livekit, matrix-sdk, matrix-sdk-ui and
+    # oauth2; no replacement is available without changing those pins.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; used by crates/app and transitive via pinned livekit/matrix-sdk; no fix without changing the pins" },
     # zbus 5's helper crates, folded into zbus 6. zbus 5 comes from the pinned
     # iced 0.14.0 (mundy), ashpd 0.13.13 and keyring 4.2.0, plus tray-icon and
     # notify-rust; none of them is on zbus 6 yet.
