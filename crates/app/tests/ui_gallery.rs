@@ -6346,8 +6346,8 @@ mod dialogs {
         assert_eq!(more.len(), 1, "{more:?}");
         assert_eq!(
             count(&shown, "Members (450)"),
-            2,
-            "the title and the section"
+            3,
+            "the panel title, the section and the header toggle"
         );
         // Show more adds a page and the button stays while there are more.
         let mut app = app;

@@ -56,12 +56,12 @@ impl App {
     }
 
     /// Whether the Members tab is on screen.
-    fn members_tab_shown(&self) -> bool {
+    pub(crate) fn members_tab_shown(&self) -> bool {
         self.room_panel_shown() && self.room_panel.tab == RoomPanelTab::Members
     }
 
     /// Whether the Info tab is on screen.
-    fn info_tab_shown(&self) -> bool {
+    pub(crate) fn info_tab_shown(&self) -> bool {
         self.room_panel_shown() && self.room_panel.tab == RoomPanelTab::Info
     }
 

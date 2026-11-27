@@ -18,7 +18,7 @@ use crate::composer::{self, EditorAction, Mode, Suggestions};
 use crate::emoji;
 use crate::keys::Shortcut;
 use crate::links::{CheckedUrl, LinkBar, LinkKind};
-use crate::notifications::ModeChoice;
+use crate::notifications::HeaderMode;
 use crate::rooms::RoomsMessage;
 use crate::screens::loading::sync_label;
 use crate::screens::timeline_pane::RichEnv;
@@ -126,6 +126,26 @@ pub fn topic_line(topic: Option<&str>) -> Option<String> {
 /// none yet.
 fn room_topic(_app: &App) -> Option<&str> {
     None
+}
+
+/// Room pane width (logical pixels) under which the header's panel toggles
+/// keep their icon and a tooltip only. Above it they read **Members** and
+/// **Info**.
+pub const HEADER_LABELS_BELOW: f32 = 480.0;
+
+/// Whether the header's panel toggles carry words at this pane width.
+pub fn header_labels(width: f32) -> bool {
+    width >= HEADER_LABELS_BELOW
+}
+
+/// The words of the **Members** toggle: with the count when the core has
+/// listed the members (`(count, truncated)`).
+fn members_label(count: Option<(usize, bool)>) -> String {
+    match count {
+        Some((n, true)) => format!("Members ({n}+)"),
+        Some((n, false)) => format!("Members ({n})"),
+        None => "Members".to_owned(),
+    }
 }
 
 /// A control in the room header, with the message a press sends.
@@ -328,12 +348,25 @@ fn header<'a>(app: &'a App, title: String) -> Element<'a, Message> {
     let mut controls: Vec<Element<'a, Message>> = Vec::new();
     if let Some(room) = selected.filter(|room| !room.is_invite) {
         controls.push(notification_menu(app, &room.id));
-        controls.push(kit::icon_button(
+        let words = header_labels(room_pane_width(app));
+        let count = app
+            .rooms_ui
+            .known
+            .as_ref()
+            .filter(|known| known.room == room.id)
+            .map(|known| (known.members.len(), known.truncated));
+        controls.push(kit::toggle_labelled_button(
             Icon::Members,
+            members_label(count),
+            words,
+            app.members_tab_shown(),
             HeaderAction::Members.message(),
         ));
-        controls.push(kit::icon_button(
+        controls.push(kit::toggle_labelled_button(
             Icon::Settings,
+            "Info",
+            words,
+            app.info_tab_shown(),
             HeaderAction::Settings.message(),
         ));
         if let Some(video) = app.calls.video_button(room) {
@@ -419,9 +452,9 @@ pub(crate) fn notification_menu<'a>(app: &'a App, room: &RoomId) -> Element<'a, 
     // The menu has a value, so Ctrl + wheel (zoom) must not reach it.
     let menu = kit::menu(
         pick_list(
-            ModeChoice::ALL,
-            Some(app.room_mode_choice(room)),
-            Message::RoomModeChosen,
+            HeaderMode::ALL,
+            Some(HeaderMode(app.room_mode_choice(room))),
+            |mode| Message::RoomModeChosen(mode.0),
         )
         .text_size(tokens::CAPTION)
         .padding([tokens::XS, tokens::S])
@@ -1331,6 +1364,25 @@ mod tests {
         ] {
             assert_eq!(top_bar_compact(width), compact, "{width}");
         }
+    }
+
+    #[test]
+    fn the_header_keeps_its_words_down_to_a_width() {
+        for (width, words) in [
+            (1920.0, true),
+            (HEADER_LABELS_BELOW, true),
+            (HEADER_LABELS_BELOW - 1.0, false),
+            (320.0, false),
+        ] {
+            assert_eq!(header_labels(width), words, "{width}");
+        }
+    }
+
+    #[test]
+    fn the_members_toggle_shows_the_count_when_known() {
+        assert_eq!(members_label(None), "Members");
+        assert_eq!(members_label(Some((12, false))), "Members (12)");
+        assert_eq!(members_label(Some((500, true))), "Members (500+)");
     }
 
     #[test]

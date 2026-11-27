@@ -428,6 +428,28 @@ impl fmt::Display for ModeChoice {
     }
 }
 
+/// A [`ModeChoice`] as the room header's menu shows it: with the words
+/// "Notifications: " in front, so the closed menu says what it sets. It
+/// still stands for the same choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeaderMode(pub ModeChoice);
+
+impl HeaderMode {
+    /// All choices, in menu order.
+    pub const ALL: [Self; 4] = [
+        Self(ModeChoice::ALL[0]),
+        Self(ModeChoice::ALL[1]),
+        Self(ModeChoice::ALL[2]),
+        Self(ModeChoice::ALL[3]),
+    ];
+}
+
+impl fmt::Display for HeaderMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Notifications: {}", self.0)
+    }
+}
+
 /// The mark a muted room shows in the list.
 pub fn muted_mark(mode: Option<RoomNotificationModeView>) -> Option<&'static str> {
     (mode == Some(RoomNotificationModeView::Mute)).then_some("Muted")
@@ -662,6 +684,23 @@ mod tests {
             folding.admit(&RoomId::from(format!("!r{i}:x")), t0);
         }
         assert!(folding.rooms.len() <= MAX_FOLDED_ROOMS);
+    }
+
+    #[test]
+    fn the_header_menu_says_what_it_sets() {
+        let labels: Vec<String> = HeaderMode::ALL.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            labels,
+            [
+                "Notifications: All messages",
+                "Notifications: Mentions and keywords",
+                "Notifications: Mute",
+                "Notifications: Use default",
+            ]
+        );
+        for (mode, choice) in HeaderMode::ALL.iter().zip(ModeChoice::ALL) {
+            assert_eq!(mode.0, choice);
+        }
     }
 
     #[test]

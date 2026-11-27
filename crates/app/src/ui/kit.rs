@@ -9,8 +9,8 @@ use iced::widget::button::{Button, Status};
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::tooltip::Position;
 use iced::widget::{
-    Column, button, column, container, image, opaque, progress_bar, row, rule, scrollable, space,
-    text, tooltip,
+    Column, Row, button, column, container, image, opaque, progress_bar, row, rule, scrollable,
+    space, text, tooltip,
 };
 use iced::widget::{checkbox, pick_list, text_input};
 use iced::{Background, Border, Color, Element, Fill, Theme, border};
@@ -381,6 +381,35 @@ pub fn toggle_icon_button<'a, M: Clone + 'a>(
     on_press: M,
 ) -> Element<'a, M> {
     toggle_icon_button_labelled(icon, active, icon.label(), on_press)
+}
+
+/// A toggle with an icon and a word, such as **Members**, drawn like
+/// [`toggle_icon_button`] while `active`. With `words_shown` false (a narrow
+/// window) only the icon stays and the words move to the tooltip. The
+/// active state shows by the outline and fill, and the words are the same in
+/// both states.
+pub fn toggle_labelled_button<'a, M: Clone + 'a>(
+    icon: Icon,
+    words: impl Into<String>,
+    words_shown: bool,
+    active: bool,
+    on_press: M,
+) -> Element<'a, M> {
+    let words: String = words.into();
+    let mut content = Row::new().spacing(tokens::XS).align_y(iced::Center);
+    content = content.push(icons::icon(icon));
+    if words_shown {
+        content = content.push(text(words.clone()).wrapping(Wrapping::None));
+    }
+    let button = button(content)
+        .padding([tokens::S, tokens::M])
+        .on_press(on_press)
+        .style(if active {
+            active_icon_style
+        } else {
+            icon_style
+        });
+    tip(button, words)
 }
 
 /// [`toggle_icon_button`] with its own tooltip words, for a toggle whose
