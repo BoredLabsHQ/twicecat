@@ -19,7 +19,8 @@ use iced::widget::{
 };
 use iced::{Background, Color, Element, Fill, Length, border, mouse};
 use twicecat_core::api::{
-    RoomId, RoomListChoice, RoomListTab, RoomNotificationModeView, RoomSummary, SectionKey,
+    RoomEncryption, RoomId, RoomListChoice, RoomListTab, RoomNotificationModeView, RoomSummary,
+    SectionKey,
 };
 
 use crate::avatars::{AvatarState, Avatars, NEUTRAL_INITIALS, initials, placeholder_color};
@@ -209,19 +210,20 @@ pub fn count_label(count: u64) -> String {
     }
 }
 
-/// The mark of an encrypted room, in the list row and the room header.
-pub const LOCK_MARK: &str = Icon::Lock.glyph();
+/// The mark of an unencrypted room, in the list row. Its words ("Not
+/// encrypted") are the row's tooltip, never the glyph alone.
+pub const UNENCRYPTED_MARK: &str = Icon::LockOpen.glyph();
 /// The word at the right of the Starred header: the stars are the user's own.
 pub const PERSONAL_LABEL: &str = "personal";
 /// The tag of a voice room (MSC3417 call room).
 pub const VOICE_TAG: &str = "Voice";
 
-/// The lock of `room`, when it is known to be encrypted. The core reports
-/// `is_encrypted` as false while the SDK does not know the room's encryption
-/// yet, so a missing lock does not say "not encrypted": only the lock is
-/// ever drawn, never a mark for the opposite.
-pub fn encrypted_mark(room: &RoomSummary) -> Option<&'static str> {
-    room.is_encrypted.then_some(LOCK_MARK)
+/// The open lock of `room`, only when it is known to be unencrypted. An
+/// encrypted room is the normal case and draws nothing, and neither does a
+/// room whose encryption the SDK does not know yet: the app never claims a
+/// room is unencrypted without proof.
+pub fn unencrypted_mark(room: &RoomSummary) -> Option<&'static str> {
+    (room.encryption == RoomEncryption::NotEncrypted).then_some(UNENCRYPTED_MARK)
 }
 
 /// The time shown on a row: the clock for a message of today, else the day
@@ -267,8 +269,8 @@ pub enum RailMark {
     Invite,
     /// A voice room (MSC3417 call room).
     Voice,
-    /// An encrypted room.
-    Encrypted,
+    /// A room known to be unencrypted.
+    NotEncrypted,
 }
 
 impl RailMark {
@@ -277,7 +279,7 @@ impl RailMark {
         match self {
             Self::Invite => "invite",
             Self::Voice => "voice room",
-            Self::Encrypted => "encrypted",
+            Self::NotEncrypted => "not encrypted",
         }
     }
 
@@ -286,7 +288,7 @@ impl RailMark {
         match self {
             Self::Invite => Icon::Plus,
             Self::Voice => Icon::Call,
-            Self::Encrypted => Icon::Lock,
+            Self::NotEncrypted => Icon::LockOpen,
         }
     }
 }
@@ -300,8 +302,8 @@ pub fn rail_marks(room: &RoomSummary) -> Vec<RailMark> {
     if room.is_call_room {
         marks.push(RailMark::Voice);
     }
-    if encrypted_mark(room).is_some() {
-        marks.push(RailMark::Encrypted);
+    if unencrypted_mark(room).is_some() {
+        marks.push(RailMark::NotEncrypted);
     }
     marks
 }
@@ -1240,8 +1242,11 @@ fn room_row_in<'a>(
     ]
     .spacing(tokens::S)
     .align_y(iced::Center);
-    if let Some(lock) = encrypted_mark(room) {
-        title = title.push(text(lock).size(tokens::CAPTION));
+    if let Some(mark) = unencrypted_mark(room) {
+        title = title.push(kit::tip(
+            text(mark).size(tokens::CAPTION),
+            Icon::LockOpen.label(),
+        ));
     }
     let mut marks = row![].spacing(tokens::XS).align_y(iced::Center);
     if room.is_call_room {
@@ -1405,8 +1410,8 @@ pub(crate) struct ChannelMarks {
     pub invite: bool,
     /// "Muted", while the room is in Mute mode.
     pub muted: Option<&'static str>,
-    /// The lock, when the room is known to be encrypted.
-    pub lock: Option<&'static str>,
+    /// The open lock, when the room is known to be unencrypted.
+    pub unencrypted: Option<&'static str>,
 }
 
 /// The marks of the channel row of `room`.
@@ -1418,7 +1423,7 @@ pub(crate) fn channel_marks(
         badge: badge_for(room),
         invite: room.is_invite,
         muted: muted_mark(mode),
-        lock: encrypted_mark(room),
+        unencrypted: unencrypted_mark(room),
     }
 }
 
@@ -1585,8 +1590,11 @@ fn channel_row<'a>(
     ]
     .spacing(tokens::S)
     .align_y(iced::Center);
-    if let Some(lock) = marks.lock {
-        line = line.push(text(lock).size(tokens::CAPTION));
+    if let Some(mark) = marks.unencrypted {
+        line = line.push(kit::tip(
+            text(mark).size(tokens::CAPTION),
+            Icon::LockOpen.label(),
+        ));
     }
     if marks.invite {
         line = line.push(kit::tag("Invite"));
@@ -1849,7 +1857,7 @@ fn unread_dot<'a>(badge: Badge, muted: bool) -> Element<'a, Message> {
 const CHIP: f32 = 12.0;
 
 /// The marks of a rail row on the avatar: Invite at the top left, the voice
-/// and lock marks along the bottom left.
+/// and open-lock marks along the bottom left.
 fn rail_mark_layer<'a>(marks: &[RailMark]) -> Element<'a, Message> {
     let chip = |mark: RailMark| -> Element<'a, Message> {
         let invite = mark == RailMark::Invite;
@@ -2156,11 +2164,25 @@ mod tests {
     }
 
     #[test]
-    fn only_a_room_known_to_be_encrypted_has_a_lock() {
+    fn only_a_room_known_to_be_unencrypted_has_a_mark() {
         let mut room = RoomSummary::new(twicecat_core::api::RoomId::from("!r:x"), "r".to_owned());
-        assert_eq!(encrypted_mark(&room), None);
-        room.is_encrypted = true;
-        assert_eq!(encrypted_mark(&room), Some(LOCK_MARK));
+        for (encryption, mark) in [
+            (RoomEncryption::Encrypted, None),
+            (RoomEncryption::Unknown, None),
+            (RoomEncryption::NotEncrypted, Some(UNENCRYPTED_MARK)),
+        ] {
+            room.encryption = encryption;
+            assert_eq!(unencrypted_mark(&room), mark, "{encryption:?}");
+            let rail = rail_marks(&room);
+            assert_eq!(
+                rail.contains(&RailMark::NotEncrypted),
+                mark.is_some(),
+                "{encryption:?}"
+            );
+        }
+        assert_eq!(RailMark::NotEncrypted.words(), "not encrypted");
+        assert_eq!(RailMark::NotEncrypted.icon(), Icon::LockOpen);
+        assert_eq!(Icon::LockOpen.label(), "Not encrypted");
     }
 
     #[test]
@@ -2357,15 +2379,15 @@ mod tests {
         assert!(rail_marks(&room).is_empty());
         room.is_invite = true;
         room.is_call_room = true;
-        room.is_encrypted = true;
+        room.encryption = RoomEncryption::NotEncrypted;
         let marks = rail_marks(&room);
         assert_eq!(
             marks,
-            [RailMark::Invite, RailMark::Voice, RailMark::Encrypted]
+            [RailMark::Invite, RailMark::Voice, RailMark::NotEncrypted]
         );
         assert_eq!(
             rail_tip("Ops", Badge::None, None, Some("Muted"), &marks),
-            "Ops, invite, voice room, encrypted, Muted"
+            "Ops, invite, voice room, not encrypted, Muted"
         );
         let _: Element<'_, Message> = rail_mark_layer(&marks);
     }
@@ -2376,7 +2398,7 @@ mod tests {
         room.unread_notifications = 3;
         room.is_call_room = true;
         room.is_invite = true;
-        room.is_encrypted = true;
+        room.encryption = RoomEncryption::NotEncrypted;
         let avatars = Avatars::default();
         let call = Some(CallPill {
             count: 2,
@@ -2519,7 +2541,7 @@ mod tests {
         assert_eq!(muted.badge, Badge::Count(4), "a muted room keeps its count");
         assert_eq!(muted.muted, Some("Muted"));
         assert!(channel_marks(&rooms[7], None).invite);
-        assert_eq!(channel_marks(&rooms[0], None).lock, None);
+        assert_eq!(channel_marks(&rooms[0], None).unencrypted, None);
     }
 
     #[test]

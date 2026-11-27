@@ -6640,6 +6640,7 @@ mod dialogs {
             assert_eq!(up("Lounge"), 1, "the room the files go to");
             assert_eq!(up("To"), 1);
             assert_eq!(up("Encrypted"), 1);
+            assert_eq!(up("Not encrypted"), 0);
             assert_eq!(up("photo.png"), 1);
             assert_eq!(up("180.0 KB \u{b7} image/png"), 1);
             assert_eq!(up("Send 1 file"), 1);

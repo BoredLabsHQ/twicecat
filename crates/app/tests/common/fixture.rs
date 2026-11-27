@@ -33,16 +33,16 @@ use twicecat_core::api::{
     MembershipView, MentionTarget, MessageDetails, MessageKind, MessagePreview, NoiseSuppression,
     PaginationState, Participant, ParticipantId, PlaceholderKind, PowerLevelView, QrImage,
     QualityLimitation, ReactionGroup, ReauthAction, RecoveryKey, RecoveryProgress, RecoveryStatus,
-    ReplyPreview, ReplyState, RichText, Role, RoomDetailsView, RoomId, RoomMemberView,
-    RoomNotificationModeView, RoomPermissions, RoomSummary, SasEmoji, ScreenSource, ScreenSourceId,
-    ScreenSourceKind, ScreenSources, ScreenThumbnail, SecurityStatus, SendFailure, SendStatus,
-    Shield, ShieldCode, SpaceView, StateChange, SyncState, TextStyle, ThreadSummaryView,
-    TimelineItem, TimelineItemKind, TypingUser, UpdateCheckChoice, UploadProgress, UserId,
-    UserTrust, UtdReason, VerificationId, VerificationPeer, VerificationPhase, VideoCodec,
-    VideoDevice, VideoDeviceId, VideoDevices, VideoDirection, VideoEncoderInfo, VideoEncoders,
-    VideoFeed, VideoFrame, VideoKind, VideoMatrix, VideoMode, VideoPixelFormat, VideoPlane,
-    VideoRange, VideoSettings, VideoStats, VideoTrackId, VideoTrackStats, VideoTrackView,
-    VideoTuning,
+    ReplyPreview, ReplyState, RichText, Role, RoomDetailsView, RoomEncryption, RoomId,
+    RoomMemberView, RoomNotificationModeView, RoomPermissions, RoomSummary, SasEmoji, ScreenSource,
+    ScreenSourceId, ScreenSourceKind, ScreenSources, ScreenThumbnail, SecurityStatus, SendFailure,
+    SendStatus, Shield, ShieldCode, SpaceView, StateChange, SyncState, TextStyle,
+    ThreadSummaryView, TimelineItem, TimelineItemKind, TypingUser, UpdateCheckChoice,
+    UploadProgress, UserId, UserTrust, UtdReason, VerificationId, VerificationPeer,
+    VerificationPhase, VideoCodec, VideoDevice, VideoDeviceId, VideoDevices, VideoDirection,
+    VideoEncoderInfo, VideoEncoders, VideoFeed, VideoFrame, VideoKind, VideoMatrix, VideoMode,
+    VideoPixelFormat, VideoPlane, VideoRange, VideoSettings, VideoStats, VideoTrackId,
+    VideoTrackStats, VideoTrackView, VideoTuning,
 };
 
 /// Drops every command: the gallery never talks to a core.
@@ -142,8 +142,18 @@ fn logged_in_loading() -> App {
 
 fn summary(name: &str, title: &str) -> RoomSummary {
     let mut room = RoomSummary::new(room(name), title.to_owned());
+    // The core keeps `is_encrypted` equal to `encryption == Encrypted`: a
+    // fixture sets both together, or the header and the Info tab disagree.
     room.is_encrypted = true;
+    room.encryption = RoomEncryption::Encrypted;
     room
+}
+
+/// Sets what a room says about its encryption, keeping the legacy
+/// `is_encrypted` flag in step like the core does.
+fn set_encryption(room: &mut RoomSummary, encryption: RoomEncryption) {
+    room.encryption = encryption;
+    room.is_encrypted = encryption == RoomEncryption::Encrypted;
 }
 
 fn preview(sender: &str, name: &str, body: &str, minutes_ago: u64) -> MessagePreview {
@@ -188,13 +198,15 @@ fn rooms() -> Vec<RoomSummary> {
 
     let mut invite = summary("book-club", "Book club");
     invite.is_invite = true;
-    invite.is_encrypted = false;
+    set_encryption(&mut invite, RoomEncryption::Unknown);
 
     let mut standup = summary("standup", "Stand-up");
     standup.marked_unread = true;
+    // The SDK has not said yet: no mark, and no claim either way.
+    set_encryption(&mut standup, RoomEncryption::Unknown);
 
     let mut open = summary("open", "Open house");
-    open.is_encrypted = false;
+    set_encryption(&mut open, RoomEncryption::NotEncrypted);
     open.last_message = Some(preview("dee", "Dee Example", "Welcome everyone", 600));
 
     let mut bob = summary("bob", "Bob Example");
@@ -2970,6 +2982,12 @@ fn sessions_logout_warning() -> App {
 
 fn room_settings() -> App {
     let mut app = main_room();
+    // The Info tab below says "Not encrypted" for Lounge (and offers to turn
+    // encryption on), so the summary the header reads says the same.
+    let lounge = room("lounge");
+    for r in app.rooms.iter_mut().filter(|r| r.id == lounge) {
+        set_encryption(r, RoomEncryption::NotEncrypted);
+    }
     press(&mut app, Message::Rooms(RoomsMessage::OpenSettings));
     feed(
         &mut app,

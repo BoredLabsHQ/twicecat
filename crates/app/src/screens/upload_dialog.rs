@@ -16,6 +16,8 @@
 use iced::widget::{Column, column, container, image, responsive, row, space, stack};
 use iced::{Background, Color, ContentFit, Element, Fill, Length, Theme};
 
+use twicecat_core::api::RoomEncryption;
+
 use crate::media::{file_title, kind_label, size_label};
 use crate::state::{App, Message};
 use crate::ui::icons::{self, Icon};
@@ -65,6 +67,17 @@ pub fn detail_text(prepared: &Prepared) -> String {
         size_label(Some(prepared.size)),
         prepared.mime
     )
+}
+
+/// The tag after the room's name: "Encrypted" or "Not encrypted", and nothing
+/// for a room whose encryption is not known yet (it is not claimed to be
+/// either) or that is not in the list.
+fn encryption_words(encryption: Option<RoomEncryption>) -> Option<&'static str> {
+    match encryption {
+        Some(RoomEncryption::Encrypted) => Some(Icon::Lock.label()),
+        Some(RoomEncryption::NotEncrypted) => Some(Icon::LockOpen.label()),
+        Some(RoomEncryption::Unknown) | None => None,
+    }
 }
 
 /// The room the files go to, as the card names it: the room list's name for
@@ -180,7 +193,7 @@ fn confirmation<'a>(
         .rooms
         .iter()
         .find(|room| room.id == dialog_state.room_id)
-        .map(|room| room.is_encrypted);
+        .map(|room| room.encryption);
     // Where the files go: the room's name, cleaned, with whether it is
     // encrypted, above the files.
     let mut target = row![
@@ -191,12 +204,8 @@ fn confirmation<'a>(
     ]
     .spacing(tokens::S)
     .align_y(iced::Center);
-    if let Some(encrypted) = encrypted {
-        target = target.push(tag(if encrypted {
-            Icon::Lock.label()
-        } else {
-            Icon::LockOpen.label()
-        }));
+    if let Some(words) = encryption_words(encrypted) {
+        target = target.push(tag(words));
     }
     let mut body = Column::new().spacing(tokens::M).width(Fill).push(target);
     let wrong_room: Element<'a, Message> = if matches {
@@ -255,6 +264,20 @@ mod tests {
             room_id: RoomId::from(room),
             entries: Vec::new(),
         }
+    }
+
+    #[test]
+    fn the_card_tags_the_three_encryption_states_and_stays_silent_for_unknown() {
+        assert_eq!(
+            encryption_words(Some(RoomEncryption::Encrypted)),
+            Some("Encrypted")
+        );
+        assert_eq!(
+            encryption_words(Some(RoomEncryption::NotEncrypted)),
+            Some("Not encrypted")
+        );
+        assert_eq!(encryption_words(Some(RoomEncryption::Unknown)), None);
+        assert_eq!(encryption_words(None), None);
     }
 
     #[test]

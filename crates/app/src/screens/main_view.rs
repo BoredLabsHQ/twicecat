@@ -9,7 +9,7 @@ use iced::widget::{
     text_editor, text_input,
 };
 use iced::{Element, Fill, Length};
-use twicecat_core::api::{MessageText, RoomId, SyncState, UserId, UserTrust};
+use twicecat_core::api::{MessageText, RoomEncryption, RoomId, SyncState, UserId, UserTrust};
 
 use crate::actions::{self, Picker};
 use crate::audio_settings::AudioMessage;
@@ -207,14 +207,20 @@ pub fn room_pane_width(app: &App) -> f32 {
     (width - 2.0 * ROOM_PANE_PADDING).max(0.0)
 }
 
-/// The room as a panel header names it: the lock when it is encrypted, then
-/// the cleaned name.
-pub fn context_line(name: &str, encrypted: bool) -> String {
+/// The words that flag a room, only when it is known to be unencrypted:
+/// an encrypted room is the normal case, and a room whose encryption is not
+/// known yet is not claimed to be anything.
+pub fn unencrypted_words(encryption: RoomEncryption) -> Option<&'static str> {
+    (encryption == RoomEncryption::NotEncrypted).then_some(Icon::LockOpen.label())
+}
+
+/// The room as a panel header names it: the cleaned name, then "Not
+/// encrypted" when the room is known to be unencrypted.
+pub fn context_line(name: &str, encryption: RoomEncryption) -> String {
     let name = display_name(name);
-    if encrypted {
-        format!("{} {name}", room_list_pane::LOCK_MARK)
-    } else {
-        name
+    match unencrypted_words(encryption) {
+        Some(words) => format!("{name} \u{b7} {words}"),
+        None => name,
     }
 }
 
@@ -233,7 +239,7 @@ pub fn panel_title<'a>(app: &'a App, title: text::Text<'a>, fills: bool) -> Elem
     match room {
         Some(room) => column![
             title,
-            text(context_line(&room.name, room.is_encrypted))
+            text(context_line(&room.name, room.encryption))
                 .size(tokens::CAPTION)
                 .style(kit::muted)
         ]
@@ -254,7 +260,7 @@ pub fn trust_strip(app: &App) -> Option<Element<'_, Message>> {
 }
 
 /// The room header: the avatar, the name and a line under it, tags for the
-/// lock, Voice and the trust of the other person (with Verify), then the
+/// open lock (unencrypted rooms only), Voice and the trust of the other person (with Verify), then the
 /// buttons. Always one element, so the column around it keeps its widget
 /// types. In a narrow pane the buttons wrap onto their own line under the
 /// tags, so nothing is cut off and the trust tag is always seen.
@@ -280,8 +286,8 @@ fn header<'a>(app: &'a App, title: String) -> Element<'a, Message> {
     // other person's ID on its own line.
     let mut tag_list: Vec<Element<'a, Message>> = Vec::new();
     if let Some(room) = selected {
-        if room.is_encrypted {
-            tag_list.push(kit::tag(Icon::Lock.label()));
+        if let Some(words) = unencrypted_words(room.encryption) {
+            tag_list.push(kit::severity_tag(Severity::Warning, words));
         }
         if room.is_call_room {
             tag_list.push(kit::tag("Voice"));
@@ -1514,7 +1520,7 @@ mod tests {
         use twicecat_core::api::RoomSummary;
         let mut app = app();
         let mut joined = RoomSummary::new(RoomId::from("!j:example.org"), "Lounge".into());
-        joined.is_encrypted = true;
+        joined.encryption = RoomEncryption::NotEncrypted;
         joined.is_call_room = true;
         let mut invite = RoomSummary::new(RoomId::from("!i:example.org"), "Club".into());
         invite.is_invite = true;
@@ -1559,11 +1565,19 @@ mod tests {
     }
 
     #[test]
-    fn the_context_line_names_the_room_and_its_lock() {
-        assert_eq!(context_line("Lounge", false), "Lounge");
-        let locked = context_line("Lounge", true);
-        assert!(locked.starts_with(room_list_pane::LOCK_MARK) && locked.ends_with("Lounge"));
-        let hostile = context_line("Lo\u{202e}unge\nx", true);
+    fn the_context_line_and_the_header_flag_only_unencrypted_rooms() {
+        for (encryption, flagged) in [
+            (RoomEncryption::Encrypted, false),
+            (RoomEncryption::Unknown, false),
+            (RoomEncryption::NotEncrypted, true),
+        ] {
+            assert_eq!(unencrypted_words(encryption).is_some(), flagged);
+            let line = context_line("Lounge", encryption);
+            assert!(line.contains("Lounge"));
+            assert_eq!(line.contains("Not encrypted"), flagged, "{encryption:?}");
+        }
+        assert_eq!(context_line("Lounge", RoomEncryption::Encrypted), "Lounge");
+        let hostile = context_line("Lo\u{202e}unge\nx", RoomEncryption::NotEncrypted);
         assert!(!hostile.contains('\u{202e}') && !hostile.contains('\n'));
     }
 
