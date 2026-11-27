@@ -17,3 +17,4 @@ Task 2: done (uirf.2)
 Task 2: complete (39babb8..5e6b325, gate ok, security PASS (round 1 FAIL: Stop sharing covered by every overlay; fixed by sharing_layer fixup), review PASS, evidence PROVEN)
   evidence: docs/plans/ui-review-fixes.evidence/task-2.md
   notes: OPEN Medium: the "Setting up recovery" busy modal (security.busy == SettingUp, visible()==Nothing) still covers Stop sharing (add to any_overlay_open + test case; Ctrl+Shift+E works). Low: upload drop hint (uploads.hovering) not in the sharing_layer predicate; ring card sits above the pill while accessibility.md says "never covered"; overlay pill centred on window vs top-bar pill centred in middle slot (two pills may be a few px apart); no fit test at 900 px; top_bar_button word/tip redundant; account button also drops its name when compact; sessions Verify test loosened to count distinct messages. Fixup 5e6b325 autosquashed into the Task 2 commit.
+Task 3: started
