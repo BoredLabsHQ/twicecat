@@ -307,6 +307,26 @@ pub enum SyncState {
     Terminated,
 }
 
+/// Whether a room is end-to-end encrypted, as far as the core knows.
+///
+/// `Unknown` means the sync has not yet provided what is needed to decide; it
+/// must not be shown as "not encrypted".
+///
+/// ```
+/// use twicecat_core::api::RoomEncryption;
+/// assert_eq!(RoomEncryption::default(), RoomEncryption::Unknown);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RoomEncryption {
+    /// The room is encrypted.
+    Encrypted,
+    /// The room is known not to be encrypted.
+    NotEncrypted,
+    /// The encryption state is not known yet.
+    #[default]
+    Unknown,
+}
+
 /// One row of the room list.
 ///
 /// `Debug` hides the preview body (see [`MessagePreview`]).
@@ -341,6 +361,9 @@ pub struct RoomSummary {
     pub last_message: Option<MessagePreview>,
     /// The room is end-to-end encrypted.
     pub is_encrypted: bool,
+    /// Whether the room is encrypted, not encrypted, or not known yet.
+    /// `is_encrypted` equals `encryption == RoomEncryption::Encrypted`.
+    pub encryption: RoomEncryption,
     /// The one other user of a direct message, as the core sees it (the user
     /// whose trust it reports); `None` for other rooms and for DMs with no or
     /// several other users.
@@ -379,6 +402,7 @@ impl RoomSummary {
             marked_unread: false,
             last_message: None,
             is_encrypted: false,
+            encryption: RoomEncryption::Unknown,
             dm_peer: None,
             notification_mode: None,
             is_favourite: false,

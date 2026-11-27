@@ -52,9 +52,9 @@ pub use types::{
     ActionKind, AuthUrl, AvatarId, AvatarImage, Block, CoreError, DeviceId, Draft, EventId, Inline,
     ItemActions, Member, MentionRef, MentionTarget, MessageDetails, MessageKind, MessagePreview,
     MessageText, OutgoingMessage, PaginationState, Password, PlaceholderKind, ReactionGroup,
-    ReplyPreview, ReplyState, RichText, RoomId, RoomListQuery, RoomListTab, RoomSummary,
-    RoomTagView, SendFailure, SendStatus, StateChange, SyncState, TextFormat, TextStyle,
-    TimelineItem, TimelineItemKind, TypingUser, UserId,
+    ReplyPreview, ReplyState, RichText, RoomEncryption, RoomId, RoomListQuery, RoomListTab,
+    RoomSummary, RoomTagView, SendFailure, SendStatus, StateChange, SyncState, TextFormat,
+    TextStyle, TimelineItem, TimelineItemKind, TypingUser, UserId,
 };
 pub use updates::{UPDATE_CHECK_INTERVAL, UpdateMechanism, is_newer_version, update_check_due};
 pub use video::{

@@ -19,8 +19,8 @@ use crate::security;
 use crate::spaces::SpaceChildren;
 
 use crate::api::{
-    AvatarId, CoreEvent, ListDiff, MessagePreview, RoomId, RoomListQuery, RoomListTab, RoomSummary,
-    UserId,
+    AvatarId, CoreEvent, ListDiff, MessagePreview, RoomEncryption, RoomId, RoomListQuery,
+    RoomListTab, RoomSummary, UserId,
 };
 
 /// Maps one SDK diff, converting each carried item with `f`.
@@ -262,6 +262,22 @@ pub(crate) fn items_mut<T>(diff: &mut ListDiff<T>) -> &mut [T] {
     }
 }
 
+/// Folds the SDK's encryption state into the core's. Uses the SDK's own
+/// predicates so the feature-gated `StateEncrypted` counts as encrypted. Only
+/// the SDK's own `NotEncrypted` state gives `NotEncrypted`; anything else,
+/// including a variant added later, is `Unknown`, so the UI never claims a
+/// room is unencrypted without proof. Re-check this mapping on every SDK
+/// version bump.
+fn encryption_of(state: &matrix_sdk::EncryptionState) -> RoomEncryption {
+    if state.is_encrypted() {
+        RoomEncryption::Encrypted
+    } else if matches!(state, matrix_sdk::EncryptionState::NotEncrypted) {
+        RoomEncryption::NotEncrypted
+    } else {
+        RoomEncryption::Unknown
+    }
+}
+
 /// Builds the summary of a room, without the last-message preview (that needs
 /// an async lookup, see [`map_batch`]).
 ///
@@ -278,6 +294,7 @@ pub(crate) fn summarize(item: &RoomListItem) -> RoomSummary {
         .map(|h| h.avatar_url.as_deref().map(|u| u.as_str()))
         .collect();
     let mentions = item.num_unread_mentions();
+    let encryption = encryption_of(&item.encryption_state());
     RoomSummary {
         unread_messages: item.num_unread_messages(),
         unread_mentions: mentions,
@@ -288,7 +305,8 @@ pub(crate) fn summarize(item: &RoomListItem) -> RoomSummary {
             &hero_avatars,
         ),
         is_dm,
-        is_encrypted: item.encryption_state().is_encrypted(),
+        is_encrypted: encryption == RoomEncryption::Encrypted,
+        encryption,
         is_space: item.is_space(),
         is_call_room: item.is_call(),
         is_invite: item.state() == RoomState::Invited,
@@ -394,7 +412,21 @@ mod tests {
 
     use super::*;
 
-    use crate::api::{RoomListQuery, RoomListTab};
+    use crate::api::{RoomEncryption, RoomListQuery, RoomListTab};
+
+    #[test]
+    fn each_sdk_encryption_state_maps_to_one_room_encryption() {
+        use matrix_sdk::EncryptionState as S;
+        assert_eq!(encryption_of(&S::Encrypted), RoomEncryption::Encrypted);
+        assert_eq!(
+            encryption_of(&S::NotEncrypted),
+            RoomEncryption::NotEncrypted
+        );
+        assert_eq!(encryption_of(&S::Unknown), RoomEncryption::Unknown);
+        let fresh = RoomSummary::new(RoomId::from("!r:x"), String::new());
+        assert_eq!(fresh.encryption, RoomEncryption::Unknown);
+        assert!(!fresh.is_encrypted);
+    }
 
     #[test]
     fn the_dm_peer_field_carries_the_core_peer() {
