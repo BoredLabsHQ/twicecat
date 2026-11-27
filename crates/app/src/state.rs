@@ -1273,7 +1273,7 @@ impl App {
         let resized = matches!(message, Message::WindowResized(_));
         let fills_before = self.pane_layout().panel_fills;
         let task = self.update_inner(message);
-        self.sync_members_tab();
+        self.sync_tabs();
         self.note_panels(panel_before, call_before);
         let task = Task::batch([task, self.video_sync_views()]);
         // The reaction picker takes the keyboard: it must never stay open in
@@ -1778,8 +1778,13 @@ impl App {
                 self.clear_draft();
                 self.reset_link_state();
                 self.rooms_ui.reset_room();
-                // The Members tab belongs to the room it was opened for.
-                if self.room_panel.tab == crate::room_panel::RoomPanelTab::Members {
+                // The Members and Info tabs belong to the room they were
+                // opened for.
+                if matches!(
+                    self.room_panel.tab,
+                    crate::room_panel::RoomPanelTab::Members
+                        | crate::room_panel::RoomPanelTab::Info
+                ) {
                     self.room_panel.open = false;
                 }
                 Task::batch([
@@ -11320,6 +11325,10 @@ mod tests {
             rooms(app, R::OpenSettings);
             let _ = drain(rx);
             let _ = app.update(core(CoreEvent::RoomDetails(details("!a:x", false, perms))));
+            // The list knows the room is unencrypted.
+            if let Some(room) = app.rooms.iter_mut().find(|r| r.id == id("!a:x")) {
+                room.encryption = twicecat_core::api::RoomEncryption::NotEncrypted;
+            }
         }
 
         #[test]
@@ -11765,7 +11774,9 @@ mod tests {
                     result: Ok(Box::new(upload())),
                 },
             );
-            rooms(&mut app, R::CloseSettings);
+            let _ = app.update(Message::RoomPanel(
+                crate::room_panel::RoomPanelMessage::Close,
+            ));
             rooms(
                 &mut app,
                 R::AvatarReady {
@@ -11813,6 +11824,31 @@ mod tests {
             rooms(&mut app, R::EncryptAsk);
             rooms(&mut app, R::EncryptConfirm);
             assert!(drain(&mut rx).is_empty(), "already encrypted");
+        }
+
+        #[test]
+        fn encryption_is_asked_only_for_a_room_the_list_knows_is_unencrypted() {
+            use twicecat_core::api::RoomEncryption as E;
+            for (encryption, sends) in [(E::NotEncrypted, 1), (E::Unknown, 0), (E::Encrypted, 0)] {
+                let (mut app, mut rx, _) = rig();
+                // The details say "not encrypted" in every case; the list
+                // decides.
+                open_settings(&mut app, &mut rx, all(true));
+                app.rooms
+                    .iter_mut()
+                    .find(|r| r.id == id("!a:x"))
+                    .expect("listed")
+                    .encryption = encryption;
+                rooms(&mut app, R::EncryptAsk);
+                rooms(&mut app, R::EncryptConfirm);
+                assert_eq!(drain(&mut rx).len(), sends, "{encryption:?}");
+            }
+            // A room missing from the list is Unknown.
+            let (mut app, mut rx, _) = rig();
+            open_settings(&mut app, &mut rx, all(true));
+            app.rooms.clear();
+            rooms(&mut app, R::EncryptAsk);
+            assert!(!app.rooms_ui.settings.as_ref().expect("open").encrypt_ask);
         }
 
         #[test]
@@ -11999,6 +12035,125 @@ mod tests {
                 status: None,
             });
             assert!(crate::screens::members::shown(&app).is_none());
+        }
+
+        // ---- room info and settings in the room panel (uirf.5) ----
+
+        fn escape_key(app: &mut App) {
+            let _ = app.update(Message::Shortcut {
+                shortcut: crate::keys::Shortcut::Escape,
+                captured: false,
+            });
+        }
+
+        #[test]
+        fn the_settings_button_opens_the_panel_on_info_and_closes_it_again() {
+            use crate::room_panel::RoomPanelTab;
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenSettings);
+            assert!(app.pane_layout().room_panel);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Info);
+            assert!(app.rooms_ui.settings.is_some());
+            let sent = drain(&mut rx);
+            assert!(
+                sent.iter()
+                    .any(|c| matches!(c, Command::OpenRoomDetails { .. }))
+            );
+            // Info is shown: the button closes the panel.
+            rooms(&mut app, R::OpenSettings);
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.rooms_ui.settings.is_none());
+        }
+
+        #[test]
+        fn settings_no_longer_close_the_members_tab_they_switch_to_info() {
+            use crate::room_panel::RoomPanelTab;
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            let _ = drain(&mut rx);
+            rooms(&mut app, R::OpenSettings);
+            assert!(app.room_panel_shown(), "the panel stays open");
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Info);
+            assert!(app.rooms_ui.members_panel.is_none());
+            assert!(app.rooms_ui.settings.is_some());
+            // And back: the Members tab opens again.
+            rooms(&mut app, R::OpenMembers);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+            assert!(app.rooms_ui.members_panel.is_some());
+            assert!(app.rooms_ui.settings.is_none(), "the Info state is gone");
+        }
+
+        #[test]
+        fn the_info_tab_is_not_an_overlay_and_esc_cancels_a_question_before_closing_the_panel() {
+            let (mut app, mut rx, _) = rig();
+            open_settings(&mut app, &mut rx, all(true));
+            assert!(!app.any_overlay_open(), "a side panel covers nothing");
+            assert!(!app.rooms_ui.overlay_open());
+            assert!(crate::screens::room_dialogs::topmost(&app.rooms_ui).is_none());
+            rooms(&mut app, R::EncryptAsk);
+            assert!(app.rooms_ui.settings.as_ref().expect("open").encrypt_ask);
+            escape_key(&mut app);
+            let panel = app.rooms_ui.settings.as_ref().expect("still open");
+            assert!(!panel.encrypt_ask && !panel.leave_ask, "the question ends");
+            assert!(app.pane_layout().room_panel, "the panel stays");
+            assert!(drain(&mut rx).is_empty(), "nothing was confirmed");
+            rooms(&mut app, R::LeaveAsk);
+            escape_key(&mut app);
+            assert!(app.pane_layout().room_panel);
+            escape_key(&mut app);
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.rooms_ui.settings.is_none());
+            // A dialog over the panel still counts as an overlay.
+            rooms(&mut app, R::OpenSettings);
+            rooms(&mut app, R::OpenCreate);
+            assert!(app.any_overlay_open());
+        }
+
+        #[test]
+        fn a_room_switch_closes_the_info_tab_and_it_draws_only_the_selected_rooms_data() {
+            let (mut app, mut rx, _) = rig();
+            open_settings(&mut app, &mut rx, all(true));
+            assert!(crate::screens::room_settings::shown(&app).is_some());
+            let _ = app.update(Message::SelectRoom(id("!b:x")));
+            assert!(!app.room_panel_shown(), "the Info tab closes");
+            assert!(app.rooms_ui.settings.is_none());
+            assert!(app.rooms_ui.details.is_none());
+            assert!(crate::screens::room_settings::shown(&app).is_none());
+            // A panel left over for another room is never drawn.
+            app.room_panel = crate::room_panel::RoomPanel {
+                tab: crate::room_panel::RoomPanelTab::Info,
+                open: true,
+            };
+            app.rooms_ui.settings = Some(crate::rooms::SettingsPanel {
+                room: id("!a:x"),
+                name: String::new(),
+                topic: String::new(),
+                name_edited: false,
+                topic_edited: false,
+                encrypt_ask: false,
+                leave_ask: false,
+                avatar_busy: false,
+                error: None,
+            });
+            assert!(crate::screens::room_settings::shown(&app).is_none());
+        }
+
+        #[test]
+        fn an_invitation_room_has_no_members_or_info_tab() {
+            use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
+            let (mut app, mut rx, _) = rig();
+            with_invite(&mut app);
+            let _ = app.update(Message::SelectRoom(id("!inv:x")));
+            let _ = drain(&mut rx);
+            for tab in [RoomPanelTab::Members, RoomPanelTab::Info] {
+                let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(tab)));
+                assert!(!app.room_panel_shown(), "{tab:?}");
+            }
+            rooms(&mut app, R::OpenSettings);
+            rooms(&mut app, R::OpenMembers);
+            assert!(!app.room_panel_shown());
+            assert!(app.rooms_ui.settings.is_none() && app.rooms_ui.members_panel.is_none());
+            assert!(drain(&mut rx).is_empty());
         }
 
         #[test]
@@ -12335,8 +12490,10 @@ mod tests {
             rooms(&mut app, R::Escape);
             assert!(app.rooms_ui.dialog.is_none());
             assert!(app.rooms_ui.settings.is_some());
+            // The Info tab is a side panel: this Esc leaves it to the room
+            // panel's own turn (tested with the keys).
             rooms(&mut app, R::Escape);
-            assert!(app.rooms_ui.settings.is_none());
+            assert!(app.rooms_ui.settings.is_some());
         }
 
         #[test]
@@ -12504,7 +12661,15 @@ mod tests {
             assert_eq!(app.room_panel.tab, RoomPanelTab::Info);
             assert!(app.pane_layout().room_panel);
             assert!(app.threads.panel.is_some());
-            assert!(drain(&mut rx).is_empty(), "no command for a tab change");
+            // The Info tab asks for the room's details and members, and
+            // nothing touches the thread.
+            assert!(
+                drain(&mut rx).iter().all(|c| matches!(
+                    c,
+                    Command::OpenRoomDetails { .. } | Command::ListRoomMembers { .. }
+                )),
+                "a tab change sends only the Info tab's own requests"
+            );
             let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
                 RoomPanelTab::Thread,
             )));

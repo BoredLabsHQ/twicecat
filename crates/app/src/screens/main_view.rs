@@ -415,7 +415,7 @@ fn invite_buttons<'a>(app: &App, room: &RoomId) -> Element<'a, Message> {
 /// The room's notification menu: a drop-down with the four choices of plan
 /// Q11. It shows what the user picked at once, since the room list lags
 /// behind a change.
-fn notification_menu<'a>(app: &'a App, room: &RoomId) -> Element<'a, Message> {
+pub(crate) fn notification_menu<'a>(app: &'a App, room: &RoomId) -> Element<'a, Message> {
     // The menu has a value, so Ctrl + wheel (zoom) must not reach it.
     let menu = kit::menu(
         pick_list(

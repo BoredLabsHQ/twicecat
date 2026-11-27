@@ -1921,7 +1921,7 @@ fn avatar_view_alpha<'a>(
 }
 
 /// [`avatar_view_alpha`] at full strength.
-fn avatar_view<'a>(
+pub(crate) fn avatar_view<'a>(
     room: &RoomSummary,
     name: &str,
     avatars: &Avatars,

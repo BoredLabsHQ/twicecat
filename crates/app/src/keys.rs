@@ -645,7 +645,8 @@ impl App {
     /// Esc closes the topmost thing, one per press: the incoming-call card
     /// (hidden, still ringing), the switcher, the upload
     /// confirmation, the viewer, the Voice & audio card, Settings, a room
-    /// dialog or panel, the
+    /// dialog or card, a question in the room panel's Info tab (turn
+    /// encryption on, leave), the
     /// composer's suggestions, reply or edit, then the thread panel, then the
     /// participants panel (the one on screen first when the window is too
     /// narrow for both).
@@ -690,6 +691,11 @@ impl App {
         // main view's own layers (`App::view`), so they take the key before
         // the Sessions card under them.
         if self.rooms_ui.overlay_open() {
+            return self.update(Message::Rooms(crate::rooms::RoomsMessage::Escape));
+        }
+        // A question in the Info tab (turn encryption on, leave) is cancelled
+        // before the panel closes.
+        if self.rooms_ui.question_open() {
             return self.update(Message::Rooms(crate::rooms::RoomsMessage::Escape));
         }
         // The share picker and the full-screen view are drawn over the main

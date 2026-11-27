@@ -1,7 +1,7 @@
 //! The room panel (UI review fixes, Task 3): a column beside the room pane
 //! with a tab strip (Members, Info, and Thread while a thread is open). The
 //! Thread tab holds the thread's timeline, a text field and **Send**
-//! (plan Q16, Task 13); Members arrived in Task 4, Info arrives in Task 5.
+//! (plan Q16, Task 13); Members arrived in Task 4, Info in Task 5.
 //!
 //! The panel is always one slot of the main row (an empty space when closed)
 //! and the thread view always has three children (header, timeline,
@@ -17,8 +17,8 @@ use twicecat_core::api::MessageText;
 use crate::layout::PaneLayout;
 use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
 use crate::screens::main_view::{self, rich_env};
-use crate::screens::members;
 use crate::screens::timeline_pane::{self, Pane};
+use crate::screens::{members, room_settings};
 use crate::state::{App, Message};
 use crate::threads::{PANEL_WIDTH, THREAD_INPUT_ID, ThreadPanel, ThreadsMessage};
 use crate::ui::icons::Icon;
@@ -95,7 +95,7 @@ fn view(app: &App, fills: bool) -> Element<'_, Message> {
     let content: Element<'_, Message> = match (app.room_panel.tab, &app.threads.panel) {
         (RoomPanelTab::Thread, Some(panel)) => thread_body(app, panel),
         (RoomPanelTab::Members, _) => members::view(app),
-        // Info is filled in by Task 5.
+        (RoomPanelTab::Info, _) => room_settings::view(app),
         (tab, _) => text(tab_label(tab)).size(tokens::BODY).into(),
     };
     let body: Column<'_, Message> = Column::from_vec(vec![header(app, fills), content])

@@ -5842,12 +5842,11 @@ mod dialogs {
     }
 
     /// `(scenario, card width, what the close button in the header sends)`.
-    const CARDS: [(&str, f32, &str); 13] = [
+    const CARDS: [(&str, f32, &str); 12] = [
         ("create-room", 460.0, "Rooms(CloseDialog)"),
         ("join-room", 460.0, "Rooms(CloseDialog)"),
         ("start-dm", 460.0, "Rooms(CloseDialog)"),
         ("user-card", 460.0, "Rooms(CardClose)"),
-        ("room-settings", 520.0, "Rooms(CloseSettings)"),
         ("upload", 520.0, "UploadCancelled"),
         ("upload-single", 520.0, "UploadCancelled"),
         ("rail-menu", 380.0, "SidebarMenu(Close)"),
@@ -5886,10 +5885,6 @@ mod dialogs {
             "start-dm",
             "user-card",
             "user-card-long",
-            "room-settings",
-            "room-settings-long",
-            "room-leave-confirm",
-            "room-encrypt-confirm",
             "upload",
             "upload-single",
             "upload-long",
@@ -5907,7 +5902,6 @@ mod dialogs {
                 let laid = Laid::new(&app, &renderer, size);
                 let width = match name {
                     "room-list-sort" | "room-list-card" => 380.0,
-                    n if n.starts_with("room-") => 520.0,
                     n if n.starts_with("upload") => 520.0,
                     n if n.starts_with("rail-") || n.starts_with("section-") => 380.0,
                     "space-sections-empty-card" => 380.0,
@@ -5944,8 +5938,6 @@ mod dialogs {
         // The action that lives in each dialog's footer.
         for (name, width, footer) in [
             ("create-room", 460.0, "Rooms(CreateSubmit)"),
-            ("room-settings", 520.0, "Rooms(CloseSettings)"),
-            ("room-leave-confirm", 520.0, "Rooms(CloseSettings)"),
             ("upload-single", 520.0, "UploadConfirmed"),
             ("upload-long", 520.0, "UploadConfirmed"),
             ("user-card", 460.0, "Rooms(CardMessage)"),
@@ -6142,8 +6134,6 @@ mod dialogs {
         let mut checked = 0;
         for name in [
             "create-room",
-            "room-leave-confirm",
-            "room-encrypt-confirm",
             "user-card",
             "upload",
             "upload-single",
@@ -6533,36 +6523,147 @@ mod dialogs {
 
     #[test]
     fn a_long_address_and_topic_wrap_and_the_panel_names_its_room() {
-        let renderer = renderer();
         for size in SIZES {
             let app = dialog_app("room-settings-long", size);
-            let mut laid = Laid::new(&app, &renderer, size);
-            laid.settle(&renderer, size);
-            let card = card_rect(&laid, 520.0);
-            let shown = texts(&mut laid, &renderer);
+            let shown = texts_of(&app, size);
             let (_, address) = shown
                 .iter()
                 .find(|(t, _)| t.starts_with("Address: ") && t.ends_with("long-server.example.org"))
                 .expect("the address ends with its server");
             assert!(address.height > 30.0, "{address:?}");
-            assert!(address.x + address.width <= card.x + card.width - 20.0 + 0.5);
+            // The Info tab is a panel on the right: the address ends inside
+            // the window.
+            assert!(address.x + address.width <= size.width - 20.0 + 0.5);
             assert!(shown.iter().any(|(t, _)| t == "Lounge"), "the room's name");
         }
     }
 
     #[test]
-    fn the_room_settings_scroll_in_a_short_window_with_the_footer_in_view() {
+    fn the_info_tab_reads_facts_first_then_the_fields_then_encryption_and_leave() {
         let renderer = renderer();
-        let app = dialog_app("room-leave-confirm", SHORT);
-        let mut laid = Laid::new(&app, &renderer, SHORT);
-        laid.settle(&renderer, SHORT);
-        let shown = texts(&mut laid, &renderer);
-        let close = shown
-            .iter()
-            .filter(|(t, _)| t == "Close")
-            .map(|(_, r)| r.y + r.height)
-            .fold(0.0_f32, f32::max);
-        assert!(close <= SHORT.height, "the footer is at {close}");
+        let app = dialog_app("room-settings", WIDE);
+        let shown = texts_of(&app, WIDE);
+        let at = |text: &str| {
+            shown
+                .iter()
+                .find(|(t, _)| t.starts_with(text))
+                .unwrap_or_else(|| panic!("no {text:?} in {shown:?}"))
+                .1
+        };
+        let topic = at("Where we talk about everything");
+        let address = at("Address: #lounge:example.org");
+        let words = at("Not encrypted");
+        let count = at("Members: ");
+        let name = at("Name");
+        let enable = at("Enable encryption");
+        let leave = at("Leave room");
+        assert!(topic.y < name.y && address.y < name.y && words.y < name.y && count.y < name.y);
+        assert!(name.y < enable.y && enable.y < leave.y);
+        // The editable controls are there and send the modal's messages.
+        let list = senders(&app, &renderer, WIDE);
+        for message in [
+            "Rooms(SaveName)",
+            "Rooms(SaveTopic)",
+            "Rooms(ChooseAvatar)",
+            "Rooms(EncryptAsk)",
+            "Rooms(LeaveAsk)",
+            "RoomPanel(Close)",
+        ] {
+            assert_eq!(of_message(&list, message).count(), 1, "{message}");
+        }
+    }
+
+    /// The header flags only an unencrypted room, and the Info tab says the
+    /// same for the same room: the room-settings fixture feeds the summary and
+    /// the details together, so the two never disagree.
+    #[test]
+    fn the_header_flag_and_the_info_tab_agree_on_a_rooms_encryption() {
+        let settings = texts_of(&dialog_app("room-settings", WIDE), WIDE);
+        assert_eq!(count(&settings, "Not encrypted"), 1, "the header tag");
+        assert!(
+            settings
+                .iter()
+                .any(|(t, _)| t.starts_with("Not encrypted:")),
+            "the Info tab says it in words too"
+        );
+        // An encrypted room draws no mark and no "Encrypted" tag.
+        let main = texts_of(&dialog_app("main-room", WIDE), WIDE);
+        assert_eq!(count(&main, "Not encrypted"), 0);
+        assert_eq!(count(&main, "Encrypted"), 0);
+    }
+
+    /// The Info tab reads the three-state value from the room list: only a
+    /// room known to be unencrypted gets the warning and the button that
+    /// turns encryption on; an unknown room claims nothing.
+    #[test]
+    fn the_info_tab_words_and_offers_encryption_for_each_of_the_three_states() {
+        use twicecat_core::api::RoomEncryption;
+        for (encryption, words, offered) in [
+            (RoomEncryption::NotEncrypted, "Not encrypted:", true),
+            (RoomEncryption::Encrypted, "Encrypted:", false),
+            (RoomEncryption::Unknown, "Encryption not known yet", false),
+        ] {
+            let renderer = renderer();
+            let mut app = dialog_app("room-settings", WIDE);
+            let room = app
+                .rooms_ui
+                .settings
+                .as_ref()
+                .expect("the panel is open")
+                .room
+                .clone();
+            app.rooms
+                .iter_mut()
+                .find(|r| r.id == room)
+                .expect("the room is listed")
+                .encryption = encryption;
+            let shown = texts_of(&app, WIDE);
+            assert_eq!(
+                shown.iter().filter(|(t, _)| t.starts_with(words)).count(),
+                1,
+                "{encryption:?}: {shown:?}"
+            );
+            assert!(
+                (encryption == RoomEncryption::NotEncrypted)
+                    == shown.iter().any(|(t, _)| t.contains("server can read")),
+                "{encryption:?}: the warning only for NotEncrypted"
+            );
+            let list = senders(&app, &renderer, WIDE);
+            assert_eq!(
+                of_message(&list, "Rooms(EncryptAsk)").count(),
+                usize::from(offered),
+                "{encryption:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_info_tab_stays_in_the_window_and_scrolls_in_a_short_one() {
+        let renderer = renderer();
+        for name in [
+            "room-settings",
+            "room-settings-long",
+            "room-leave-confirm",
+            "room-encrypt-confirm",
+        ] {
+            for size in [WIDE, NARROW, SHORT] {
+                let app = dialog_app(name, size);
+                let what = format!("{name} at {}x{}", size.width, size.height);
+                for (text, rect) in texts_of(&app, size) {
+                    assert!(
+                        rect.x >= -0.5 && rect.x + rect.width <= size.width + 0.5,
+                        "{what}: {text:?} {rect:?} runs out sideways"
+                    );
+                }
+                // The panel's close button stays in view however short the
+                // window is.
+                let list = senders(&app, &renderer, size);
+                let close = of_message(&list, "RoomPanel(Close)")
+                    .next()
+                    .unwrap_or_else(|| panic!("{what}: no close button"));
+                assert!(close.y + close.height <= size.height, "{what}: {close:?}");
+            }
+        }
     }
 
     #[test]

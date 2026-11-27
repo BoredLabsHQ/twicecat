@@ -46,9 +46,13 @@ impl App {
         self.room_panel.open && self.selected.is_some()
     }
 
-    /// Whether `tab` can be shown now: the thread tab needs an open thread.
+    /// Whether `tab` can be shown now: the thread tab needs an open thread,
+    /// and Members and Info need a joined room (an invitation has neither).
     fn tab_available(&self, tab: RoomPanelTab) -> bool {
-        tab != RoomPanelTab::Thread || self.threads.panel.is_some()
+        match tab {
+            RoomPanelTab::Thread => self.threads.panel.is_some(),
+            RoomPanelTab::Members | RoomPanelTab::Info => self.panel_room().is_some(),
+        }
     }
 
     /// Whether the Members tab is on screen.
@@ -56,11 +60,19 @@ impl App {
         self.room_panel_shown() && self.room_panel.tab == RoomPanelTab::Members
     }
 
-    /// Forgets the Members tab's state when the tab is not on screen, so a
-    /// hidden tab never keeps (or fills in) a room's member list.
-    pub(crate) fn sync_members_tab(&mut self) {
+    /// Whether the Info tab is on screen.
+    fn info_tab_shown(&self) -> bool {
+        self.room_panel_shown() && self.room_panel.tab == RoomPanelTab::Info
+    }
+
+    /// Forgets the state of a tab that is not on screen, so a hidden tab
+    /// never keeps (or fills in) a room's member list or settings.
+    pub(crate) fn sync_tabs(&mut self) {
         if !self.members_tab_shown() {
             self.rooms_ui.close_members();
+        }
+        if !self.info_tab_shown() {
+            self.rooms_ui.close_info();
         }
     }
 
@@ -84,9 +96,12 @@ impl App {
                 self.close_thread_panel()
             }
         };
-        self.sync_members_tab();
+        self.sync_tabs();
         if self.members_tab_shown() && self.rooms_ui.members_panel.is_none() {
             return Task::batch([task, self.open_members()]);
+        }
+        if self.info_tab_shown() && self.rooms_ui.settings.is_none() {
+            return Task::batch([task, self.open_info()]);
         }
         task
     }

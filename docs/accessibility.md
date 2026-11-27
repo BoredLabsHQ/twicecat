@@ -53,8 +53,9 @@ Rules the code follows (all in tests):
   5. the viewer;
   6. the Voice & audio card;
   7. Settings;
-  8. a room dialog, the user card or the room settings (a question about
-     leaving or encryption first);
+  8. a room dialog or the user card, then a question in the Info tab of the
+     room panel (leaving, or turning encryption on): Esc cancels the
+     question and never confirms it;
   9. the share picker (it only cancels, never starts a share), then the
      full-screen view of a video;
   10. a security screen (recovery setup, a question about changing the key or
@@ -64,7 +65,8 @@ Rules the code follows (all in tests):
   12. the composer's suggestions, then its reply or edit mode;
   13. the room panel (tabs Members, Info and, while a thread is open, Thread;
       Esc closes the panel and the thread; the member list is its Members
-      tab and no longer a dialog), then the participants panel of a
+      tab and the room settings are its Info tab, neither is a dialog any
+      more), then the participants panel of a
       call (the one on screen first when the window is too narrow for both).
 
   A text field that took the Esc to drop its focus does not keep an overlay

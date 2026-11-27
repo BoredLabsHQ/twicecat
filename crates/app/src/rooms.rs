@@ -15,7 +15,7 @@ use iced::Task;
 use iced::widget::operation;
 use twicecat_core::api::{
     Block, Command, CoreError, CreateRoomRequest, Inline, MediaBytes, MembershipView,
-    MentionTarget, MessageText, PowerLevelView, Role, RoomDetailsView, RoomId, RoomMemberView,
+    MentionTarget, MessageText, PowerLevelView, Role, RoomDetailsView, RoomEncryption, RoomId, RoomMemberView,
     RoomSummary, RoomVisibility, TimelineItemKind, UserId,
 };
 
@@ -432,6 +432,15 @@ impl LeaveWarning {
     }
 }
 
+/// The three-state encryption of `room` in the room list; `Unknown` when it
+/// is not there.
+pub fn room_encryption(rooms: &[RoomSummary], room: &RoomId) -> RoomEncryption {
+    rooms
+        .iter()
+        .find(|r| r.id == *room)
+        .map_or(RoomEncryption::Unknown, |r| r.encryption)
+}
+
 /// The warning for `own` leaving a room: `details` says whether it is
 /// encrypted, `members` who is in it.
 pub fn leave_warning(
@@ -772,7 +781,7 @@ impl RoomsModel {
     }
 
     /// Forgets the Members tab's state (the tab is not shown any more). The
-    /// room's details stay while the settings still need them.
+    /// room's details stay while the Info tab still needs them.
     pub fn close_members(&mut self) {
         self.members_panel = None;
         if self.settings.is_none() {
@@ -780,10 +789,27 @@ impl RoomsModel {
         }
     }
 
-    /// Whether anything of this model covers the main view. The Members tab
-    /// is a side panel and covers nothing.
+    /// Forgets the Info tab's state (the tab is not shown any more). The
+    /// room's details stay while the Members tab still needs them.
+    pub fn close_info(&mut self) {
+        self.settings = None;
+        if self.members_panel.is_none() {
+            self.details = None;
+        }
+    }
+
+    /// Whether anything of this model covers the main view. The Members and
+    /// Info tabs are side panels and cover nothing.
     pub fn overlay_open(&self) -> bool {
-        self.dialog.is_some() || self.settings.is_some() || self.card.is_some()
+        self.dialog.is_some() || self.card.is_some()
+    }
+
+    /// Whether the Info tab shows a question that cannot be undone (turn
+    /// encryption on, leave). Esc cancels it before it closes the panel.
+    pub fn question_open(&self) -> bool {
+        self.settings
+            .as_ref()
+            .is_some_and(|panel| panel.encrypt_ask || panel.leave_ask)
     }
 }
 
@@ -825,10 +851,8 @@ pub enum RoomsMessage {
     Accept(RoomId),
     /// **Decline** on an invitation.
     Decline(RoomId),
-    /// **Settings** in the room header.
+    /// **Settings** in the room header: the room panel on Info.
     OpenSettings,
-    /// The settings panel was closed.
-    CloseSettings,
     /// The name field changed.
     NameInput(MessageText),
     /// The topic field changed.
@@ -936,14 +960,7 @@ impl App {
             R::JoinSubmit => self.join_submit(),
             R::Accept(room) => self.answer_invite(room, true),
             R::Decline(room) => self.answer_invite(room, false),
-            R::OpenSettings => self.open_settings(),
-            R::CloseSettings => {
-                self.rooms_ui.settings = None;
-                if self.rooms_ui.members_panel.is_none() {
-                    self.rooms_ui.details = None;
-                }
-                Task::none()
-            }
+            R::OpenSettings => self.toggle_settings(),
             R::NameInput(text) => {
                 if let Some(panel) = &mut self.rooms_ui.settings {
                     panel.name = text.expose().to_owned();
@@ -966,9 +983,7 @@ impl App {
             R::AvatarPicked(path) => self.avatar_picked(path),
             R::AvatarReady { room, result } => self.avatar_ready(&room, result),
             R::EncryptAsk => {
-                let allowed = self
-                    .settings_details()
-                    .is_some_and(|d| d.permissions.can_enable_encryption && !d.is_encrypted);
+                let allowed = self.encryption_allowed();
                 if let Some(panel) = &mut self.rooms_ui.settings
                     && allowed
                 {
@@ -1159,6 +1174,26 @@ impl App {
     }
 
     /// The details the core reported for the open room's panel.
+    /// The three-state encryption of the settings panel's room as the room
+    /// list has it; `Unknown` when the room is not in the list.
+    pub fn settings_encryption(&self) -> RoomEncryption {
+        self.rooms_ui
+            .settings
+            .as_ref()
+            .map_or(RoomEncryption::Unknown, |panel| {
+                room_encryption(&self.rooms, &panel.room)
+            })
+    }
+
+    /// Turning encryption on is asked and confirmed only for a room known to
+    /// be unencrypted, and only with the permission.
+    fn encryption_allowed(&self) -> bool {
+        self.settings_encryption() == RoomEncryption::NotEncrypted
+            && self
+                .settings_details()
+                .is_some_and(|d| d.permissions.can_enable_encryption)
+    }
+
     fn settings_details(&self) -> Option<&RoomDetailsView> {
         let panel = self.rooms_ui.settings.as_ref()?;
         self.rooms_ui
@@ -1168,7 +1203,7 @@ impl App {
     }
 
     /// The open room, when it is a joined room (not an invitation).
-    fn panel_room(&self) -> Option<RoomId> {
+    pub(crate) fn panel_room(&self) -> Option<RoomId> {
         let id = self.selected.as_ref()?;
         self.rooms
             .iter()
@@ -1176,16 +1211,26 @@ impl App {
             .map(|r| r.id.clone())
     }
 
-    fn open_settings(&mut self) -> Task<Message> {
+    /// **Settings** in the room header: opens the room panel on Info, or
+    /// closes it when Info is already shown.
+    fn toggle_settings(&mut self) -> Task<Message> {
+        if self.panel_room().is_none() {
+            return Task::none();
+        }
+        if self.room_panel_shown()
+            && self.room_panel.tab == RoomPanelTab::Info
+            && self.rooms_ui.settings.is_some()
+        {
+            return self.on_room_panel(RoomPanelMessage::Close);
+        }
+        self.on_room_panel(RoomPanelMessage::Open(RoomPanelTab::Info))
+    }
+
+    /// Starts the Info tab for the selected room.
+    pub(crate) fn open_info(&mut self) -> Task<Message> {
         let Some(room) = self.panel_room() else {
             return Task::none();
         };
-        // The settings are a modal for now (Task 5 moves them into the
-        // panel): the Members tab does not stay open behind them.
-        if self.room_panel.tab == RoomPanelTab::Members {
-            self.room_panel.open = false;
-        }
-        self.rooms_ui.members_panel = None;
         if self
             .rooms_ui
             .details
@@ -1330,9 +1375,7 @@ impl App {
     }
 
     fn encrypt_confirm(&mut self) -> Task<Message> {
-        let allowed = self
-            .settings_details()
-            .is_some_and(|d| d.permissions.can_enable_encryption && !d.is_encrypted);
+        let allowed = self.encryption_allowed();
         let Some(panel) = &mut self.rooms_ui.settings else {
             return Task::none();
         };
@@ -1467,20 +1510,19 @@ impl App {
     }
 
     /// Esc closes the topmost screen: the dialog, the card, the warning
-    /// cards of the settings, then the panels.
+    /// cards of the Info tab, then the join bar. The panel itself closes
+    /// through the room panel's own Esc turn.
     fn escape(&mut self) {
         let ui = &mut self.rooms_ui;
         if ui.dialog.is_some() {
             ui.dialog = None;
         } else if ui.card.is_some() {
             ui.card = None;
-        } else if let Some(panel) = &mut ui.settings {
-            if panel.encrypt_ask || panel.leave_ask {
-                panel.encrypt_ask = false;
-                panel.leave_ask = false;
-            } else {
-                ui.settings = None;
-            }
+        } else if let Some(panel) = &mut ui.settings
+            && (panel.encrypt_ask || panel.leave_ask)
+        {
+            panel.encrypt_ask = false;
+            panel.leave_ask = false;
         } else if ui.join_bar.is_some() {
             ui.join_bar = None;
         }
