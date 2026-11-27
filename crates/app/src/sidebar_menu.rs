@@ -184,7 +184,7 @@ pub enum SidebarMenu {
     /// The Sort card of the room list (plan L2): the settings, not an item
     /// of the layout, so it needs no sidebar file.
     Sort,
-    /// The account card of the status bar: Settings, Voice & audio,
+    /// The account card of the top bar: Settings, Voice & audio,
     /// Sessions and Log out. Nothing of the layout, like [`Self::Sort`].
     Account,
     /// The name dialog.
@@ -364,7 +364,7 @@ pub enum SidebarMenuMessage {
     OpenList,
     /// The **Sort** button of the room list.
     OpenSort,
-    /// The account button of the status bar.
+    /// The account button of the top bar.
     OpenAccount,
     /// An entry of the account card: closes it, then does what the entry
     /// says.

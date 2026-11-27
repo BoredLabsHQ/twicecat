@@ -16,6 +16,7 @@ use crate::audio_settings::AudioMessage;
 use crate::calls::{CallButton, CallMessage};
 use crate::composer::{self, EditorAction, Mode, Suggestions};
 use crate::emoji;
+use crate::keys::Shortcut;
 use crate::links::{CheckedUrl, LinkBar, LinkKind};
 use crate::notifications::ModeChoice;
 use crate::rooms::RoomsMessage;
@@ -429,9 +430,10 @@ fn notification_menu<'a>(app: &'a App, room: &RoomId) -> Element<'a, Message> {
     kit::tip(menu, "Notifications")
 }
 
-/// The main screen: panes above a status bar.
+/// The main screen: a top bar above the panes.
 pub fn view(app: &App) -> Element<'_, Message> {
     let content = main_column(
+        top_bar(app, top_bar_compact(app.window_width)),
         security::banner_slot(
             &app.security,
             crate::screens::updates::bars(app)
@@ -440,7 +442,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .collect(),
         ),
         main_row(app),
-        status_bar(app),
     );
     security::layer(
         content,
@@ -496,18 +497,18 @@ pub fn rich_env<'a>(app: &'a App, theme: &'a iced::Theme) -> RichEnv<'a> {
     }
 }
 
-/// The main column, always `[banner slot, panes, status bar]`: the slot is
-/// an empty column when there is no banner, so the panes (timeline scroll,
-/// editor focus) keep their place in the widget tree when a banner comes
-/// or goes. `from_vec` does not look at its children, so the column is told
-/// to fill the window: left at its default it shrinks to the banner slot and
-/// the whole window collapses.
+/// The main column, always `[top bar, banner slot, panes]`: the slot is an
+/// empty column when there is no banner, so the panes (timeline scroll,
+/// editor focus) keep their place in the widget tree when a banner comes or
+/// goes. `from_vec` does not look at its children, so the column is told to
+/// fill the window: left at its default it shrinks to the banner slot and the
+/// whole window collapses.
 fn main_column<'a>(
+    top: Element<'a, Message>,
     banner: Element<'a, Message>,
     panes: Element<'a, Message>,
-    status: Element<'a, Message>,
 ) -> Element<'a, Message> {
-    Column::from_vec(vec![banner, panes, status])
+    Column::from_vec(vec![top, banner, panes])
         .width(Fill)
         .height(Fill)
         .into()
@@ -1147,9 +1148,48 @@ pub fn sync_text(state: &SyncState) -> String {
     format!("Sync: {}", sync_label(state))
 }
 
-/// A thin line, then the sync dot with words and the account button (the
-/// avatar, the account and a chevron), which opens the account card.
-fn status_bar(app: &App) -> Element<'_, Message> {
+/// The window width below which the top bar's search button drops its
+/// words and keeps the icon and a tooltip.
+pub const TOP_BAR_COMPACT_BELOW: f32 = 900.0;
+
+/// The top bar's height, whole pixels so the lines below it stay sharp.
+pub const TOP_BAR_HEIGHT: f32 = 40.0;
+
+/// Whether the top bar is compact at this window width.
+pub fn top_bar_compact(width: f32) -> bool {
+    width < TOP_BAR_COMPACT_BELOW
+}
+
+/// A top-bar button: the icon and, unless `compact`, the word. Compact keeps
+/// a tooltip with the word, so the button is still named.
+fn top_bar_button<'a>(
+    icon: Icon,
+    word: &'static str,
+    tip: String,
+    compact: bool,
+    press: Message,
+) -> Element<'a, Message> {
+    let content: Element<'a, Message> = if compact {
+        icons::icon(icon)
+    } else {
+        row![icons::icon(icon), text(word).wrapping(Wrapping::None)]
+            .spacing(tokens::XS)
+            .align_y(iced::Center)
+            .into()
+    };
+    let button = button(content)
+        .on_press(press)
+        .padding([tokens::XS, tokens::S])
+        .style(kit::secondary_style);
+    kit::tip(button, tip)
+}
+
+/// The top bar, one row for the whole app: the app name and **Search rooms**
+/// on the left, the screen-sharing bar (while sharing) in the middle, and the
+/// sync dot with words and the account button on the right (Settings is an
+/// entry of the account card, and **Ctrl+,**). It is always
+/// `[left, middle, right]`, so the widgets keep their place.
+fn top_bar(app: &App, compact: bool) -> Element<'_, Message> {
     let account = account_label(app.user_id.as_ref());
     let severity = sync_severity(&app.sync_state);
     let dot =
@@ -1161,8 +1201,8 @@ fn status_bar(app: &App) -> Element<'_, Message> {
     if let Some(id) = &app.user_id {
         who = who.push(kit::avatar_sized(id, &account, None, &app.avatars, 20.0));
     }
-    who = who
-        .push(
+    if !compact {
+        who = who.push(
             text(if account.is_empty() {
                 "Account".to_owned()
             } else {
@@ -1170,29 +1210,52 @@ fn status_bar(app: &App) -> Element<'_, Message> {
             })
             .size(tokens::BODY)
             .wrapping(Wrapping::None),
-        )
-        .push(icons::icon(Icon::SectionOpen));
-    let button = button(who)
+        );
+    }
+    who = who.push(icons::icon(Icon::SectionOpen));
+    let account_button = button(who)
         .on_press(Message::SidebarMenu(SidebarMenuMessage::OpenAccount))
         .padding([tokens::XS, tokens::S])
         .style(kit::secondary_style);
+    let left = row![
+        text("Twicecat").size(tokens::BODY),
+        top_bar_button(
+            Icon::Search,
+            "Search rooms (Ctrl+K)",
+            "Search rooms (Ctrl+K)".to_owned(),
+            compact,
+            Message::Shortcut {
+                shortcut: Shortcut::Switcher,
+                captured: false,
+            },
+        ),
+    ]
+    .spacing(tokens::M)
+    .align_y(iced::Center);
+    let middle = container(stage::sharing_bar(app).unwrap_or_else(|| space().into()))
+        .center_x(Fill)
+        .width(Fill);
+    let right = row![
+        dot,
+        text(sync_text(&app.sync_state))
+            .size(tokens::CAPTION)
+            .style(kit::muted)
+            .wrapping(Wrapping::None),
+        kit::tip(account_button, "Account"),
+    ]
+    .spacing(tokens::S)
+    .align_y(iced::Center);
     column![
-        kit::divider(),
         container(
-            row![
-                dot,
-                text(sync_text(&app.sync_state))
-                    .size(tokens::CAPTION)
-                    .style(kit::muted),
-                space().width(Fill),
-                button,
-            ]
-            .spacing(tokens::S)
-            .align_y(iced::Center),
+            row![left, middle, right]
+                .spacing(tokens::M)
+                .align_y(iced::Center),
         )
-        .padding([tokens::XS, tokens::M])
+        .padding([0.0, tokens::M])
+        .center_y(TOP_BAR_HEIGHT)
         .width(Fill)
         .style(kit::surface_style),
+        kit::divider(),
     ]
     .into()
 }
@@ -1254,6 +1317,20 @@ mod tests {
             .map(|(label, msg)| (label.to_owned(), msg))
             .collect();
         assert_eq!(card, expect);
+    }
+
+    #[test]
+    fn the_top_bar_drops_its_words_below_a_width() {
+        for (width, compact) in [
+            (1920.0, false),
+            (1280.0, false),
+            (TOP_BAR_COMPACT_BELOW, false),
+            (TOP_BAR_COMPACT_BELOW - 1.0, true),
+            (720.0, true),
+            (520.0, true),
+        ] {
+            assert_eq!(top_bar_compact(width), compact, "{width}");
+        }
     }
 
     #[test]
@@ -1393,7 +1470,7 @@ mod tests {
         for room in [None, Some(joined), Some(invite)] {
             app.selected = room.map(|r| r.id);
             let _ = header(&app, "title".to_owned());
-            let _ = status_bar(&app);
+            let _ = top_bar(&app, top_bar_compact(app.window_width));
         }
     }
 
@@ -1533,9 +1610,9 @@ mod tests {
         ) -> Element<'a, Message> {
             let panes = row![timeline_layer(space().into(), None), text_editor(content)].into();
             let base = main_column(
+                text("top bar").into(),
                 security::banner_slot(model, Vec::new()),
                 panes,
-                text("status").into(),
             );
             security::layer(base, security::screen(model))
         }
@@ -1547,7 +1624,7 @@ mod tests {
                     .iter()
                     .map(|c| c.tag)
                     .collect::<Vec<_>>(),
-                tree.children[0].children[1]
+                tree.children[0].children[2]
                     .children
                     .iter()
                     .map(|c| c.tag)

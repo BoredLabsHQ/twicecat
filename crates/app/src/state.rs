@@ -3258,6 +3258,7 @@ impl App {
                 screens::verification::layer(base, self)
             }
             Screen::Main => screens::call::ring_layer(
+                // Above every card, dialog and screen, under the ring card.
                 screens::stage::sharing_layer(
                     screens::verification::layer(
                         screens::switcher::layer(

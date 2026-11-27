@@ -436,17 +436,17 @@ fn the_fixture_reaches_every_screen_it_names() {
 }
 
 /// The path of child indices from the root to the main column
-/// `[banner slot, panes, status bar]` (the panes are `[spaces, room list,
+/// `[top bar, banner slot, panes]` (the panes are `[spaces, room list,
 /// room pane, thread slot, call panel slot]`), and the shape of the room pane.
 fn room_pane_place(laid: &Laid<'_>) -> (Vec<usize>, Vec<usize>) {
     let mut path = Vec::new();
     let mut node = &laid.node;
     loop {
         let kids = node.children();
-        if kids.len() == 3 && kids[1].children().len() == 5 {
-            let pane = &kids[1].children()[2];
+        if kids.len() == 3 && kids[2].children().len() == 5 {
+            let pane = &kids[2].children()[2];
             let shape = pane_shape(pane);
-            path.extend([1, 2]);
+            path.extend([2, 2]);
             return (path, shape);
         }
         assert!(!kids.is_empty(), "no main column in the layout");
@@ -522,7 +522,7 @@ fn the_room_pane_keeps_its_place_as_panels_bars_and_banners_come_and_go() {
 /// a card of buttons, not a `pick_list`, so Log out is never picked by the
 /// wheel, with the card closed or open: Ctrl + wheel is the zoom gesture.
 #[test]
-fn ctrl_wheel_over_the_status_bar_never_logs_out() {
+fn ctrl_wheel_over_the_top_bar_never_logs_out() {
     for open in [false, true] {
         ctrl_wheel_never_logs_out(open);
     }
@@ -556,6 +556,9 @@ fn ctrl_wheel_never_logs_out(card_open: bool) {
     let ctrl = Event::Keyboard(keyboard::Event::ModifiersChanged(Modifiers::CTRL));
     deliver(&mut laid, ctrl, Point::new(1.0, 1.0));
     for y in [
+        10.0,
+        24.0,
+        40.0,
         WIDE.height - 30.0,
         WIDE.height - 22.0,
         WIDE.height - 14.0,
@@ -844,8 +847,8 @@ fn header_node<'n>(laid: &'n Laid<'_>) -> &'n Node {
     let mut node = &laid.node;
     loop {
         let kids = node.children();
-        if kids.len() == 3 && kids[1].children().len() == 5 {
-            return &kids[1].children()[2].children()[0].children()[0];
+        if kids.len() == 3 && kids[2].children().len() == 5 {
+            return &kids[2].children()[2].children()[0].children()[0];
         }
         node = &kids[0];
     }
@@ -903,8 +906,8 @@ fn list_pane_node<'n>(laid: &'n Laid<'_>) -> &'n Node {
     let mut node = &laid.node;
     loop {
         let kids = node.children();
-        if kids.len() == 3 && kids[1].children().len() == 5 {
-            return &kids[1].children()[1].children()[0];
+        if kids.len() == 3 && kids[2].children().len() == 5 {
+            return &kids[2].children()[1].children()[0];
         }
         assert!(!kids.is_empty(), "no main column in the layout");
         node = &kids[0];
@@ -1062,15 +1065,15 @@ fn list_rows<'n>(laid: &'n Laid<'_>) -> (Vec<(Rectangle, &'n Node)>, f32) {
     }
     let mut node = &laid.node;
     let mut at = step(iced::Point::ORIGIN, node);
-    // The main column is `[header, panes row, status bar]`.
-    while !(node.children().len() == 3 && node.children()[1].children().len() == 5) {
+    // The main column is `[top bar, banner slot, panes row]`.
+    while !(node.children().len() == 3 && node.children()[2].children().len() == 5) {
         assert!(!node.children().is_empty(), "no main column in the layout");
         node = &node.children()[0];
         at = step(at, node);
     }
     // panes row -> room list slot -> pane -> column
     // `[actions, tabs, search, list, call bar]`.
-    let mut node = &node.children()[1];
+    let mut node = &node.children()[2];
     at = step(at, node);
     for index in [1, 0, 0] {
         node = &node.children()[index];
@@ -1413,8 +1416,8 @@ fn panes_row<'n>(laid: &'n Laid<'_>) -> &'n Node {
     let mut node = &laid.node;
     loop {
         let kids = node.children();
-        if kids.len() == 3 && kids[1].children().len() == 5 {
-            return &kids[1];
+        if kids.len() == 3 && kids[2].children().len() == 5 {
+            return &kids[2];
         }
         assert!(!kids.is_empty(), "no main column in the layout");
         node = &kids[0];
@@ -3130,8 +3133,8 @@ fn panes_node<'n>(laid: &'n Laid<'_>) -> &'n Node {
     let mut node = &laid.node;
     loop {
         let kids = node.children();
-        if kids.len() == 3 && kids[1].children().len() == 5 {
-            return &kids[1];
+        if kids.len() == 3 && kids[2].children().len() == 5 {
+            return &kids[2];
         }
         assert!(!kids.is_empty(), "no main column in the layout");
         node = &kids[0];
@@ -5554,7 +5557,6 @@ mod sessions_screen {
     fn verify_is_offered_only_for_another_unverified_session_and_sign_out_never_for_this_one() {
         let list = controls("sessions");
         let all: Vec<&String> = list.iter().map(|(_, t)| t).collect();
-        assert_eq!(all.iter().filter(|t| t.contains("Verify(")).count(), 1);
         assert!(
             all.iter()
                 .any(|t| t.contains(r#"Verify(DeviceId("PHONE1"))"#))
@@ -5572,6 +5574,7 @@ mod sessions_screen {
                 .collect::<std::collections::BTreeSet<_>>()
                 .len()
         };
+        assert_eq!(distinct("Verify("), 1);
         assert_eq!(distinct("SignOutAsk("), 2);
         assert_eq!(distinct("RenameStart("), 3);
         assert!(all.iter().any(|t| t.contains("SignOutAllAsk")));
@@ -7783,10 +7786,111 @@ mod video_stage {
         let mut node = &laid.node;
         loop {
             let kids = node.children();
-            if kids.len() == 3 && kids[1].children().len() == 5 {
-                return &kids[1].children()[2].children()[0];
+            if kids.len() == 3 && kids[2].children().len() == 5 {
+                return &kids[2].children()[2].children()[0];
             }
             node = &kids[0];
+        }
+    }
+
+    /// The main column's node, `[top bar, banner slot, panes]`.
+    fn main_column_node<'n>(laid: &'n Laid<'_>) -> &'n Node {
+        let mut node = &laid.node;
+        loop {
+            let kids = node.children();
+            if kids.len() == 3 && kids[2].children().len() == 5 {
+                return node;
+            }
+            assert!(!kids.is_empty(), "no main column in the layout");
+            node = &kids[0];
+        }
+    }
+
+    #[test]
+    fn the_top_bar_reaches_what_the_status_bar_and_the_sharing_bar_sent() {
+        use twicecat_app::keys::Shortcut;
+        use twicecat_app::settings::SettingsMessage;
+        use twicecat_app::sidebar_menu::SidebarMenuMessage;
+        let renderer = renderer();
+        let app = scenario_app("main-call-sharing");
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let bar = main_column_node(&laid).children()[0].bounds();
+        let mut all = Vec::new();
+        collect_bounds(&laid.node, iced::Point::ORIGIN, &mut all, 0);
+        let mut sent = Vec::new();
+        for (rect, _) in all.iter().filter(|(r, _)| {
+            r.width > 0.0 && r.height > 0.0 && r.y >= bar.y && r.y + r.height <= bar.y + bar.height
+        }) {
+            let at = iced::Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+            sent.extend(click(&mut laid, &renderer, WIDE, at));
+        }
+        let has = |want: &dyn Fn(&Message) -> bool, what: &str| {
+            assert!(sent.iter().any(want), "{what} is not in the top bar");
+        };
+        has(
+            &|m| matches!(m, Message::SidebarMenu(SidebarMenuMessage::OpenAccount)),
+            "the account button",
+        );
+        // Settings is reached from the account card, not from the top bar.
+        assert!(
+            !sent
+                .iter()
+                .any(|m| matches!(m, Message::Settings(SettingsMessage::Open))),
+            "the top bar has a Settings button"
+        );
+        has(
+            &|m| {
+                matches!(
+                    m,
+                    Message::Shortcut {
+                        shortcut: Shortcut::Switcher,
+                        ..
+                    }
+                )
+            },
+            "Search rooms",
+        );
+        has(
+            &|m| matches!(video(m), Some(VideoMessage::StopShare)),
+            "Stop sharing",
+        );
+    }
+
+    #[test]
+    fn the_top_bar_fits_the_window_at_720_and_1280() {
+        let renderer = renderer();
+        for name in ["main-account-menu", "main-call-sharing"] {
+            for width in [1280.0, 720.0] {
+                let mut app = scenario_app(name);
+                with_settings(&mut app, DENSITIES[0], RoomListChoice::Expanded);
+                app.window_width = width;
+                let size = Size::new(width, 800.0);
+                let mut laid = Laid::new(&app, &renderer, size);
+                laid.settle(&renderer, size);
+                let column = main_column_node(&laid);
+                let bar = &column.children()[0];
+                let mut at = iced::Point::ORIGIN;
+                let mut node = &laid.node;
+                // Walk to the column to get its offset.
+                loop {
+                    at = iced::Point::new(at.x + node.bounds().x, at.y + node.bounds().y);
+                    if std::ptr::eq(node, column) {
+                        break;
+                    }
+                    node = &node.children()[0];
+                }
+                let mut leaves = Vec::new();
+                painted_leaves(bar, at, &mut leaves);
+                assert!(!leaves.is_empty());
+                for leaf in &leaves {
+                    assert!(
+                        leaf.x >= -0.5 && leaf.x + leaf.width <= width + 0.5,
+                        "{name} at {width}: {leaf:?} leaves the window"
+                    );
+                }
+                assert!(bar.bounds().height < 70.0, "{name} at {width}");
+            }
         }
     }
 
@@ -7894,6 +7998,63 @@ mod video_stage {
                 .any(|m| matches!(video(m), Some(VideoMessage::StopShare))),
             "no click stops the share: {sent:?}"
         );
+    }
+
+    /// While a share goes out, every overlay keeps **Stop sharing** on top:
+    /// a click at each node of the window reaches it.
+    #[test]
+    fn stop_sharing_stays_on_top_of_every_overlay() {
+        use twicecat_app::keys::Shortcut;
+        use twicecat_app::rooms::RoomsMessage;
+        use twicecat_app::security::RecoverySetup;
+        use twicecat_app::settings::SettingsMessage;
+        use twicecat_app::sidebar_menu::SidebarMenuMessage;
+        use twicecat_core::api::RecoveryKey;
+        type Open = fn(&mut App);
+        let overlays: [(&str, Open); 7] = [
+            ("account card", |a| {
+                let _ = a.update(Message::SidebarMenu(SidebarMenuMessage::OpenAccount));
+            }),
+            ("Settings", |a| {
+                let _ = a.update(Message::Settings(SettingsMessage::Open));
+            }),
+            ("switcher", |a| {
+                let _ = a.update(Message::Shortcut {
+                    shortcut: Shortcut::Switcher,
+                    captured: false,
+                });
+            }),
+            ("media viewer", |a| {
+                let _ = a.update(Message::MediaClicked("img0".to_owned()));
+            }),
+            ("full screen on the own track", |a| {
+                let _ = a.update(Message::Video(VideoMessage::Fullscreen(
+                    VideoTrackId::from("me-Camera"),
+                )));
+            }),
+            ("recovery key screen", |a| {
+                a.security.setup = Some(RecoverySetup::new(RecoveryKey::from("key"), false));
+            }),
+            ("room dialog", |a| {
+                let _ = a.update(Message::Rooms(RoomsMessage::OpenCreate));
+            }),
+        ];
+        let renderer = renderer();
+        for (name, open) in overlays {
+            let mut app = scenario_app("main-call-sharing");
+            open(&mut app);
+            let covered = app.any_overlay_open()
+                || app.sidebar_menu_open()
+                || app.calls.video.fullscreen.is_some();
+            assert!(covered, "{name} did not open");
+            let mut laid = Laid::new(&app, &renderer, WIDE);
+            let sent = clicks_everywhere(&mut laid, &renderer, WIDE);
+            assert!(
+                sent.iter()
+                    .any(|m| matches!(video(m), Some(VideoMessage::StopShare))),
+                "{name} covers Stop sharing"
+            );
+        }
     }
 
     #[test]

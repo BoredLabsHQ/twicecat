@@ -7,3 +7,10 @@ Task 1: complete (b523e1b..866a209, gate ok, security PASS, review PASS, evidenc
   evidence: docs/plans/ui-review-fixes.evidence/task-1.md
   notes: Low: Log out runs at once when no warning is needed (as before, now two clicks); Voice & audio entry not asserted end to end in state tests; AccountAction lives in screens::main_view and sidebar_menu imports it (layering); "Account" fallback label duplicated. Card is a centred dialog like the Sort card, not a drop-down under the button - human to confirm. Own avatar is placeholder initials. Real window = human.
 Task 2: started
+Task 2: done (uirf.2)
+- Status bar removed; `main_view::top_bar` (app name, Search rooms, sharing bar in the middle, sync words, Settings, account button). Main column is `[top bar, banner, panes]`. `top_bar_compact(width)` with `TOP_BAR_COMPACT_BELOW` = 900.
+- `stage::sharing_bar` made public; after the security audit `stage::sharing_layer` is back as a permanent top-most slot (stack of two) that redraws the pill at the top bar's place while an overlay, the account card, the full-screen view or the picker is open.
+- No new iced API: only `button`, `row`, `column`, `container`, `space`, `tooltip` via `kit::tip`, already used in the file. New gallery tests: reachability from the top bar, fit at 720 and 1280.
+- Gate and notes in PROGRESS.md.
+- Top bar is a fixed `TOP_BAR_HEIGHT` = 40 px (whole pixels): a fractional height made the banner's 1 px outline antialias and the pixel-sampling banner tests lost it. `cargo test` also needed `sessions_screen::...verify_is_offered...` to count distinct Verify messages (a room-list node under the card, moved by the bar, sat over the Verify button; the test's own comment already names this probe artefact).
+

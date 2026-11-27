@@ -69,7 +69,13 @@ Rules the code follows (all in tests):
   open. Esc never confirms anything. Held-down Esc repeats do not decline a
   queued verification request.
 - Closing the switcher with Esc gives the focus back to the composer.
-- The account button at the bottom right of the window opens a card with
+- A top bar runs along the whole window: the app name and **Search rooms
+  (Ctrl+K)** on the left, **You are sharing your screen** with **Stop sharing**
+  in the middle while a share goes out, and on the right the sync words (with
+  a dot, never colour alone), **Settings** and the account button. Below 900
+  px the search and Settings buttons and the account name drop their words and
+  keep the icon and a tooltip. The main column is `[top bar, banner, panes]`.
+- The account button at the top right of the window opens a card with
   Settings, Voice & audio, Sessions and, after a divider, Log out. It is a
   card of buttons, not a drop-down list, so Ctrl + wheel (the zoom gesture)
   never picks an entry. Esc closes it, right after the switcher like the
@@ -287,7 +293,9 @@ muted by a mark and the word "Muted", so neither relies on colour alone.
   the size in words, or says that the system will ask. **Share** stays off
   until something is picked. Esc cancels it.
 - While a share goes out, **You are sharing your screen** with **Stop sharing**
-  floats at the bottom of the window over every dialog and card.
+  (tooltip: Ctrl+Shift+E) sits in the middle of the top bar, and floats at the
+  same place over every dialog and card, the full-screen view and the security
+  screens, so it is never covered.
 - Pictures are drawn by the GPU renderer. When only the software renderer
   runs, the stage says so in words instead of staying black.
 - A camera that is unplugged while it is on (in a call or in the Video
