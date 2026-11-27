@@ -1273,6 +1273,7 @@ impl App {
         let resized = matches!(message, Message::WindowResized(_));
         let fills_before = self.pane_layout().panel_fills;
         let task = self.update_inner(message);
+        self.sync_members_tab();
         self.note_panels(panel_before, call_before);
         let task = Task::batch([task, self.video_sync_views()]);
         // The reaction picker takes the keyboard: it must never stay open in
@@ -1777,6 +1778,10 @@ impl App {
                 self.clear_draft();
                 self.reset_link_state();
                 self.rooms_ui.reset_room();
+                // The Members tab belongs to the room it was opened for.
+                if self.room_panel.tab == crate::room_panel::RoomPanelTab::Members {
+                    self.room_panel.open = false;
+                }
                 Task::batch([
                     stop_typing,
                     marker,
@@ -11896,6 +11901,104 @@ mod tests {
             let ids: Vec<&str> = known.members.iter().map(|m| m.user_id.as_str()).collect();
             assert_eq!(ids, ["@c:x", "@m:x", "@a:x", "@z:x"]);
             assert!(known.truncated);
+        }
+
+        // ---- members in the room panel (uirf.4) ----
+
+        #[test]
+        fn the_members_button_opens_the_panel_switches_to_members_and_closes_it() {
+            use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            assert!(app.pane_layout().room_panel);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+            assert!(app.rooms_ui.members_panel.is_some());
+            let _ = drain(&mut rx);
+            // Members is shown: the button closes the panel.
+            rooms(&mut app, R::OpenMembers);
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.rooms_ui.members_panel.is_none());
+            // On another tab: the button switches to Members.
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Info,
+            )));
+            assert!(app.rooms_ui.members_panel.is_none());
+            rooms(&mut app, R::OpenMembers);
+            assert!(app.pane_layout().room_panel);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+            assert!(app.rooms_ui.members_panel.is_some());
+        }
+
+        #[test]
+        fn the_members_tab_is_not_an_overlay_and_esc_closes_the_panel() {
+            let (mut app, _rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            assert!(!app.any_overlay_open(), "a side panel covers nothing");
+            assert!(!app.rooms_ui.overlay_open());
+            assert!(crate::screens::room_dialogs::topmost(&app.rooms_ui).is_none());
+            let _ = app.update(Message::Shortcut {
+                shortcut: crate::keys::Shortcut::Escape,
+                captured: false,
+            });
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.rooms_ui.members_panel.is_none());
+            // A dialog over the panel still counts as an overlay.
+            rooms(&mut app, R::OpenMembers);
+            rooms(&mut app, R::OpenCreate);
+            assert!(app.any_overlay_open());
+        }
+
+        #[test]
+        fn leaving_the_members_tab_forgets_its_state_and_coming_back_asks_again() {
+            use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            let _ = drain(&mut rx);
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Info,
+            )));
+            assert!(app.rooms_ui.members_panel.is_none());
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Members,
+            )));
+            assert!(app.rooms_ui.members_panel.is_some());
+            assert!(
+                drain(&mut rx)
+                    .iter()
+                    .any(|c| matches!(c, Command::ListRoomMembers { .. }))
+            );
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Close));
+            assert!(app.rooms_ui.members_panel.is_none());
+        }
+
+        #[test]
+        fn switching_room_never_shows_the_old_rooms_members() {
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            let _ = drain(&mut rx);
+            let _ = app.update(core(CoreEvent::RoomMembers {
+                room_id: id("!a:x"),
+                members: vec![member("@old:x", Some("Old"), Role::User)],
+                truncated: false,
+            }));
+            assert!(crate::screens::members::shown(&app).is_some());
+            let _ = app.update(Message::SelectRoom(id("!b:x")));
+            assert!(crate::screens::members::shown(&app).is_none());
+            assert!(app.rooms_ui.members_panel.is_none());
+            assert!(app.rooms_ui.known.is_none());
+            assert!(!app.pane_layout().room_panel, "the Members tab closes");
+            // Even a panel left over for another room is not drawn.
+            app.room_panel = crate::room_panel::RoomPanel {
+                tab: crate::room_panel::RoomPanelTab::Members,
+                open: true,
+            };
+            app.rooms_ui.members_panel = Some(crate::rooms::MembersPanel {
+                room: id("!a:x"),
+                invite: String::new(),
+                shown: MEMBERS_PAGE,
+                status: None,
+            });
+            assert!(crate::screens::members::shown(&app).is_none());
         }
 
         #[test]

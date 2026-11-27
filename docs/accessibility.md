@@ -53,8 +53,8 @@ Rules the code follows (all in tests):
   5. the viewer;
   6. the Voice & audio card;
   7. Settings;
-  8. a room dialog, the user card, the room settings (a question about leaving
-     or encryption first) or the member list;
+  8. a room dialog, the user card or the room settings (a question about
+     leaving or encryption first);
   9. the share picker (it only cancels, never starts a share), then the
      full-screen view of a video;
   10. a security screen (recovery setup, a question about changing the key or
@@ -63,7 +63,8 @@ Rules the code follows (all in tests):
       sign-out question, a rename in progress, then the card itself;
   12. the composer's suggestions, then its reply or edit mode;
   13. the room panel (tabs Members, Info and, while a thread is open, Thread;
-      Esc closes the panel and the thread), then the participants panel of a
+      Esc closes the panel and the thread; the member list is its Members
+      tab and no longer a dialog), then the participants panel of a
       call (the one on screen first when the window is too narrow for both).
 
   A text field that took the Esc to drop its focus does not keep an overlay
@@ -666,7 +667,10 @@ existing shortcut keeps its meaning.
   focus in iced 0.14, and the only fields in these dialogs (name and topic)
   save that field when Enter is pressed in it, nothing else. Tests send the
   keys to each dialog and check that no message comes out.
-- The member list (the room header's Members button) has a search field at
+- The member list is the Members tab of the room panel on the right; the room
+  header's Members button opens it, or closes the panel when Members is
+  already shown. Changing rooms closes it, and it never draws another room's
+  members. It has a search field at
   the top (name or user ID, ignoring case and accents), then sections Admins, Moderators, Members and Invited with
   their counts. A row has the picture, the name, the user ID and tags in
   words: the role when the section does not already say it ("Creator",

@@ -22,6 +22,7 @@ use twicecat_core::api::{
 use crate::blocking;
 use crate::links::{parse_room_target, parse_user_id};
 use crate::media::SavePath;
+use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
 use crate::screens::room_dialogs::{CREATE_NAME_ID, DM_INPUT_ID, JOIN_INPUT_ID};
 use crate::state::{App, Message};
 use crate::text_safety::{name_or_placeholder, one_line_capped};
@@ -770,12 +771,19 @@ impl RoomsModel {
         self.join_bar = None;
     }
 
-    /// Whether anything of this model covers the main view.
+    /// Forgets the Members tab's state (the tab is not shown any more). The
+    /// room's details stay while the settings still need them.
+    pub fn close_members(&mut self) {
+        self.members_panel = None;
+        if self.settings.is_none() {
+            self.details = None;
+        }
+    }
+
+    /// Whether anything of this model covers the main view. The Members tab
+    /// is a side panel and covers nothing.
     pub fn overlay_open(&self) -> bool {
-        self.dialog.is_some()
-            || self.settings.is_some()
-            || self.members_panel.is_some()
-            || self.card.is_some()
+        self.dialog.is_some() || self.settings.is_some() || self.card.is_some()
     }
 }
 
@@ -988,13 +996,13 @@ impl App {
                 Task::none()
             }
             R::LeaveConfirm => self.leave_confirm(),
-            R::OpenMembers => self.open_members(),
+            R::OpenMembers => self.toggle_members(),
             R::CloseMembers => {
-                self.rooms_ui.members_panel = None;
-                if self.rooms_ui.settings.is_none() {
-                    self.rooms_ui.details = None;
+                if self.room_panel.tab == RoomPanelTab::Members {
+                    self.on_room_panel(RoomPanelMessage::Close)
+                } else {
+                    Task::none()
                 }
-                Task::none()
             }
             R::MemberSearch(text) => {
                 if self.rooms_ui.members_panel.is_some() {
@@ -1172,6 +1180,11 @@ impl App {
         let Some(room) = self.panel_room() else {
             return Task::none();
         };
+        // The settings are a modal for now (Task 5 moves them into the
+        // panel): the Members tab does not stay open behind them.
+        if self.room_panel.tab == RoomPanelTab::Members {
+            self.room_panel.open = false;
+        }
         self.rooms_ui.members_panel = None;
         if self
             .rooms_ui
@@ -1351,7 +1364,23 @@ impl App {
         task
     }
 
-    fn open_members(&mut self) -> Task<Message> {
+    /// **Members** in the room header: opens the room panel on Members, or
+    /// closes it when Members is already shown.
+    fn toggle_members(&mut self) -> Task<Message> {
+        if self.panel_room().is_none() {
+            return Task::none();
+        }
+        if self.room_panel_shown()
+            && self.room_panel.tab == RoomPanelTab::Members
+            && self.rooms_ui.members_panel.is_some()
+        {
+            return self.on_room_panel(RoomPanelMessage::Close);
+        }
+        self.on_room_panel(RoomPanelMessage::Open(RoomPanelTab::Members))
+    }
+
+    /// Starts the Members tab for the selected room.
+    pub(crate) fn open_members(&mut self) -> Task<Message> {
         let Some(room) = self.panel_room() else {
             return Task::none();
         };
@@ -1452,8 +1481,6 @@ impl App {
             } else {
                 ui.settings = None;
             }
-        } else if ui.members_panel.is_some() {
-            ui.members_panel = None;
         } else if ui.join_bar.is_some() {
             ui.join_bar = None;
         }

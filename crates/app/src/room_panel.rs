@@ -51,9 +51,22 @@ impl App {
         tab != RoomPanelTab::Thread || self.threads.panel.is_some()
     }
 
+    /// Whether the Members tab is on screen.
+    fn members_tab_shown(&self) -> bool {
+        self.room_panel_shown() && self.room_panel.tab == RoomPanelTab::Members
+    }
+
+    /// Forgets the Members tab's state when the tab is not on screen, so a
+    /// hidden tab never keeps (or fills in) a room's member list.
+    pub(crate) fn sync_members_tab(&mut self) {
+        if !self.members_tab_shown() {
+            self.rooms_ui.close_members();
+        }
+    }
+
     /// A message of the room panel.
     pub(crate) fn on_room_panel(&mut self, message: RoomPanelMessage) -> Task<Message> {
-        match message {
+        let task = match message {
             RoomPanelMessage::Open(tab) => {
                 if self.selected.is_some() && self.tab_available(tab) {
                     self.room_panel = RoomPanel { tab, open: true };
@@ -70,7 +83,12 @@ impl App {
                 self.room_panel.open = false;
                 self.close_thread_panel()
             }
+        };
+        self.sync_members_tab();
+        if self.members_tab_shown() && self.rooms_ui.members_panel.is_none() {
+            return Task::batch([task, self.open_members()]);
         }
+        task
     }
 
     /// The open thread went away: a panel that showed it closes, one on

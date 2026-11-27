@@ -5842,13 +5842,12 @@ mod dialogs {
     }
 
     /// `(scenario, card width, what the close button in the header sends)`.
-    const CARDS: [(&str, f32, &str); 14] = [
+    const CARDS: [(&str, f32, &str); 13] = [
         ("create-room", 460.0, "Rooms(CloseDialog)"),
         ("join-room", 460.0, "Rooms(CloseDialog)"),
         ("start-dm", 460.0, "Rooms(CloseDialog)"),
         ("user-card", 460.0, "Rooms(CardClose)"),
         ("room-settings", 520.0, "Rooms(CloseSettings)"),
-        ("members", 520.0, "Rooms(CloseMembers)"),
         ("upload", 520.0, "UploadCancelled"),
         ("upload-single", 520.0, "UploadCancelled"),
         ("rail-menu", 380.0, "SidebarMenu(Close)"),
@@ -5891,11 +5890,6 @@ mod dialogs {
             "room-settings-long",
             "room-leave-confirm",
             "room-encrypt-confirm",
-            "members",
-            "members-call-trust",
-            "members-many",
-            "members-loading",
-            "members-none",
             "upload",
             "upload-single",
             "upload-long",
@@ -5913,7 +5907,7 @@ mod dialogs {
                 let laid = Laid::new(&app, &renderer, size);
                 let width = match name {
                     "room-list-sort" | "room-list-card" => 380.0,
-                    n if n.starts_with("room-") || n.starts_with("members") => 520.0,
+                    n if n.starts_with("room-") => 520.0,
                     n if n.starts_with("upload") => 520.0,
                     n if n.starts_with("rail-") || n.starts_with("section-") => 380.0,
                     "space-sections-empty-card" => 380.0,
@@ -5952,7 +5946,6 @@ mod dialogs {
             ("create-room", 460.0, "Rooms(CreateSubmit)"),
             ("room-settings", 520.0, "Rooms(CloseSettings)"),
             ("room-leave-confirm", 520.0, "Rooms(CloseSettings)"),
-            ("members-many", 520.0, "Rooms(CloseMembers)"),
             ("upload-single", 520.0, "UploadConfirmed"),
             ("upload-long", 520.0, "UploadConfirmed"),
             ("user-card", 460.0, "Rooms(CardMessage)"),
@@ -6151,7 +6144,6 @@ mod dialogs {
             "create-room",
             "room-leave-confirm",
             "room-encrypt-confirm",
-            "members",
             "user-card",
             "upload",
             "upload-single",
@@ -6379,22 +6371,19 @@ mod dialogs {
     }
 
     #[test]
-    fn a_long_user_id_keeps_its_server_and_sits_clear_of_the_tags_and_the_scrollbar() {
+    fn a_long_user_id_keeps_its_server_and_sits_clear_of_the_tags_and_the_window_edge() {
         let renderer = renderer();
         for size in SIZES {
             let app = dialog_app("members-call-trust", size);
             let mut laid = Laid::new(&app, &renderer, size);
             laid.settle(&renderer, size);
-            let card = card_rect(&laid, 520.0);
             let shown = texts(&mut laid, &renderer);
             let (id, at) = shown
                 .iter()
                 .find(|(t, _)| t.ends_with("long-server.example.org"))
                 .expect("the end of the ID is drawn");
-            assert!(
-                at.x + at.width <= card.x + card.width - 20.0,
-                "{at:?} {card:?}"
-            );
+            // The member list is a panel on the right of the window now.
+            assert!(at.x + at.width <= size.width - 20.0, "{at:?} in {size:?}");
             // No other text is drawn over it.
             for (other, rect) in &shown {
                 if other != id && rect.intersects(at) && rect.width > 0.0 {
@@ -6405,28 +6394,28 @@ mod dialogs {
                 }
             }
         }
-        // Tall list: the content stops short of the scrollbar.
-        let app = dialog_app("members-many", WIDE);
-        let laid = Laid::new(&app, &renderer, WIDE);
-        let card = card_rect(&laid, 520.0);
-        let mut all = Vec::new();
-        collect_bounds(&laid.node, iced::Point::ORIGIN, &mut all, 0);
-        let scroll = all
-            .iter()
-            .map(|(r, _)| *r)
-            .filter(|r| r.x >= card.x && r.x + r.width <= card.x + card.width + 0.5)
-            .find(|r| r.height > 200.0 && r.width > 400.0 && r.width < card.width)
-            .expect("the list's scrollable");
-        let content = all
-            .iter()
-            .map(|(r, _)| *r)
-            .filter(|r| r.height > scroll.height && r.x == scroll.x)
-            .map(|r| r.width)
-            .fold(f32::MAX, f32::min);
-        assert!(
-            content <= scroll.width - 10.0 + 0.5,
-            "{content} in {scroll:?}"
-        );
+    }
+
+    #[test]
+    fn the_members_tab_stays_in_the_window_and_keeps_invite_in_view() {
+        for name in ["members", "members-call-trust", "members-many"] {
+            for size in [WIDE, NARROW, SHORT] {
+                let shown = texts_of(&dialog_app(name, size), size);
+                let what = format!("{name} at {}x{}", size.width, size.height);
+                for (text, rect) in &shown {
+                    assert!(
+                        rect.x >= -0.5 && rect.x + rect.width <= size.width + 0.5,
+                        "{what}: {text:?} {rect:?} runs out sideways"
+                    );
+                }
+                // The invite field's footer is not pushed out of the window.
+                let invite = shown
+                    .iter()
+                    .find(|(t, _)| t == "Invite")
+                    .unwrap_or_else(|| panic!("{what}: no Invite"));
+                assert!(invite.1.y + invite.1.height <= size.height, "{what}");
+            }
+        }
     }
 
     /// Whether two rectangles share area (not just an edge).
@@ -6438,7 +6427,7 @@ mod dialogs {
     }
 
     #[test]
-    fn invite_is_the_last_action_and_cancel_is_always_a_click_away() {
+    fn invite_is_the_last_action_and_the_panel_always_has_a_close_button() {
         let renderer = renderer();
         let app = dialog_app("members", WIDE);
         let list = senders(&app, &renderer, WIDE);
@@ -6446,7 +6435,7 @@ mod dialogs {
         // The scenario has no room details yet: Invite is off, and so sends
         // nothing; the close button works.
         assert!(invite.is_none(), "{invite:?}");
-        assert!(of_message(&list, "Rooms(CloseMembers)").next().is_some());
+        assert!(of_message(&list, "RoomPanel(Close)").next().is_some());
         assert_eq!(extra("members", "main-room", WIDE, "Invite"), 1);
     }
 

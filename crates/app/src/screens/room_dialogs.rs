@@ -61,8 +61,6 @@ pub enum Top {
     Card,
     /// The room settings.
     Settings,
-    /// The member list.
-    Members,
 }
 
 /// The screen of the room features that is drawn on top, if any.
@@ -73,8 +71,6 @@ pub fn topmost(ui: &crate::rooms::RoomsModel) -> Option<Top> {
         Some(Top::Card)
     } else if ui.settings.is_some() {
         Some(Top::Settings)
-    } else if ui.members_panel.is_some() {
-        Some(Top::Members)
     } else {
         None
     }
@@ -97,7 +93,6 @@ fn top(app: &App) -> Option<Element<'_, Message>> {
             Some(responsive(move |size| user_card(app, card, size.height)).into())
         }
         (Top::Settings, ..) => room_settings::view(app),
-        (Top::Members, ..) => members::view(app),
         _ => None,
     }
 }
@@ -615,7 +610,6 @@ mod tests {
                     Top::Dialog => "dialog",
                     Top::Card => "card",
                     Top::Settings => "panel",
-                    Top::Members => "members",
                 });
             }
             assert!(order.len() < 10);
