@@ -23,3 +23,6 @@ Task 3: done (uirf.3)
 - No new iced API: `button`, `row`, `text`, `Wrapping::None` and `kit::filter_chip_style`, as in `room_list_pane::chips`. The sharing_layer / overlay predicate of Task 2 is untouched.
 - Members and Info tabs are placeholders (Tasks 4 and 5). Gate in PROGRESS.md.
 - Test fix: `a_panel_that_hides_the_room_header_carries_the_trust_tag` counts the new header children (tabs, spacer, close): 3 beside the room header, 5 when the panel carries the title and trust tag.
+Task 3: complete (87427fd..e8de685, gate ok, security PASS, review PASS, evidence PROVEN)
+  evidence: docs/plans/ui-review-fixes.evidence/task-3.md
+  notes: FOR TASKS 4-5: Members/Info tabs stay open across a room switch (SelectRoom only closes the Thread tab); their content must read only the selected room's data (check room id before drawing, clear in rooms_ui.reset_room()) or close those tabs on SelectRoom. Low: screens/room_panel.rs module doc still says the thread view always has three children (stale); Close drops the open thread even on Members/Info (confirm intended); thread-tab open code duplicated in threads.rs (helper show_thread_tab()).
