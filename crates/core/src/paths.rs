@@ -7,8 +7,8 @@ use crate::api::sidebar::limits::MAX_SIDEBAR_BYTES;
 use crate::api::sidebar::{is_valid_room_id, is_valid_user_id};
 use crate::api::{
     CustomSection, DensityChoice, FolderLayout, RailEntry, RoomId, RoomListChoice, RoomSortChoice,
-    SectionKey, SidebarLabel, SidebarLayout, SidebarRead, SpaceLayout, ThemeChoice, ThemeName,
-    UiSettings, UpdateCheckChoice, UserId,
+    SectionKey, SidebarLabel, SidebarLayout, SidebarRead, SpaceLayout, SpacesRailChoice,
+    ThemeChoice, ThemeName, UiSettings, UpdateCheckChoice, UserId,
 };
 
 /// Largest view file read (4 KiB); anything bigger is ignored.
@@ -52,6 +52,11 @@ fn settings_from_map(map: &serde_json::Map<String, serde_json::Value>) -> UiSett
             Some("Rail") => RoomListChoice::Rail,
             Some("Expanded") => RoomListChoice::Expanded,
             _ => defaults.room_list,
+        },
+        spaces_rail: match text("spaces_rail") {
+            Some("Collapsed") => SpacesRailChoice::Collapsed,
+            Some("Expanded") => SpacesRailChoice::Expanded,
+            _ => defaults.spaces_rail,
         },
         text_scale_percent: map
             .get("text_scale_percent")
@@ -501,6 +506,10 @@ impl DataPaths {
             "room_list": match settings.room_list {
                 RoomListChoice::Expanded => "Expanded",
                 RoomListChoice::Rail => "Rail",
+            },
+            "spaces_rail": match settings.spaces_rail {
+                SpacesRailChoice::Expanded => "Expanded",
+                SpacesRailChoice::Collapsed => "Collapsed",
             },
             "text_scale_percent": settings.text_scale_percent,
             "advanced_settings": settings.advanced_settings,
@@ -1081,6 +1090,64 @@ mod tests {
     }
 
     #[test]
+    fn spaces_rail_reads_old_files_and_odd_values_as_expanded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = DataPaths::at(tmp.path().join("root"));
+        // A file written before the key existed: every other field as before.
+        let old = read_text(
+            &p,
+            r#"{"theme":"Dark","desktop_notifications":false,"show_message_content":false,"tray_badge":false,"density":"Compact","room_list":"Rail","text_scale_percent":130,"advanced_settings":true,"update_check":"On","update_checked_at":5,"room_sort":"Name","unread_first":true}"#,
+        );
+        assert_eq!(
+            old,
+            UiSettings {
+                theme: ThemeChoice::Dark,
+                desktop_notifications: false,
+                show_message_content: false,
+                tray_badge: false,
+                density: DensityChoice::Compact,
+                room_list: RoomListChoice::Rail,
+                text_scale_percent: 130,
+                advanced_settings: true,
+                update_check: UpdateCheckChoice::On,
+                update_checked_at: 5,
+                room_sort: RoomSortChoice::Name,
+                unread_first: true,
+                spaces_rail: SpacesRailChoice::Expanded,
+                ..UiSettings::default()
+            }
+        );
+        for text in [
+            r#"{"spaces_rail":"Sideways"}"#,
+            r#"{"spaces_rail":3}"#,
+            r#"{"spaces_rail":null}"#,
+        ] {
+            let s = read_text(&p, text);
+            assert_eq!(s.spaces_rail, SpacesRailChoice::Expanded, "{text}");
+            assert!(p.settings_file().exists());
+            assert!(!p.root().join("settings.json.bad").exists());
+        }
+        let s = read_text(&p, r#"{"spaces_rail":"Collapsed"}"#);
+        assert_eq!(s.spaces_rail, SpacesRailChoice::Collapsed);
+    }
+
+    #[test]
+    fn spaces_rail_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = DataPaths::at(tmp.path().join("root"));
+        for spaces_rail in [SpacesRailChoice::Collapsed, SpacesRailChoice::Expanded] {
+            let s = UiSettings {
+                spaces_rail,
+                ..UiSettings::default()
+            };
+            p.write_settings(&s).unwrap();
+            assert_eq!(p.read_settings(), s);
+            let text = std::fs::read_to_string(p.settings_file()).unwrap();
+            assert!(text.contains(r#""spaces_rail""#), "{text}");
+        }
+    }
+
+    #[test]
     fn settings_round_trip_atomically() {
         let tmp = tempfile::tempdir().unwrap();
         let p = DataPaths::at(tmp.path().join("root"));
@@ -1124,12 +1191,13 @@ mod tests {
         std::fs::create_dir_all(p.root()).unwrap();
         std::fs::write(
             p.settings_file(),
-            br#"{"theme":"Light","tray_badge":false,"from_the_future":{"x":1}}"#,
+            br#"{"theme":"Light","tray_badge":false,"spaces_rail":"Collapsed","from_the_future":{"x":1}}"#,
         )
         .unwrap();
         let s = p.read_settings();
         assert_eq!(s.theme, ThemeChoice::Light);
         assert!(!s.tray_badge);
+        assert_eq!(s.spaces_rail, SpacesRailChoice::Collapsed);
         assert!(s.desktop_notifications && s.show_message_content);
         assert!(p.settings_file().exists());
     }

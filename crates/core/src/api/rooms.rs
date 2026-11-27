@@ -500,6 +500,16 @@ pub enum RoomListChoice {
     Rail,
 }
 
+/// How the spaces rail is shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpacesRailChoice {
+    /// Icons and names.
+    #[default]
+    Expanded,
+    /// Icons only.
+    Collapsed,
+}
+
 /// How the room list is ordered where the user has not ordered it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RoomSortChoice {
@@ -529,13 +539,14 @@ pub enum UpdateCheckChoice {
 /// built-in theme), comfortable density, an expanded room list and 100 % text.
 ///
 /// ```
-/// use twicecat_core::api::{DensityChoice, RoomListChoice, ThemeChoice, UiSettings};
+/// use twicecat_core::api::{DensityChoice, RoomListChoice, SpacesRailChoice, ThemeChoice, UiSettings};
 /// let s = UiSettings::default();
 /// assert_eq!(s.theme, ThemeChoice::System);
 /// assert!(s.desktop_notifications && s.show_message_content && s.tray_badge);
 /// assert_eq!(s.theme_name, None);
 /// assert_eq!(s.density, DensityChoice::Comfortable);
 /// assert_eq!(s.room_list, RoomListChoice::Expanded);
+/// assert_eq!(s.spaces_rail, SpacesRailChoice::Expanded);
 /// assert_eq!(s.text_scale_percent, 100);
 /// assert_eq!(s.room_sort, twicecat_core::api::RoomSortChoice::Activity);
 /// assert!(!s.unread_first);
@@ -559,6 +570,8 @@ pub struct UiSettings {
     pub density: DensityChoice,
     /// Expanded or collapsed room list.
     pub room_list: RoomListChoice,
+    /// Expanded or collapsed spaces rail.
+    pub spaces_rail: SpacesRailChoice,
     /// Text scale in percent (80 to 200, in steps of 10).
     pub text_scale_percent: u16,
     /// Show every setting, audio and video in depth, instead of the few a
@@ -585,6 +598,7 @@ impl Default for UiSettings {
             theme_name: None,
             density: DensityChoice::Comfortable,
             room_list: RoomListChoice::Expanded,
+            spaces_rail: SpacesRailChoice::Expanded,
             text_scale_percent: 100,
             advanced_settings: false,
             update_check: UpdateCheckChoice::Unasked,
