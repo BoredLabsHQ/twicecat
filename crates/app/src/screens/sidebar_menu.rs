@@ -52,6 +52,7 @@ fn top(app: &App) -> Option<Element<'_, Message>> {
         responsive(move |size| match menu {
             SidebarMenu::Card { target, error } => card(app, target, *error, size.height),
             SidebarMenu::Sort => crate::screens::room_list_pane::sort_card(app, size.height),
+            SidebarMenu::Add => crate::screens::room_list_pane::add_card(size.height),
             SidebarMenu::Account => crate::screens::main_view::account_card(app, size.height),
             SidebarMenu::Name(dialog) => name_dialog(dialog, size.height),
         })

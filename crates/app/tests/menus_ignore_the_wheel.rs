@@ -146,7 +146,10 @@ fn the_sort_card_list_is_a_pick_list_behind_the_wheel_guard() {
         .filter(|(name, _)| name.ends_with("screens/room_list_pane.rs"))
         .collect();
     let (seen, bare) = unwrapped(&own, "pick_list");
-    assert_eq!(seen, 1, "the Sort card's order list is in the scan");
+    assert_eq!(
+        seen, 2,
+        "the Sort card's order list and the header's filter list are in the scan"
+    );
     assert!(bare.is_empty(), "unwrapped: {bare:?}");
     // And it is the Sort card's: a sort that changed on Ctrl + wheel would
     // reorder the whole room list while the user only zooms.
@@ -157,6 +160,14 @@ fn the_sort_card_list_is_a_pick_list_behind_the_wheel_guard() {
         .zip(code[card..].find("pick_list("))
         .is_some_and(|(menu, list)| menu < list);
     assert!(wrapped, "the Sort card's list is not inside kit::menu");
+    // The header's filter list: a filter that changed on Ctrl + wheel would
+    // swap the rooms shown while the user only zooms.
+    let filter = code.find("fn filter_menu").expect("the filter drop-down");
+    let wrapped = code[filter..]
+        .find("kit::menu(")
+        .zip(code[filter..].find("pick_list("))
+        .is_some_and(|(menu, list)| menu < list);
+    assert!(wrapped, "the filter list is not inside kit::menu");
 }
 
 #[test]

@@ -76,21 +76,64 @@ pub const fn shows_preview(density: Density) -> bool {
     matches!(density, Density::Comfortable)
 }
 
-/// **New room**, **Direct message** and **Join**, above the chips.
-fn room_actions<'a>() -> Element<'a, Message> {
-    let action = |label: &'static str, message: RoomsMessage| {
-        button(text(label).size(tokens::CAPTION).wrapping(Wrapping::None))
-            .on_press(Message::Rooms(message))
-            .padding([tokens::XS, tokens::S])
-            .style(kit::secondary_style)
-    };
-    row![
-        action("New room", RoomsMessage::OpenCreate),
-        action("Direct message", RoomsMessage::OpenDm),
-        action("Join", RoomsMessage::OpenJoin),
-    ]
-    .spacing(tokens::XS)
-    .into()
+/// An entry of the "+" card of the room list header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddAction {
+    /// **New room**.
+    NewRoom,
+    /// **Direct message**.
+    DirectMessage,
+    /// **Join a room**.
+    Join,
+}
+
+impl AddAction {
+    /// The card's entries, in order.
+    pub const ALL: [Self; 3] = [Self::NewRoom, Self::DirectMessage, Self::Join];
+
+    /// The message the entry sends: what the three old buttons sent.
+    pub fn message(self) -> Message {
+        Message::Rooms(match self {
+            Self::NewRoom => RoomsMessage::OpenCreate,
+            Self::DirectMessage => RoomsMessage::OpenDm,
+            Self::Join => RoomsMessage::OpenJoin,
+        })
+    }
+}
+
+impl std::fmt::Display for AddAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NewRoom => "New room",
+            Self::DirectMessage => "Direct message",
+            Self::Join => "Join a room",
+        })
+    }
+}
+
+/// The "+" card: New room, Direct message and Join a room. It follows the
+/// Sort card: a [`kit::dialog`] with a close button. Every choice sends
+/// [`SidebarMenuMessage::Add`], which closes the card first.
+pub fn add_card(window_height: f32) -> Element<'static, Message> {
+    let close = || Message::SidebarMenu(SidebarMenuMessage::Close);
+    let body = Column::with_children(AddAction::ALL.into_iter().map(|action| {
+        kit::secondary_button(
+            action.to_string(),
+            Some(Message::SidebarMenu(SidebarMenuMessage::Add(action))),
+        )
+        .width(Fill)
+        .into()
+    }))
+    .spacing(tokens::S);
+    kit::dialog(
+        kit::dialog_header("Add", close()),
+        body.into(),
+        Some(kit::dialog_footer(vec![
+            kit::secondary_button("Close", Some(close())).into(),
+        ])),
+        crate::screens::sidebar_menu::CARD_WIDTH,
+        window_height,
+    )
 }
 
 /// The same three actions as icons in a column, for the rail. Each has a
@@ -294,25 +337,45 @@ pub fn empty_hint(tab: RoomListTab, label: &str) -> &'static str {
     }
 }
 
-/// The filter chips as one wrapping row of pills, a single choice. The chosen
-/// chip is filled and outlined; clicking it goes back to All. A chip never
-/// wraps its own text, so a narrow pane puts chips on more lines instead.
-pub fn chips<'a>(active: RoomListTab) -> Element<'a, Message> {
-    row(TABS.into_iter().map(|tab| {
-        button(
-            text(tab_label(tab))
-                .size(tokens::CAPTION)
-                .wrapping(Wrapping::None),
-        )
-        .on_press(Message::ChipClicked(tab))
-        .padding([tokens::XS, tokens::S])
-        .style(kit::filter_chip_style(tab == active))
-        .into()
-    }))
-    .spacing(tokens::XS)
-    .wrap()
-    .vertical_spacing(tokens::XS)
-    .into()
+/// A filter as an entry of the header's drop-down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TabChoice(pub RoomListTab);
+
+impl TabChoice {
+    /// Every filter, in [`TABS`] order.
+    pub const ALL: [Self; 9] = [
+        Self(TABS[0]),
+        Self(TABS[1]),
+        Self(TABS[2]),
+        Self(TABS[3]),
+        Self(TABS[4]),
+        Self(TABS[5]),
+        Self(TABS[6]),
+        Self(TABS[7]),
+        Self(TABS[8]),
+    ];
+
+    /// What choosing the entry sends: what clicking its chip did.
+    pub const fn message(self) -> Message {
+        Message::TabChosen(self.0)
+    }
+}
+
+impl std::fmt::Display for TabChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(tab_label(self.0))
+    }
+}
+
+/// The filter as a drop-down, a single choice. It goes through
+/// [`kit::menu`], so Ctrl + wheel (the zoom gesture) cannot change it.
+fn filter_menu<'a>(active: RoomListTab) -> Element<'a, Message> {
+    kit::menu(
+        pick_list(TabChoice::ALL, Some(TabChoice(active)), TabChoice::message)
+            .text_size(tokens::CAPTION)
+            .padding([tokens::XS, tokens::S])
+            .style(kit::menu_style),
+    )
 }
 
 /// The words under the Sort card's choices: which rooms the sort leaves
@@ -360,31 +423,37 @@ pub fn sort_card(app: &App, window_height: f32) -> Element<'_, Message> {
     )
 }
 
-/// The search field with a search icon and, once there is text, a button
-/// that clears it. The clear slot is a space while empty, so the field keeps
-/// its place and its focus.
-fn search_field(app: &App) -> Element<'_, Message> {
+/// The header row of the expanded list: the filter drop-down, the search
+/// field with a clear button once there is text (a space while empty, so the
+/// field keeps its place and its focus), **Sort**, and the "+" button.
+fn header_row(app: &App) -> Element<'_, Message> {
     let clear: Element<'_, Message> = if app.search_input.is_empty() {
         space().width(0).into()
     } else {
         kit::tip(
             button(icons::icon(Icon::Close))
                 .on_press(Message::SearchChanged(String::new()))
-                .padding(tokens::S)
+                .padding(tokens::XS)
                 .style(kit::icon_style),
             "Clear search",
         )
     };
     row![
-        icons::icon(Icon::Search),
+        filter_menu(app.query.tab),
         text_input("Search rooms", &app.search_input)
             .style(kit::text_input_style)
+            .size(tokens::CAPTION)
             .on_input(Message::SearchChanged)
-            .padding(tokens::S),
+            .padding(tokens::XS)
+            .width(Fill),
         clear,
         sort_button(),
+        kit::icon_button(
+            Icon::Plus,
+            Message::SidebarMenu(SidebarMenuMessage::OpenAdd)
+        ),
     ]
-    .spacing(tokens::S)
+    .spacing(tokens::XS)
     .align_y(iced::Center)
     .into()
 }
@@ -431,7 +500,7 @@ fn empty_view(app: &App, rail: bool) -> Element<'_, Message> {
     kit::empty_state(label, empty_hint(app.query.tab, label))
 }
 
-/// The pane: chips, search, then the list or an empty-state line.
+/// The pane: the header row, then the list or an empty-state line.
 pub fn view(app: &App) -> Element<'_, Message> {
     let rail = app.pane_layout().list == RoomListChoice::Rail;
     let density = app.density();
@@ -440,14 +509,14 @@ pub fn view(app: &App) -> Element<'_, Message> {
     } else {
         windowed_list(app)
     };
-    let chips_slot: Element<'_, Message>;
+    // The chips slot is an empty space in both modes; the expanded list's
+    // header row is in the first slot and its search slot is empty.
     let (actions, search, dock) = if rail {
-        chips_slot = space().height(0).into();
         (rail_actions(), rail_search(), call::rail_dock(app))
     } else {
-        chips_slot = chips(app.query.tab);
-        (room_actions(), search_field(app), call::dock(app))
+        (header_row(app), space().height(0).into(), call::dock(app))
     };
+    let chips_slot: Element<'_, Message> = space().height(0).into();
     // The call bar is last, so the list keeps its place when a call starts.
     // `from_vec` keeps the empty slots (`push` drops a zero-sized child), so
     // the five slots stay put between the expanded list and the rail.
@@ -1994,6 +2063,23 @@ fn pill<'a>(label: String, tone: Tone) -> Element<'a, Message> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_filter_drop_down_lists_every_tab_with_its_label_and_sends_the_set_tab_message() {
+        assert_eq!(TabChoice::ALL.len(), TABS.len());
+        for (choice, tab) in TabChoice::ALL.into_iter().zip(TABS) {
+            assert_eq!(choice.0, tab);
+            assert_eq!(choice.to_string(), tab_label(tab));
+            assert!(matches!(choice.message(), Message::TabChosen(t) if t == tab));
+        }
+        assert_eq!(TabChoice::ALL[0].to_string(), "All");
+    }
+
+    #[test]
+    fn the_add_card_has_the_three_old_buttons_in_order() {
+        let words: Vec<String> = AddAction::ALL.iter().map(ToString::to_string).collect();
+        assert_eq!(words, ["New room", "Direct message", "Join a room"]);
+    }
+
     #[test]
     fn the_free_space_is_the_rest_of_the_viewport_and_at_least_one_row() {
         assert_eq!(filler_height(100.0, 600.0, 56.0), 500.0);

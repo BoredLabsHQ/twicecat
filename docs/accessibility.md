@@ -533,13 +533,16 @@ existing shortcut keeps its meaning.
   the room of this device's call, which a collapsed section keeps drawn. Once a name dialog is open
   (New folder, New section, Rename), its field, Enter and Esc work from the
   keyboard.
-- **The filter chips are clicks only.** The chips above the room list (All,
-  Unreads, Mentions, DMs, Rooms, Favourites, Low priority, Invites, Spaces) are
-  buttons, as the tabs were, and iced 0.14 buttons take no keyboard focus, so
-  Tab does not visit them. The chosen chip is shown by its fill and its outline
-  (not by colour alone), and its text meets 4.5:1 in every test theme. Clicking
-  the chosen chip goes back to All. Ctrl+K still finds every room, whatever
-  chip is chosen. No shortcut was added or changed.
+- **The room list's filter is a drop-down, and "+" is a card.** The header row
+  of the expanded list holds a filter drop-down (All, Unreads, Mentions, DMs,
+  Rooms, Favourites, Low priority, Invites, Spaces; it replaces the chips), the
+  search field, **Sort** and a **+** button. iced 0.14 buttons and pick lists
+  take no keyboard focus, so Tab does not visit them; the chosen filter is
+  named in the closed drop-down, which Ctrl + wheel cannot change (it goes
+  through `kit::menu`). **+** opens a card with New room, Direct message and
+  Join a room; Esc closes it, and each choice closes it and opens its dialog.
+  Ctrl+K still finds every room, whatever filter is chosen. No shortcut was
+  added or changed.
 - **Sort is a click too, and Alt+Up / Alt+Down follow it.** The **Sort** button
   next to the search field is a button, so Tab does not visit it, and its card
   (a list for Activity or A to Z, and an "Unreads first" check box) needs a

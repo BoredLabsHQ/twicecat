@@ -296,9 +296,12 @@ pub enum Message {
     LogoutRequested,
     /// The user picked a room in the list.
     SelectRoom(RoomId),
-    /// The user clicked a filter chip above the room list. Clicking the
-    /// active chip goes back to **All**.
+    /// The user clicked a filter chip: clicking the active chip goes back to
+    /// **All**.
     ChipClicked(RoomListTab),
+    /// The user chose a filter in the header's drop-down. It only sets the
+    /// tab: choosing the one already shown keeps it.
+    TabChosen(RoomListTab),
     /// The room list search field changed.
     SearchChanged(String),
     /// The room list scrolled, or its size changed.
@@ -1326,6 +1329,16 @@ impl App {
         }
     }
 
+    /// Sets the room list filter, keeping the search and the space.
+    fn set_tab(&mut self, tab: RoomListTab) -> Task<Message> {
+        let query = RoomListQuery {
+            tab,
+            search: self.query.search.clone(),
+            space: self.query.space.clone(),
+        };
+        self.set_query(query)
+    }
+
     fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::Core(event) => self.on_core(*event),
@@ -1796,19 +1809,15 @@ impl App {
                 ])
             }
             Message::ChipClicked(tab) => {
-                // The active chip is a toggle: clicking it goes back to All.
+                // A chip is a toggle: clicking the active one goes back to All.
                 let tab = if tab == self.query.tab {
                     RoomListTab::All
                 } else {
                     tab
                 };
-                let query = RoomListQuery {
-                    tab,
-                    search: self.query.search.clone(),
-                    space: self.query.space.clone(),
-                };
-                self.set_query(query)
+                self.set_tab(tab)
             }
+            Message::TabChosen(tab) => self.set_tab(tab),
             Message::SearchChanged(search) => {
                 let query = RoomListQuery {
                     tab: self.query.tab,
@@ -4594,6 +4603,63 @@ mod tests {
         }
 
         #[test]
+        fn the_add_card_opens_closes_with_esc_covers_the_bar_and_closes_after_each_choice() {
+            use crate::rooms::RoomsMessage;
+            use crate::screens::room_list_pane::AddAction;
+            let esc = Message::Shortcut {
+                shortcut: Shortcut::Escape,
+                captured: false,
+            };
+            let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+            send(&mut app, M::OpenAdd);
+            assert_eq!(app.sidebar_menu, Some(SidebarMenu::Add));
+            assert!(
+                app.sidebar_menu_open(),
+                "the card is a layer, so the sharing bar is drawn again over it"
+            );
+            let _ = app.update(esc.clone());
+            assert!(app.sidebar_menu.is_none(), "Esc closes the card");
+            // The switcher is over the card and takes Esc first.
+            send(&mut app, M::OpenAdd);
+            let _ = app.update(Message::Shortcut {
+                shortcut: Shortcut::Switcher,
+                captured: false,
+            });
+            let _ = app.update(esc.clone());
+            assert!(!app.switcher.open && app.sidebar_menu.is_some());
+            let _ = app.update(esc);
+            assert!(app.sidebar_menu.is_none());
+            // Every entry closes the card and sends what the old buttons did.
+            assert_eq!(AddAction::ALL.len(), 3);
+            for action in AddAction::ALL {
+                let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+                send(&mut app, M::OpenAdd);
+                send(&mut app, M::Add(action));
+                assert!(app.sidebar_menu.is_none(), "{action:?} closes the card");
+                assert!(
+                    matches!(
+                        action.message(),
+                        Message::Rooms(
+                            RoomsMessage::OpenCreate
+                                | RoomsMessage::OpenDm
+                                | RoomsMessage::OpenJoin
+                        )
+                    ),
+                    "{action:?}"
+                );
+                assert!(app.any_overlay_open(), "{action:?} opens its dialog");
+            }
+        }
+
+        #[test]
+        fn the_add_card_does_not_open_over_another_layer() {
+            let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+            let _ = app.update(Message::Settings(SettingsMessage::Open));
+            send(&mut app, M::OpenAdd);
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
         fn log_out_in_the_account_card_asks_through_the_logout_flow() {
             use crate::screens::main_view::AccountAction;
             let (mut app, mut rx) = main_app();
@@ -6081,6 +6147,18 @@ mod tests {
         let _ = app.update(core(CoreEvent::RoomListChanged(vec![ListDiff::Clear])));
         assert_eq!(app.selected, Some(RoomId::from("!a:x")));
         assert_eq!(app.composer.text(), "unsent");
+    }
+
+    #[test]
+    fn choosing_a_tab_from_the_drop_down_sets_it_and_never_toggles() {
+        let (mut app, _rx) = main_app();
+        let _ = app.update(Message::TabChosen(RoomListTab::People));
+        assert_eq!(app.query.tab, RoomListTab::People);
+        // The already-shown entry picked again keeps the tab.
+        let _ = app.update(Message::TabChosen(RoomListTab::People));
+        assert_eq!(app.query.tab, RoomListTab::People);
+        let _ = app.update(Message::TabChosen(RoomListTab::Rooms));
+        assert_eq!(app.query.tab, RoomListTab::Rooms);
     }
 
     #[test]

@@ -42,6 +42,7 @@ use twicecat_core::api::{
 use crate::keys::Shortcut;
 use crate::room_list::Sorting;
 use crate::screens::main_view::AccountAction;
+use crate::screens::room_list_pane::AddAction;
 use crate::sections::{Spot, drawn_sections, spot_of};
 use crate::sidebar::{Dir, FolderTarget, Op as SidebarOp, SidebarState};
 use crate::spaces::{RailItem, RailKey};
@@ -184,6 +185,9 @@ pub enum SidebarMenu {
     /// The Sort card of the room list (plan L2): the settings, not an item
     /// of the layout, so it needs no sidebar file.
     Sort,
+    /// The "+" card of the room list header: New room, Direct message and
+    /// Join a room. Nothing of the layout, like [`Self::Sort`].
+    Add,
     /// The account card of the top bar: Settings, Voice & audio,
     /// Sessions and Log out. Nothing of the layout, like [`Self::Sort`].
     Account,
@@ -200,6 +204,7 @@ impl fmt::Debug for SidebarMenu {
                 .field("error", error)
                 .finish(),
             Self::Sort => f.write_str("Sort"),
+            Self::Add => f.write_str("Add"),
             Self::Account => f.write_str("Account"),
             Self::Name(dialog) => f.debug_tuple("Name").field(dialog).finish(),
         }
@@ -364,6 +369,10 @@ pub enum SidebarMenuMessage {
     OpenList,
     /// The **Sort** button of the room list.
     OpenSort,
+    /// The "+" button of the room list header.
+    OpenAdd,
+    /// An entry of the "+" card: closes it, then opens the dialog.
+    Add(AddAction),
     /// The account button of the top bar.
     OpenAccount,
     /// An entry of the account card: closes it, then does what the entry
@@ -398,6 +407,8 @@ impl fmt::Debug for SidebarMenuMessage {
             Self::OpenFlatRoom(_) => f.write_str("OpenFlatRoom(<redacted>)"),
             Self::OpenList => f.write_str("OpenList"),
             Self::OpenSort => f.write_str("OpenSort"),
+            Self::OpenAdd => f.write_str("OpenAdd"),
+            Self::Add(action) => f.debug_tuple("Add").field(action).finish(),
             Self::OpenAccount => f.write_str("OpenAccount"),
             Self::Account(action) => f.debug_tuple("Account").field(action).finish(),
             Self::SetSort(sort) => f.debug_tuple("SetSort").field(sort).finish(),
@@ -772,6 +783,8 @@ impl App {
             SidebarMenuMessage::OpenFlatRoom(room) => self.open_flat_room_menu(room),
             SidebarMenuMessage::OpenList => self.open_list_menu(),
             SidebarMenuMessage::OpenSort => self.open_sort_card(),
+            SidebarMenuMessage::OpenAdd => self.open_add_card(),
+            SidebarMenuMessage::Add(action) => self.choose_add_entry(action),
             SidebarMenuMessage::OpenAccount => self.open_account_card(),
             SidebarMenuMessage::Account(action) => self.choose_account_entry(action),
             SidebarMenuMessage::SetSort(by) => {
@@ -845,6 +858,28 @@ impl App {
         self.cancel_rail_reorder();
         self.sidebar_menu = Some(SidebarMenu::Sort);
         Task::none()
+    }
+
+    /// The "+" button: opens the add card, on the main screen with no other
+    /// layer over it.
+    fn open_add_card(&mut self) -> Task<Message> {
+        if self.screen != Screen::Main || self.any_overlay_open() || self.sidebar_menu.is_some() {
+            return Task::none();
+        }
+        self.list_drag.cancel();
+        self.cancel_rail_reorder();
+        self.sidebar_menu = Some(SidebarMenu::Add);
+        Task::none()
+    }
+
+    /// An entry of the add card. The card closes first, so the dialog the
+    /// entry opens is not under it.
+    fn choose_add_entry(&mut self, action: AddAction) -> Task<Message> {
+        if self.sidebar_menu != Some(SidebarMenu::Add) {
+            return Task::none();
+        }
+        self.sidebar_menu = None;
+        self.update(action.message())
     }
 
     /// The account button: opens the account card, on the main screen with
@@ -1232,7 +1267,7 @@ impl App {
         match &mut self.sidebar_menu {
             Some(SidebarMenu::Card { error, .. }) => *error = Some(line),
             Some(SidebarMenu::Name(dialog)) => dialog.error = Some(line),
-            Some(SidebarMenu::Sort | SidebarMenu::Account) | None => {}
+            Some(SidebarMenu::Sort | SidebarMenu::Add | SidebarMenu::Account) | None => {}
         }
     }
 
@@ -1273,7 +1308,7 @@ impl App {
         };
         let gone = match menu {
             // About the settings: nothing it names can go away.
-            SidebarMenu::Sort | SidebarMenu::Account => false,
+            SidebarMenu::Sort | SidebarMenu::Add | SidebarMenu::Account => false,
             SidebarMenu::Card { target, .. } => self.target_gone(target),
             SidebarMenu::Name(dialog) => match &dialog.purpose {
                 Purpose::NewFolder(space) => self.target_gone(&Target::Space(space.clone())),
