@@ -78,3 +78,4 @@ Task 10a note: core, additive (D12, human-approved): `api::SpacesRailChoice { Ex
 Task 10a: complete (620823c..d3b828d, gate ok, security PASS, review PASS, evidence PROVEN)
   evidence: docs/plans/ui-review-fixes.evidence/task-10a.md
   notes: cosmetic: round trip is a new test spaces_rail_round_trips (plan said extend settings_round_trip_atomically); doc-test use line long. Old build opening a file with "Collapsed" drops the key on its next write (all hand-written keys behave so). Tests in paths.rs written before the code but not run against old code.
+Task 10: started
