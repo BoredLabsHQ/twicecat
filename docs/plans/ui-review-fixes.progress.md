@@ -26,3 +26,4 @@ Task 3: done (uirf.3)
 Task 3: complete (87427fd..e8de685, gate ok, security PASS, review PASS, evidence PROVEN)
   evidence: docs/plans/ui-review-fixes.evidence/task-3.md
   notes: FOR TASKS 4-5: Members/Info tabs stay open across a room switch (SelectRoom only closes the Thread tab); their content must read only the selected room's data (check room id before drawing, clear in rooms_ui.reset_room()) or close those tabs on SelectRoom. Low: screens/room_panel.rs module doc still says the thread view always has three children (stale); Close drops the open thread even on Members/Info (confirm intended); thread-tab open code duplicated in threads.rs (helper show_thread_tab()).
+Task 4: started
