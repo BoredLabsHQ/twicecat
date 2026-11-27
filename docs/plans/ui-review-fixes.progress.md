@@ -53,3 +53,4 @@ Task 6: done (uirf.6)
 Task 6: complete (f795e13..3e26c24, gate ok, security PASS, review PASS, evidence PROVEN)
   evidence: docs/plans/ui-review-fixes.evidence/task-6.md
   notes: gaps (not proven by image): no gallery case with room pane < 480 px (icon-only look covered by header_labels table test only), fixture has no member list so "Members (N)" only by members_label test, stacked-header wrap not separately checked, active toggle styling = human. Info tab uses the same notification_menu (room_settings.rs:122). Closed menu reads "Notifications: Use default" for the default choice. Implementer deleted target/debug/incremental (build cache) when the disk filled; volume now ~89%.
+Task 7: started
