@@ -18,3 +18,8 @@ Task 2: complete (39babb8..5e6b325, gate ok, security PASS (round 1 FAIL: Stop s
   evidence: docs/plans/ui-review-fixes.evidence/task-2.md
   notes: OPEN Medium: the "Setting up recovery" busy modal (security.busy == SettingUp, visible()==Nothing) still covers Stop sharing (add to any_overlay_open + test case; Ctrl+Shift+E works). Low: upload drop hint (uploads.hovering) not in the sharing_layer predicate; ring card sits above the pill while accessibility.md says "never covered"; overlay pill centred on window vs top-bar pill centred in middle slot (two pills may be a few px apart); no fit test at 900 px; top_bar_button word/tip redundant; account button also drops its name when compact; sessions Verify test loosened to count distinct messages. Fixup 5e6b325 autosquashed into the Task 2 commit.
 Task 3: started
+Task 3: done (uirf.3)
+- Room panel: `room_panel.rs` (RoomPanel, RoomPanelTab, RoomPanelMessage, `App::room_panel_shown`, `thread_gone`), `screens/room_panel.rs` (was `thread_panel.rs`). `layout_for` takes `room_panel_open`; `PaneLayout.thread` -> `room_panel`; `SidePanel::Thread` -> `Room`. Esc sends `RoomPanelMessage::Close`, which closes the thread too.
+- No new iced API: `button`, `row`, `text`, `Wrapping::None` and `kit::filter_chip_style`, as in `room_list_pane::chips`. The sharing_layer / overlay predicate of Task 2 is untouched.
+- Members and Info tabs are placeholders (Tasks 4 and 5). Gate in PROGRESS.md.
+- Test fix: `a_panel_that_hides_the_room_header_carries_the_trust_tag` counts the new header children (tabs, spacer, close): 3 beside the room header, 5 when the panel carries the title and trust tag.

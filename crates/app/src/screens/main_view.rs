@@ -23,8 +23,8 @@ use crate::rooms::RoomsMessage;
 use crate::screens::loading::sync_label;
 use crate::screens::timeline_pane::RichEnv;
 use crate::screens::{
-    call, media_viewer, room_dialogs, room_list_pane, security, sessions, spaces_sidebar, stage,
-    thread_panel, timeline_pane,
+    call, media_viewer, room_dialogs, room_list_pane, room_panel, security, sessions,
+    spaces_sidebar, stage, timeline_pane,
 };
 use crate::sessions::SessionsMessage;
 use crate::settings::SettingsMessage;
@@ -177,7 +177,7 @@ pub fn room_pane_width(app: &App) -> f32 {
     }
     width -= room_list_pane::pane_width(layout.list) + 1.0;
     if !layout.panel_fills {
-        if layout.thread {
+        if layout.room_panel {
             width -= crate::threads::PANEL_WIDTH;
         }
         if layout.call {
@@ -449,7 +449,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     )
 }
 
-/// The panes, always `[spaces sidebar, room list, room pane, thread panel,
+/// The panes, always `[spaces sidebar, room list, room pane, room panel,
 /// call panel]`: a slot with nothing to show is an empty space, so the room
 /// pane (timeline scroll, editor focus) keeps its place in the widget tree
 /// when a panel opens or closes, or the window narrows (see
@@ -467,7 +467,7 @@ pub(crate) fn main_row(app: &App) -> Element<'_, Message> {
         sidebar,
         list_pane(app),
         room_pane(app, layout.panel_fills),
-        thread_panel::slot(app, layout),
+        room_panel::slot(app, layout),
         call::panel_slot(app, layout),
     ])
     .width(Fill)

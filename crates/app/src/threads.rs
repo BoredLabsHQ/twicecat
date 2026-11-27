@@ -24,6 +24,7 @@ use twicecat_core::api::{
     PaginationState, RoomId, TextFormat, ThreadSummaryView, TimelineItem,
 };
 
+use crate::room_panel::{RoomPanel, RoomPanelTab};
 use crate::screens::timeline_pane::sender_label;
 use crate::state::{App, Message};
 use crate::text_safety::one_line_capped;
@@ -249,6 +250,10 @@ impl App {
             .as_ref()
             .is_some_and(|panel| panel.is(&room_id, &root))
         {
+            self.room_panel = RoomPanel {
+                tab: RoomPanelTab::Thread,
+                open: true,
+            };
             return operation::focus(THREAD_INPUT_ID);
         }
         self.drop_thread_uploads();
@@ -257,6 +262,10 @@ impl App {
         panel.timeline.set_density(self.density());
         panel.draft = self.threads.kept_draft(&room_id, &root);
         self.threads.panel = Some(panel);
+        self.room_panel = RoomPanel {
+            tab: RoomPanelTab::Thread,
+            open: true,
+        };
         Task::batch([
             self.send(Command::OpenThread { room_id, root }),
             operation::focus(THREAD_INPUT_ID),
@@ -269,6 +278,7 @@ impl App {
             return Task::none();
         }
         self.drop_thread_uploads();
+        self.thread_gone();
         self.send(Command::CloseThread)
     }
 
@@ -286,12 +296,14 @@ impl App {
     pub(crate) fn reset_threads(&mut self) {
         self.threads.take_panel();
         self.drop_thread_uploads();
+        self.thread_gone();
     }
 
     /// Forgets the panel and every kept reply: the session ended.
     pub(crate) fn forget_threads(&mut self) {
         self.threads = ThreadsModel::default();
         self.drop_thread_uploads();
+        self.thread_gone();
     }
 
     /// An upload confirmation that was opened from the panel goes with it.

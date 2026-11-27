@@ -13,11 +13,11 @@ use iced::Task;
 use twicecat_core::api::{RoomId, RoomListChoice, RoomSummary};
 
 use crate::calls::CallMessage;
+use crate::room_panel::RoomPanelMessage;
 use crate::sessions::SessionsMessage;
 use crate::settings::{SettingsMessage, Zoom};
 use crate::state::{App, Message, Screen};
 use crate::switcher::SwitcherMessage;
-use crate::threads::ThreadsMessage;
 use crate::verification::VerificationMessage;
 use crate::video::VideoMessage;
 
@@ -718,8 +718,8 @@ impl App {
         // The panel on screen first. In a window too narrow for both, the
         // one that waits is not on screen and keeps its turn.
         let layout = self.pane_layout();
-        if layout.thread {
-            return self.update(Message::Threads(ThreadsMessage::Close));
+        if layout.room_panel {
+            return self.update(Message::RoomPanel(RoomPanelMessage::Close));
         }
         if layout.call {
             return self.update(Message::Call(CallMessage::TogglePanel));

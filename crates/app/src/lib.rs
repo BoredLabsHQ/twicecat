@@ -26,6 +26,7 @@ pub mod rail_drop;
 pub mod rail_reorder;
 pub mod rich_text;
 pub mod room_list;
+pub mod room_panel;
 pub mod rooms;
 pub mod screens;
 pub mod sections;

@@ -1487,7 +1487,7 @@ fn the_slots_follow_the_layout_at_every_width_and_the_room_pane_keeps_its_place(
                     301.0
                 };
                 assert_eq!(w[1], list_w, "{what}: list {w:?}");
-                assert_eq!(w[3] > 0.0, shown.thread, "{what}: thread {w:?}");
+                assert_eq!(w[3] > 0.0, shown.room_panel, "{what}: thread {w:?}");
                 assert_eq!(w[4] > 0.0, shown.call, "{what}: call {w:?}");
                 assert_eq!(w[2] == 0.0, shown.panel_fills, "{what}: room pane {w:?}");
                 let sum: f32 = w.iter().sum();
@@ -1496,7 +1496,7 @@ fn the_slots_follow_the_layout_at_every_width_and_the_room_pane_keeps_its_place(
                     "{what}: the slots add up to {sum}, not {width}: {w:?}"
                 );
                 if shown.panel_fills {
-                    let panel = if shown.thread { w[3] } else { w[4] };
+                    let panel = if shown.room_panel { w[3] } else { w[4] };
                     assert_eq!(panel, width - w[0] - w[1], "{what}: fills {w:?}");
                 }
             }
@@ -2777,7 +2777,7 @@ fn a_right_click_on_a_rail_row_asks_for_no_card() {
 fn a_panel_that_hides_the_room_header_carries_the_trust_tag() {
     use twicecat_core::api::UserTrust;
     let renderer = renderer();
-    // `[title, (trust tag), close]` in the header of the thread panel.
+    // `[(title, trust tag), tabs, spacer, close]` in the header of the room panel.
     let head_len = |width: f32| {
         let mut app = fixture::dm_with_peer(LONG_PEER, UserTrust::IdentityChanged);
         app.window_width = width;
@@ -2792,12 +2792,12 @@ fn a_panel_that_hides_the_room_header_carries_the_trust_tag() {
     };
     assert_eq!(
         head_len(1280.0),
-        2,
+        3,
         "the room header shows it beside a panel"
     );
     assert_eq!(
         head_len(700.0),
-        3,
+        5,
         "the panel shows it when the header is hidden"
     );
 }

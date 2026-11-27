@@ -62,8 +62,9 @@ Rules the code follows (all in tests):
   11. the logout warning, then the Sessions card's password prompt, its
       sign-out question, a rename in progress, then the card itself;
   12. the composer's suggestions, then its reply or edit mode;
-  13. the thread panel, then the participants panel of a call (the one on
-      screen first when the window is too narrow for both).
+  13. the room panel (tabs Members, Info and, while a thread is open, Thread;
+      Esc closes the panel and the thread), then the participants panel of a
+      call (the one on screen first when the window is too narrow for both).
 
   A text field that took the Esc to drop its focus does not keep an overlay
   open. Esc never confirms anything. Held-down Esc repeats do not decline a
@@ -98,7 +99,7 @@ Rules the code follows (all in tests):
   warning when the call is not encrypted), who declined, and the microphone's
   state (see Calls).
 - Narrow windows: from 800 to 1100 px the list is shown as the rail while a
-  thread or the participants panel is open; under 800 px the spaces sidebar is
+  room panel or the participants panel is open; under 800 px the spaces sidebar is
   not shown, the list is the rail, and an open panel takes the room pane's
   place (the room pane stays, with no width, and takes no keys). Only one panel
   shows then: the one opened last; Esc closes the one on screen first and then
@@ -460,8 +461,8 @@ them); how they look on each OS is on the human checkpoint.
 The layout follows the window width (`crates/app/src/layout.rs`):
 
 - 1100 px and wider: spaces sidebar, room list (expanded or the rail, as saved
-  with Ctrl+B), room pane and the thread or participants panel side by side.
-- 800 to 1100 px: while a thread or the participants panel is open the room
+  with Ctrl+B), room pane and the room panel or participants panel side by side.
+- 800 to 1100 px: while the room panel or the participants panel is open the room
   list is drawn as the rail so the room pane keeps its width.
 - Under 800 px: the spaces sidebar is not shown, the list is the rail, and an
   open panel takes the room pane's place (only one panel, the one opened last;

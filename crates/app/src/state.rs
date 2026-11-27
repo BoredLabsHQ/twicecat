@@ -463,6 +463,8 @@ pub enum Message {
     Spaces(SpacesMessage),
     /// A thread summary row or a control of the thread panel.
     Threads(ThreadsMessage),
+    /// A control of the room panel (tabs, close).
+    RoomPanel(crate::room_panel::RoomPanelMessage),
     /// A keyboard shortcut (see `keys`); `captured` says a widget used the
     /// key already.
     Shortcut {
@@ -519,6 +521,8 @@ pub struct App {
     pub window_scale: f32,
     /// The side panel opened last (see [`crate::layout::layout_for`]).
     pub newest_panel: crate::layout::SidePanel,
+    /// Whether the room panel is open, and its tab.
+    pub room_panel: crate::room_panel::RoomPanel,
     /// The row height the list was last laid out with, so a change of the
     /// list as shown keeps the place in it.
     pub(crate) shown_row_height: f32,
@@ -740,6 +744,7 @@ impl App {
             window_width: crate::layout::DEFAULT_WINDOW_WIDTH,
             window_scale: 1.0,
             newest_panel: crate::layout::SidePanel::default(),
+            room_panel: crate::room_panel::RoomPanel::default(),
             shown_row_height: 0.0,
             load_more_at: None,
             pending_open: None,
@@ -1263,12 +1268,12 @@ impl App {
                 | Message::Pasted(_)
                 | Message::PasteFallback(_)
         );
-        let thread_before = self.threads.panel.is_some();
+        let panel_before = self.room_panel_shown();
         let call_before = self.calls.panel_shown(self.selected.as_ref());
         let resized = matches!(message, Message::WindowResized(_));
         let fills_before = self.pane_layout().panel_fills;
         let task = self.update_inner(message);
-        self.note_panels(thread_before, call_before);
+        self.note_panels(panel_before, call_before);
         let task = Task::batch([task, self.video_sync_views()]);
         // The reaction picker takes the keyboard: it must never stay open in
         // a pane the user cannot see.
@@ -1640,6 +1645,7 @@ impl App {
             Message::Spaces(message) => self.on_rail(message),
             Message::SidebarMenu(message) => self.on_sidebar_menu(message),
             Message::Threads(message) => self.on_threads(message),
+            Message::RoomPanel(message) => self.on_room_panel(message),
             Message::Shortcut { shortcut, captured } => {
                 // The rail's card and dialog are not in `keys.rs`'s list of
                 // layers (that file is not changed for them): Esc and the
@@ -2374,7 +2380,7 @@ impl App {
         crate::layout::layout_for(
             self.window_width,
             self.ui_settings.room_list,
-            self.threads.panel.is_some(),
+            self.room_panel_shown(),
             self.calls.panel_shown(self.selected.as_ref()),
             self.newest_panel,
         )
@@ -2382,14 +2388,14 @@ impl App {
 
     /// Remembers which side panel was opened last, given which were open
     /// before the message. Closing one leaves the other as it was.
-    fn note_panels(&mut self, thread_before: bool, call_before: bool) {
-        let thread = self.threads.panel.is_some();
+    fn note_panels(&mut self, panel_before: bool, call_before: bool) {
+        let panel = self.room_panel_shown();
         let call = self.calls.panel_shown(self.selected.as_ref());
         if call && !call_before {
             self.newest_panel = crate::layout::SidePanel::Call;
         }
-        if thread && !thread_before {
-            self.newest_panel = crate::layout::SidePanel::Thread;
+        if panel && !panel_before {
+            self.newest_panel = crate::layout::SidePanel::Room;
         }
     }
 
@@ -2604,7 +2610,9 @@ impl App {
     fn pane_shows_item(&self, in_thread: bool) -> bool {
         let layout = self.pane_layout();
         if in_thread {
-            layout.thread && self.threads.panel.is_some()
+            layout.room_panel
+                && self.room_panel.tab == crate::room_panel::RoomPanelTab::Thread
+                && self.threads.panel.is_some()
         } else {
             !layout.panel_fills
         }
@@ -2896,6 +2904,7 @@ impl App {
 
     pub(crate) fn deselect(&mut self) {
         self.selected = None;
+        self.room_panel.open = false;
         self.reset_threads();
         self.timeline.reset();
         self.media.reset_view();
@@ -12370,6 +12379,106 @@ mod tests {
             app.threads.panel.as_ref().expect("an open thread")
         }
 
+        // ---- the room panel (uirf.3) ----
+
+        use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
+
+        #[test]
+        fn opening_a_thread_opens_the_room_panel_on_the_thread_tab() {
+            let (mut app, _rx) = main_app();
+            assert!(!app.pane_layout().room_panel);
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("r"))));
+            assert!(app.pane_layout().room_panel);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Thread);
+        }
+
+        #[test]
+        fn switching_tabs_keeps_the_open_thread() {
+            let (mut app, mut rx) = thread_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Info,
+            )));
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Info);
+            assert!(app.pane_layout().room_panel);
+            assert!(app.threads.panel.is_some());
+            assert!(drain(&mut rx).is_empty(), "no command for a tab change");
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Thread,
+            )));
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Thread);
+            assert!(app.threads.panel.is_some());
+        }
+
+        #[test]
+        fn the_thread_tab_needs_an_open_thread() {
+            let (mut app, _rx) = main_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Members,
+            )));
+            assert!(app.pane_layout().room_panel);
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Thread,
+            )));
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Thread,
+            )));
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+        }
+
+        #[test]
+        fn closing_the_room_panel_closes_the_thread_too() {
+            let (mut app, mut rx) = thread_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Close));
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.threads.panel.is_none());
+            assert!(matches!(drain(&mut rx).as_slice(), [Command::CloseThread]));
+        }
+
+        #[test]
+        fn closing_the_thread_closes_a_panel_on_its_tab_only() {
+            let (mut app, _rx) = thread_app();
+            let _ = app.update(Message::Threads(ThreadsMessage::Close));
+            assert!(!app.pane_layout().room_panel);
+            let (mut app, _rx) = thread_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Members,
+            )));
+            let _ = app.update(Message::Threads(ThreadsMessage::Close));
+            assert!(app.pane_layout().room_panel, "Members stays open");
+        }
+
+        #[test]
+        fn the_room_panel_cannot_be_open_without_a_room() {
+            let (mut app, _rx) = main_app();
+            app.deselect();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Members,
+            )));
+            assert!(!app.pane_layout().room_panel);
+            let (mut app, _rx) = main_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Members,
+            )));
+            assert!(app.pane_layout().room_panel);
+            app.deselect();
+            assert!(!app.pane_layout().room_panel);
+            assert!(!app.room_panel.open);
+        }
+
+        #[test]
+        fn esc_closes_the_room_panel_on_any_tab() {
+            let (mut app, _rx) = main_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Info,
+            )));
+            let _ = app.update(Message::Shortcut {
+                shortcut: crate::keys::Shortcut::Escape,
+                captured: false,
+            });
+            assert!(!app.pane_layout().room_panel);
+        }
+
         // ---- spaces ----
 
         #[test]
@@ -15311,14 +15420,14 @@ mod tests {
             open_thread(&mut app);
             let _ = resize(&mut app, 1280.0);
             let wide = layout(&app);
-            assert!(wide.thread && wide.sidebar && !wide.panel_fills);
+            assert!(wide.room_panel && wide.sidebar && !wide.panel_fills);
             assert_eq!(wide.list, RoomListChoice::Expanded);
             let _ = resize(&mut app, 1000.0);
-            assert!(layout(&app).thread);
+            assert!(layout(&app).room_panel);
             assert_eq!(layout(&app).list, RoomListChoice::Rail);
             let _ = resize(&mut app, 700.0);
             let narrow = layout(&app);
-            assert!(narrow.thread && !narrow.sidebar && narrow.panel_fills);
+            assert!(narrow.room_panel && !narrow.sidebar && narrow.panel_fills);
             assert_eq!(narrow.list, RoomListChoice::Rail);
         }
 
@@ -15343,21 +15452,21 @@ mod tests {
             open_call_panel(&mut app);
             let _ = resize(&mut app, 1280.0);
             assert!(
-                layout(&app).thread && layout(&app).call,
+                layout(&app).room_panel && layout(&app).call,
                 "both are side panes"
             );
             for width in [1000.0, 700.0] {
                 let _ = resize(&mut app, width);
-                assert!(layout(&app).call && !layout(&app).thread, "{width}");
+                assert!(layout(&app).call && !layout(&app).room_panel, "{width}");
             }
             // The thread is opened again after the panel: it is the newest.
             let _ = app.update(Message::Threads(ThreadsMessage::Close));
             open_thread(&mut app);
             for width in [1000.0, 700.0] {
                 let _ = resize(&mut app, width);
-                assert!(layout(&app).thread && !layout(&app).call, "{width}");
+                assert!(layout(&app).room_panel && !layout(&app).call, "{width}");
             }
-            assert_eq!(app.newest_panel, SidePanel::Thread);
+            assert_eq!(app.newest_panel, SidePanel::Room);
         }
 
         #[test]
@@ -15431,7 +15540,10 @@ mod tests {
             assert!(!app.calls.panel_shown(app.selected.as_ref()));
             assert!(app.threads.panel.is_some(), "the waiting thread stays open");
             let now = layout(&app);
-            assert!(now.thread && now.panel_fills, "the thread takes its turn");
+            assert!(
+                now.room_panel && now.panel_fills,
+                "the thread takes its turn"
+            );
             key(&mut app, Shortcut::Escape);
             assert!(app.threads.panel.is_none());
             assert!(!layout(&app).panel_fills, "the room pane is back");
@@ -15476,7 +15588,7 @@ mod tests {
             let (mut app, mut rx) = main_app();
             reactable_thread(&mut app);
             let _ = resize(&mut app, 700.0);
-            assert!(layout(&app).panel_fills && layout(&app).thread);
+            assert!(layout(&app).panel_fills && layout(&app).room_panel);
             let _ = drain(&mut rx);
             let _ = app.update(Message::PickerOpened(THREAD_ITEM.into()));
             let picker = app.actions.picker.as_ref().expect("shown in the panel");
@@ -15491,7 +15603,7 @@ mod tests {
             reactable_thread(&mut app);
             open_call_panel(&mut app);
             let _ = resize(&mut app, 700.0);
-            assert!(layout(&app).call && !layout(&app).thread);
+            assert!(layout(&app).call && !layout(&app).room_panel);
             let _ = drain(&mut rx);
             let _ = app.update(Message::PickerOpened(THREAD_ITEM.into()));
             let _ = app.update(Message::PickerSubmitted);
@@ -15549,7 +15661,7 @@ mod tests {
             let _ = app.update(Message::PickerOpened(THREAD_ITEM.into()));
             assert!(app.actions.picker.is_some());
             let _ = resize(&mut app, 700.0);
-            assert!(!layout(&app).thread);
+            assert!(!layout(&app).room_panel);
             assert!(app.actions.picker.is_none(), "closed with the resize");
             let _ = drain(&mut rx);
             let _ = app.update(Message::PickerSubmitted);
