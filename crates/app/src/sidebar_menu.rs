@@ -41,6 +41,7 @@ use twicecat_core::api::{
 
 use crate::keys::Shortcut;
 use crate::room_list::Sorting;
+use crate::screens::main_view::AccountAction;
 use crate::sections::{Spot, drawn_sections, spot_of};
 use crate::sidebar::{Dir, FolderTarget, Op as SidebarOp, SidebarState};
 use crate::spaces::{RailItem, RailKey};
@@ -183,6 +184,9 @@ pub enum SidebarMenu {
     /// The Sort card of the room list (plan L2): the settings, not an item
     /// of the layout, so it needs no sidebar file.
     Sort,
+    /// The account card of the status bar: Settings, Voice & audio,
+    /// Sessions and Log out. Nothing of the layout, like [`Self::Sort`].
+    Account,
     /// The name dialog.
     Name(NameDialog),
 }
@@ -196,6 +200,7 @@ impl fmt::Debug for SidebarMenu {
                 .field("error", error)
                 .finish(),
             Self::Sort => f.write_str("Sort"),
+            Self::Account => f.write_str("Account"),
             Self::Name(dialog) => f.debug_tuple("Name").field(dialog).finish(),
         }
     }
@@ -359,6 +364,11 @@ pub enum SidebarMenuMessage {
     OpenList,
     /// The **Sort** button of the room list.
     OpenSort,
+    /// The account button of the status bar.
+    OpenAccount,
+    /// An entry of the account card: closes it, then does what the entry
+    /// says.
+    Account(AccountAction),
     /// A choice of the Sort card's list: Activity or A to Z.
     SetSort(RoomSortChoice),
     /// The Sort card's "Unreads first" switch.
@@ -388,6 +398,8 @@ impl fmt::Debug for SidebarMenuMessage {
             Self::OpenFlatRoom(_) => f.write_str("OpenFlatRoom(<redacted>)"),
             Self::OpenList => f.write_str("OpenList"),
             Self::OpenSort => f.write_str("OpenSort"),
+            Self::OpenAccount => f.write_str("OpenAccount"),
+            Self::Account(action) => f.debug_tuple("Account").field(action).finish(),
             Self::SetSort(sort) => f.debug_tuple("SetSort").field(sort).finish(),
             Self::UnreadFirst(on) => f.debug_tuple("UnreadFirst").field(on).finish(),
             Self::Close => f.write_str("Close"),
@@ -760,6 +772,8 @@ impl App {
             SidebarMenuMessage::OpenFlatRoom(room) => self.open_flat_room_menu(room),
             SidebarMenuMessage::OpenList => self.open_list_menu(),
             SidebarMenuMessage::OpenSort => self.open_sort_card(),
+            SidebarMenuMessage::OpenAccount => self.open_account_card(),
+            SidebarMenuMessage::Account(action) => self.choose_account_entry(action),
             SidebarMenuMessage::SetSort(by) => {
                 let sorting = Sorting {
                     by,
@@ -831,6 +845,28 @@ impl App {
         self.cancel_rail_reorder();
         self.sidebar_menu = Some(SidebarMenu::Sort);
         Task::none()
+    }
+
+    /// The account button: opens the account card, on the main screen with
+    /// no other layer over it.
+    fn open_account_card(&mut self) -> Task<Message> {
+        if self.screen != Screen::Main || self.any_overlay_open() || self.sidebar_menu.is_some() {
+            return Task::none();
+        }
+        self.list_drag.cancel();
+        self.cancel_rail_reorder();
+        self.sidebar_menu = Some(SidebarMenu::Account);
+        Task::none()
+    }
+
+    /// An entry of the account card. The card closes first, so the screen or
+    /// the warning the entry opens is not under it.
+    fn choose_account_entry(&mut self, action: AccountAction) -> Task<Message> {
+        if self.sidebar_menu != Some(SidebarMenu::Account) {
+            return Task::none();
+        }
+        self.sidebar_menu = None;
+        self.update(action.message())
     }
 
     /// The sort the settings ask for, where the user has not ordered the
@@ -1196,7 +1232,7 @@ impl App {
         match &mut self.sidebar_menu {
             Some(SidebarMenu::Card { error, .. }) => *error = Some(line),
             Some(SidebarMenu::Name(dialog)) => dialog.error = Some(line),
-            Some(SidebarMenu::Sort) | None => {}
+            Some(SidebarMenu::Sort | SidebarMenu::Account) | None => {}
         }
     }
 
@@ -1237,7 +1273,7 @@ impl App {
         };
         let gone = match menu {
             // About the settings: nothing it names can go away.
-            SidebarMenu::Sort => false,
+            SidebarMenu::Sort | SidebarMenu::Account => false,
             SidebarMenu::Card { target, .. } => self.target_gone(target),
             SidebarMenu::Name(dialog) => match &dialog.purpose {
                 Purpose::NewFolder(space) => self.target_gone(&Target::Space(space.clone())),

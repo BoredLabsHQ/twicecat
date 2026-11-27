@@ -69,6 +69,12 @@ Rules the code follows (all in tests):
   open. Esc never confirms anything. Held-down Esc repeats do not decline a
   queued verification request.
 - Closing the switcher with Esc gives the focus back to the composer.
+- The account button at the bottom right of the window opens a card with
+  Settings, Voice & audio, Sessions and, after a divider, Log out. It is a
+  card of buttons, not a drop-down list, so Ctrl + wheel (the zoom gesture)
+  never picks an entry. Esc closes it, right after the switcher like the
+  sidebar cards; each entry closes it first. Log out still goes through the
+  usual warning.
 - Ctrl+K and the room-stepping keys do nothing while another overlay covers
   the main view.
 - Ctrl+B works on the main screen only, and also over a dialog. The choice is

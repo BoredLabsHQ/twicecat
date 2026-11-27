@@ -27,6 +27,7 @@ use crate::screens::{
 };
 use crate::sessions::SessionsMessage;
 use crate::settings::SettingsMessage;
+use crate::sidebar_menu::SidebarMenuMessage;
 use crate::state::{App, Message};
 use crate::text_safety::{MAX_NAME_CHARS, name_or_placeholder, one_line_capped};
 use crate::theme;
@@ -1041,10 +1042,10 @@ pub fn account_label(user_id: Option<&UserId>) -> String {
     })
 }
 
-/// An entry of the account menu in the status bar. Log out is not one: the
-/// menu has nothing selected, and iced's `pick_list` then picks its last
-/// option on Ctrl + wheel up (the zoom gesture), so no destructive action may
-/// be in it. Log out is its own button.
+/// An entry of the account card in the status bar. The card is not a
+/// `pick_list`: a closed `pick_list` with nothing selected picks its last
+/// option on Ctrl + wheel up (the zoom gesture), which would have been Log
+/// out. A card of buttons takes no wheel, so Log out can sit in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountAction {
     /// **Settings**.
@@ -1053,14 +1054,18 @@ pub enum AccountAction {
     VoiceAudio,
     /// **Sessions**.
     Sessions,
+    /// **Log out**, which starts the usual logout flow (and its warning).
+    LogOut,
 }
 
 impl AccountAction {
-    /// The menu's entries, in order. Log out is deliberately absent: the
-    /// menu is a `pick_list` with nothing selected, and Ctrl + wheel up (the
-    /// zoom gesture) makes it pick its last entry, which must never be
-    /// destructive. Log out is a separate button, see [`log_out_message`].
-    pub const ALL: [Self; 3] = [Self::Settings, Self::VoiceAudio, Self::Sessions];
+    /// The card's entries, in order. Log out is last, after a divider.
+    pub const ALL: [Self; 4] = [
+        Self::Settings,
+        Self::VoiceAudio,
+        Self::Sessions,
+        Self::LogOut,
+    ];
 
     /// The message choosing the entry sends.
     pub fn message(self) -> Message {
@@ -1068,6 +1073,7 @@ impl AccountAction {
             Self::Settings => Message::Settings(SettingsMessage::Open),
             Self::VoiceAudio => Message::Audio(AudioMessage::Open),
             Self::Sessions => Message::Sessions(SessionsMessage::Open),
+            Self::LogOut => Message::LogoutRequested,
         }
     }
 }
@@ -1078,13 +1084,51 @@ impl fmt::Display for AccountAction {
             Self::Settings => "Settings",
             Self::VoiceAudio => "Voice & audio",
             Self::Sessions => "Sessions",
+            Self::LogOut => "Log out",
         })
     }
 }
 
-/// What the status bar's **Log out** button sends.
-pub fn log_out_message() -> Message {
-    Message::LogoutRequested
+/// The account card: Settings, Voice & audio, Sessions, a divider, and Log
+/// out. It follows the Sort card: a [`kit::dialog`] with a close button.
+/// Every choice sends [`SidebarMenuMessage::Account`], which closes the card
+/// and then does what the old menu entry did.
+pub fn account_card(app: &App, window_height: f32) -> Element<'_, Message> {
+    let close = || Message::SidebarMenu(SidebarMenuMessage::Close);
+    let entry = |action: AccountAction| {
+        let press = Some(Message::SidebarMenu(SidebarMenuMessage::Account(action)));
+        if action == AccountAction::LogOut {
+            kit::danger_button(action.to_string(), press)
+        } else {
+            kit::secondary_button(action.to_string(), press)
+        }
+        .width(Fill)
+    };
+    let body = column![
+        entry(AccountAction::Settings),
+        entry(AccountAction::VoiceAudio),
+        entry(AccountAction::Sessions),
+        kit::divider(),
+        entry(AccountAction::LogOut),
+    ]
+    .spacing(tokens::S);
+    let label = account_label(app.user_id.as_ref());
+    kit::dialog(
+        kit::dialog_header(
+            if label.is_empty() {
+                "Account".to_owned()
+            } else {
+                label
+            },
+            close(),
+        ),
+        body.into(),
+        Some(kit::dialog_footer(vec![
+            kit::secondary_button("Close", Some(close())).into(),
+        ])),
+        crate::screens::sidebar_menu::CARD_WIDTH,
+        window_height,
+    )
 }
 
 /// How well the sync is going, for the colour of the status dot. The words
@@ -1103,8 +1147,8 @@ pub fn sync_text(state: &SyncState) -> String {
     format!("Sync: {}", sync_label(state))
 }
 
-/// A thin line, then the sync dot with words, the account and the account
-/// menu (Settings, Voice & audio, Sessions), then a Log out button.
+/// A thin line, then the sync dot with words and the account button (the
+/// avatar, the account and a chevron), which opens the account card.
 fn status_bar(app: &App) -> Element<'_, Message> {
     let account = account_label(app.user_id.as_ref());
     let severity = sync_severity(&app.sync_state);
@@ -1113,19 +1157,25 @@ fn status_bar(app: &App) -> Element<'_, Message> {
             text_color: Some(severity.color(theme)),
             ..container::Style::default()
         });
-    let menu = kit::menu(
-        pick_list(AccountAction::ALL, None::<AccountAction>, |action| {
-            action.message()
-        })
-        .placeholder(if account.is_empty() {
-            "Account".to_owned()
-        } else {
-            account
-        })
-        .text_size(tokens::BODY)
+    let mut who = row![].spacing(tokens::S).align_y(iced::Center);
+    if let Some(id) = &app.user_id {
+        who = who.push(kit::avatar_sized(id, &account, None, &app.avatars, 20.0));
+    }
+    who = who
+        .push(
+            text(if account.is_empty() {
+                "Account".to_owned()
+            } else {
+                account
+            })
+            .size(tokens::BODY)
+            .wrapping(Wrapping::None),
+        )
+        .push(icons::icon(Icon::SectionOpen));
+    let button = button(who)
+        .on_press(Message::SidebarMenu(SidebarMenuMessage::OpenAccount))
         .padding([tokens::XS, tokens::S])
-        .style(kit::menu_style),
-    );
+        .style(kit::secondary_style);
     column![
         kit::divider(),
         container(
@@ -1135,8 +1185,7 @@ fn status_bar(app: &App) -> Element<'_, Message> {
                     .size(tokens::CAPTION)
                     .style(kit::muted),
                 space().width(Fill),
-                menu,
-                kit::secondary_button("Log out", Some(log_out_message())),
+                button,
             ]
             .spacing(tokens::S)
             .align_y(iced::Center),
@@ -1168,25 +1217,26 @@ mod tests {
     }
 
     #[test]
-    fn the_status_bar_still_reaches_every_message_the_old_one_sent() {
-        // The old bar was one pick_list: Settings, Sessions, Log out. Settings
-        // and Sessions are menu entries now; Log out is its own button.
-        assert_eq!(debug(&log_out_message()), debug(&Message::LogoutRequested));
-        let menu: Vec<String> = AccountAction::ALL
+    fn the_account_card_reaches_every_message_the_old_bar_sent() {
+        // The old bar was one pick_list (Settings, Sessions, Log out) and a
+        // Log out button. All of them are entries of the card now, and Log
+        // out is reachable only from there.
+        let card: Vec<String> = AccountAction::ALL
             .into_iter()
             .map(|a| debug(&a.message()))
             .collect();
         for old in [
             Message::Settings(SettingsMessage::Open),
             Message::Sessions(SessionsMessage::Open),
+            Message::LogoutRequested,
         ] {
-            assert!(menu.contains(&debug(&old)), "{old:?} unreachable");
+            assert!(card.contains(&debug(&old)), "{old:?} unreachable");
         }
     }
 
     #[test]
-    fn the_account_menu_has_no_log_out_and_adds_voice_and_audio() {
-        let menu: Vec<(String, String)> = AccountAction::ALL
+    fn the_account_card_lists_four_entries_with_log_out_last() {
+        let card: Vec<(String, String)> = AccountAction::ALL
             .into_iter()
             .map(|a| (a.to_string(), debug(&a.message())))
             .collect();
@@ -1197,12 +1247,19 @@ mod tests {
                 debug(&Message::Audio(crate::audio_settings::AudioMessage::Open)),
             ),
             ("Sessions", debug(&Message::Sessions(SessionsMessage::Open))),
+            ("Log out", debug(&Message::LogoutRequested)),
         ];
         let expect: Vec<(String, String)> = expect
             .into_iter()
             .map(|(label, msg)| (label.to_owned(), msg))
             .collect();
-        assert_eq!(menu, expect);
+        assert_eq!(card, expect);
+    }
+
+    #[test]
+    fn the_account_card_builds() {
+        let app = app();
+        let _ = account_card(&app, 600.0);
     }
 
     #[test]

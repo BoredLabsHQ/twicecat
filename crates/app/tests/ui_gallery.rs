@@ -409,6 +409,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "room-list-chips",
         "room-list-sort",
         "room-list-card",
+        "main-account-menu",
         "space-sections",
         "space-sections-collapsed",
         "space-sections-tags",
@@ -517,16 +518,25 @@ fn the_room_pane_keeps_its_place_as_panels_bars_and_banners_come_and_go() {
 }
 
 /// Ctrl + mouse wheel over a closed `pick_list` with nothing selected picks
-/// its last (wheel up) or first (wheel down) option. The account box has
-/// nothing selected, so Log out must not be one of its options: Ctrl + wheel
-/// is the zoom gesture.
+/// its last (wheel up) or first (wheel down) option. The account button opens
+/// a card of buttons, not a `pick_list`, so Log out is never picked by the
+/// wheel, with the card closed or open: Ctrl + wheel is the zoom gesture.
 #[test]
 fn ctrl_wheel_over_the_status_bar_never_logs_out() {
+    for open in [false, true] {
+        ctrl_wheel_never_logs_out(open);
+    }
+}
+
+fn ctrl_wheel_never_logs_out(card_open: bool) {
     use iced::keyboard::{self, Modifiers};
     use iced::{Point, mouse::ScrollDelta};
     let renderer = renderer();
     let mut app = fixture::main_room();
     app.set_ui_settings(variants(false)[0].settings());
+    if card_open {
+        app.sidebar_menu = Some(twicecat_app::sidebar_menu::SidebarMenu::Account);
+    }
     let mut laid = Laid::new(&app, &renderer, WIDE);
     laid.settle(&renderer, WIDE);
     let mut messages: Vec<Message> = Vec::new();
@@ -545,7 +555,12 @@ fn ctrl_wheel_over_the_status_bar_never_logs_out() {
     };
     let ctrl = Event::Keyboard(keyboard::Event::ModifiersChanged(Modifiers::CTRL));
     deliver(&mut laid, ctrl, Point::new(1.0, 1.0));
-    for y in [WIDE.height - 30.0, WIDE.height - 22.0, WIDE.height - 14.0] {
+    for y in [
+        WIDE.height - 30.0,
+        WIDE.height - 22.0,
+        WIDE.height - 14.0,
+        WIDE.height / 2.0,
+    ] {
         for step in 0..160 {
             let at = Point::new(step as f32 * 8.0, y);
             for dy in [1.0, -1.0] {
@@ -741,33 +756,65 @@ fn collect_bounds(
     }
 }
 
-/// Finds the "Log out" button by clicking along the status bar: the real
-/// button must emit `LogoutRequested`.
+/// Log out is only in the account card (UI review fixes, Task 1): no click
+/// in the closed window sends it, the account button opens the card, and a
+/// click in the open card finds the Log out entry.
 #[test]
-fn clicking_the_log_out_button_requests_a_logout() {
+fn log_out_is_reachable_only_from_the_account_card() {
+    use twicecat_app::screens::main_view::AccountAction;
+    use twicecat_app::sidebar_menu::{SidebarMenu, SidebarMenuMessage};
     let renderer = renderer();
+    let is_log_out = |m: &Message| {
+        matches!(
+            m,
+            Message::LogoutRequested
+                | Message::SidebarMenu(SidebarMenuMessage::Account(AccountAction::LogOut))
+        )
+    };
     let mut app = fixture::main_room();
     app.set_ui_settings(variants(false)[0].settings());
+    // Closed: click the centre of every node; none logs out, and the account
+    // button opens the card.
     let mut laid = Laid::new(&app, &renderer, WIDE);
     laid.settle(&renderer, WIDE);
-    // The status bar is the last child of the main column; walk its nodes
-    // (leaves first) and click the centre of each until one logs out.
     let mut all = Vec::new();
     collect_bounds(&laid.node, iced::Point::ORIGIN, &mut all, 0);
-    let bar_top = WIDE.height - 60.0;
-    let mut hits = 0;
-    for (rect, _) in all.iter().filter(|(r, _)| r.y >= bar_top && r.width > 0.0) {
-        let at = rect.center();
-        let messages = click(&mut laid, &renderer, WIDE, at);
+    let mut opens = 0;
+    for (rect, _) in all.iter().filter(|(r, _)| r.width > 0.0 && r.height > 0.0) {
+        let messages = click(&mut laid, &renderer, WIDE, rect.center());
+        assert!(
+            !messages.iter().any(is_log_out),
+            "a click outside the card logged out"
+        );
         if messages
             .iter()
-            .any(|m| matches!(m, Message::LogoutRequested))
+            .any(|m| matches!(m, Message::SidebarMenu(SidebarMenuMessage::OpenAccount)))
         {
+            opens += 1;
+        }
+    }
+    assert!(opens > 0, "no click opened the account card");
+    // Open: one entry logs out.
+    drop(laid);
+    app.sidebar_menu = Some(SidebarMenu::Account);
+    let mut laid = Laid::new(&app, &renderer, WIDE);
+    laid.settle(&renderer, WIDE);
+    let mut all = Vec::new();
+    collect_bounds(&laid.node, iced::Point::ORIGIN, &mut all, 0);
+    let mut hits = 0;
+    for (rect, _) in all.iter().filter(|(r, _)| r.width > 0.0 && r.height > 0.0) {
+        let messages = click(&mut laid, &renderer, WIDE, rect.center());
+        if messages.iter().any(|m| {
+            matches!(
+                m,
+                Message::SidebarMenu(SidebarMenuMessage::Account(AccountAction::LogOut))
+            )
+        }) {
             hits += 1;
             break;
         }
     }
-    assert_eq!(hits, 1, "no click in the status bar logged out");
+    assert_eq!(hits, 1, "no click in the card logged out");
 }
 
 /// Tallest the header may be: avatar row, tags, the ID on three lines and one

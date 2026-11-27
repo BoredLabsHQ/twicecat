@@ -1512,6 +1512,19 @@ fn room_list_chips() -> App {
     app
 }
 
+/// The account card open over the main screen (UI review fixes, Task 1):
+/// Settings, Voice & audio, Sessions, and Log out under a divider.
+fn main_account_menu() -> App {
+    use twicecat_app::sidebar_menu::SidebarMenuMessage;
+
+    let mut app = main_room();
+    press(
+        &mut app,
+        Message::SidebarMenu(SidebarMenuMessage::OpenAccount),
+    );
+    app
+}
+
 /// The Sort card open with A to Z and "Unreads first" chosen, over the list
 /// in that order (sidebar rework, Task 8).
 fn room_list_sort() -> App {
@@ -4395,6 +4408,9 @@ pub fn scenarios() -> Vec<Scenario> {
             in_main(a)
                 && a.query.tab == twicecat_core::api::RoomListTab::Unreads
                 && a.selected.is_none()
+        }),
+        s("main-account-menu", true, main_account_menu, |a| {
+            in_main(a) && a.sidebar_menu == Some(twicecat_app::sidebar_menu::SidebarMenu::Account)
         }),
         s("room-list-sort", true, room_list_sort, |a| {
             in_main(a)

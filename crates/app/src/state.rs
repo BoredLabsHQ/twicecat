@@ -4531,6 +4531,73 @@ mod tests {
         }
 
         #[test]
+        fn the_account_card_opens_closes_with_esc_and_closes_after_each_choice() {
+            use crate::screens::main_view::AccountAction;
+            let esc = Message::Shortcut {
+                shortcut: Shortcut::Escape,
+                captured: false,
+            };
+            let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+            send(&mut app, M::OpenAccount);
+            assert_eq!(app.sidebar_menu, Some(SidebarMenu::Account));
+            let _ = app.update(esc.clone());
+            assert!(app.sidebar_menu.is_none(), "Esc closes the card");
+            // The switcher is over the card and takes Esc first.
+            send(&mut app, M::OpenAccount);
+            let _ = app.update(Message::Shortcut {
+                shortcut: Shortcut::Switcher,
+                captured: false,
+            });
+            let _ = app.update(esc.clone());
+            assert!(!app.switcher.open && app.sidebar_menu.is_some());
+            let _ = app.update(esc);
+            assert!(app.sidebar_menu.is_none());
+            // Every entry sends what it sent in the old menu and closes.
+            for action in [
+                AccountAction::Settings,
+                AccountAction::VoiceAudio,
+                AccountAction::Sessions,
+            ] {
+                let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+                send(&mut app, M::OpenAccount);
+                send(&mut app, M::Account(action));
+                assert!(app.sidebar_menu.is_none(), "{action:?} closes the card");
+                match action {
+                    AccountAction::Settings => assert!(app.settings_open()),
+                    // The card opens only while the audio is live; the
+                    // message it sends is checked in `main_view`.
+                    AccountAction::VoiceAudio => {}
+                    AccountAction::Sessions => assert!(app.sessions.open),
+                    AccountAction::LogOut => unreachable!(),
+                }
+            }
+        }
+
+        #[test]
+        fn log_out_in_the_account_card_asks_through_the_logout_flow() {
+            use crate::screens::main_view::AccountAction;
+            let (mut app, mut rx) = main_app();
+            send(&mut app, M::OpenAccount);
+            send(&mut app, M::Account(AccountAction::LogOut));
+            assert!(app.sidebar_menu.is_none());
+            // Either the warning is up, or the logout went out: the same as
+            // `Message::LogoutRequested` does.
+            let sent = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+            assert!(
+                app.sessions.logout_warning || matches!(sent.as_slice(), [Command::Logout]),
+                "{sent:?}"
+            );
+        }
+
+        #[test]
+        fn the_account_card_does_not_open_over_another_layer() {
+            let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+            let _ = app.update(Message::Settings(SettingsMessage::Open));
+            send(&mut app, M::OpenAccount);
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
         fn the_room_stepping_chords_and_the_composer_wait_under_the_card() {
             let (mut app, mut rx) = main_app();
             let store = MemorySidebar::default();
