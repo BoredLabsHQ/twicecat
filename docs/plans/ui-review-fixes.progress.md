@@ -67,3 +67,4 @@ Task 8: done (uirf.8)
 Task 8: complete (7c7034d..7b5525c, gate ok, security PASS, review PASS, evidence PROVEN for the headless parts)
   evidence: docs/plans/ui-review-fixes.evidence/task-8.md
   notes: security Low fixed by fixup: encryption_of now falls back to Unknown (only the SDK's NotEncrypted maps to NotEncrypted). TO FIX (docs wording, as a fixup of the Task 8 commit, done by the Task 9 implementer): PROGRESS.md Step 8 and the Task 8 note say the mapping uses is_encrypted() and is_unknown(); the code uses is_encrypted() and matches!(NotEncrypted), never is_unknown(). Not run: twicecat-cli against the local homeserver (needs Docker) - human checkpoint. Suggestion: test of StateEncrypted under --features experimental-encrypted-state-events; the fallback-to-Unknown branch has no test of its own (SDK enum has no unrecognised variant today). Autosquashed.
+Task 9: started
