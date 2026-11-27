@@ -36,3 +36,4 @@ Task 4: done (uirf.4)
 Task 4: complete (fdbe611..65c53fd, gate ok, security PASS, review PASS, evidence PROVEN)
   evidence: docs/plans/ui-review-fixes.evidence/task-4.md
   notes: FOR TASK 5: Info tab still stays open across a room switch and room settings (modal) closes the Members tab without restoring it; Info content must read only the selected room's data. Lows: room-list failures not claimed by a dialog can land in members_panel.status (rooms.rs on_rooms_failed never compares room) ; Members tab can show "Loading members..." forever for an invitation (make tab_available(Members) require panel_room().is_some()); CloseMembers may have no caller; duplicate "Loading members" empty state; overlong members.rs module doc line. Tests not red-first (compile-red). Invite-still-modal not separately tested. Gallery room-panel-members PNGs not produced under that name (members* scenarios cover it). Real window = human.
+Task 5: started
