@@ -6,3 +6,4 @@ Task 1: done (uirf.1)
 Task 1: complete (b523e1b..866a209, gate ok, security PASS, review PASS, evidence PROVEN)
   evidence: docs/plans/ui-review-fixes.evidence/task-1.md
   notes: Low: Log out runs at once when no warning is needed (as before, now two clicks); Voice & audio entry not asserted end to end in state tests; AccountAction lives in screens::main_view and sidebar_menu imports it (layering); "Account" fallback label duplicated. Card is a centred dialog like the Sort card, not a drop-down under the button - human to confirm. Own avatar is placeholder initials. Real window = human.
+Task 2: started
