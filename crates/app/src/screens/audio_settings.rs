@@ -18,10 +18,11 @@ use twicecat_ptt::{KeyboardBackend, Source};
 
 use crate::audio_settings::{
     AUTO_GAIN_MAX_RANGE, AudioMessage, AudioPage, AudioUi, ButtonChoice, CLEANING_LIMIT_RANGE,
-    GpuView, INPUT_GAIN_RANGE, LevelChoice, ModeChoice, MouseChoice, NO_GPU_FOUND, NoiseChoice,
+    GpuView, INPUT_GAIN_RANGE, LevelChoice, ModeChoice, NO_GPU_FOUND, NoiseChoice,
     RELEASE_DELAY_RANGE, SimpleNoise, SkipChoice, Slider, THRESHOLD_RANGE, backend_label,
-    bitrate_menu, device_menu, diagnostic_rows, diagnostics, dropout_words, gpu_name, gpu_status,
-    gpu_used, gpu_view, key_label, meter, meter_zone, mic_status, unloaded_mic_words, zone_words,
+    binding_words, bitrate_menu, device_menu, diagnostic_rows, diagnostics, dropout_words,
+    gpu_name, gpu_status, gpu_used, gpu_view, meter, meter_zone, mic_status, unloaded_mic_words,
+    zone_words,
 };
 use crate::ptt::{BadBinding, SourceState};
 use crate::state::{App, Message};
@@ -493,8 +494,6 @@ fn talking_page<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Me
         InputMode::PushToTalk { .. } => {
             page = page
                 .push(key_row(app, settings))
-                .push(labelled("Mouse button", mouse_menu(settings)))
-                .push(note(mouse_note(app.ptt.keyboard())))
                 .push(labelled("Gamepad button", button_menu(settings)))
                 .push(a_slider(
                     &app.audio_ui,
@@ -553,12 +552,13 @@ pub const CAPTURING_HINT: &str = "Press the key together with the modifiers you 
 /// where it is when the capture starts or ends.
 fn key_row<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Message> {
     let ui = &app.audio_ui;
-    let bound = settings.push_to_talk.key.as_deref();
+    let bindings = &settings.push_to_talk;
+    let bound = bindings.key.as_deref().or(bindings.mouse_button.as_deref());
     let shown = if ui.capturing {
         words(CAPTURING_WORDS).size(tokens::BODY_LARGE)
     } else {
         words(one_line_capped(
-            &bound.map_or_else(|| "None".to_owned(), key_label),
+            &binding_words(bindings.key.as_deref(), bindings.mouse_button.as_deref()),
             MAX_IDENTIFIER_CHARS,
         ))
         .font(fonts::MONO)
@@ -583,18 +583,11 @@ fn key_row<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Message
     } else {
         space().into()
     };
-    column![labelled("Key", control.into()), hint]
-        .spacing(tokens::XS)
-        .into()
-}
-
-fn mouse_menu(settings: &AudioSettings) -> Element<'_, Message> {
-    let (menu, chosen) = MouseChoice::menu(settings.push_to_talk.mouse_button.as_deref());
-    kit::menu(
-        pick_list(menu, Some(chosen), |c| msg(AudioMessage::Mouse(c)))
-            .style(kit::menu_style)
-            .width(Fill),
-    )
+    let mut rows = column![labelled("Push-to-talk key", control.into()), hint].spacing(tokens::XS);
+    if bindings.mouse_button.is_some() {
+        rows = rows.push(note(mouse_note(app.ptt.keyboard())));
+    }
+    rows.into()
 }
 
 fn button_menu(settings: &AudioSettings) -> Element<'_, Message> {

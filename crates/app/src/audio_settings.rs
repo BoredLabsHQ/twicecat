@@ -308,59 +308,30 @@ impl fmt::Display for ButtonChoice {
     }
 }
 
-/// An entry of the mouse button menu.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MouseChoice {
-    /// No button.
-    None,
-    /// A button.
-    Button(MouseButton),
-    /// The saved button is not one this system has (shown, not offered).
-    Unknown,
-}
-
-impl MouseChoice {
-    /// The menu: none, the middle button and the two side buttons; plus the
-    /// saved one when it is another (set with **Set key…**) or unknown.
-    pub fn menu(saved: Option<&str>) -> (Vec<Self>, Self) {
-        let mut menu = vec![
-            Self::None,
-            Self::Button(MouseButton::MIDDLE),
-            Self::Button(MouseButton::BACK),
-            Self::Button(MouseButton::FORWARD),
-        ];
-        let chosen = match saved.map(str::parse::<MouseButton>) {
-            None => Self::None,
-            Some(Ok(button)) => Self::Button(button),
-            Some(Err(_)) => Self::Unknown,
-        };
-        if !menu.contains(&chosen) {
-            menu.push(chosen);
-        }
-        (menu, chosen)
-    }
-}
-
-impl fmt::Display for MouseChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::None => f.write_str("None"),
-            Self::Unknown => f.write_str("Saved button (not recognised)"),
-            Self::Button(button) => f.write_str(&mouse_label(*button)),
-        }
-    }
-}
-
-/// A mouse button as the menu names it.
+/// A mouse button as the key row and the status words name it.
 pub fn mouse_label(button: MouseButton) -> String {
     if let Some(number) = button.number() {
-        format!("Button {number}")
+        format!("Mouse button {number}")
     } else if button == MouseButton::MIDDLE {
         "Middle button (wheel click)".to_owned()
     } else if button == MouseButton::BACK {
         "Back side button (mouse 4)".to_owned()
     } else {
         "Forward side button (mouse 5)".to_owned()
+    }
+}
+
+/// The push-to-talk binding as the key row shows it: the key, the mouse
+/// button, both joined by "or" (an older file), else "None".
+pub fn binding_words(key: Option<&str>, mouse: Option<&str>) -> String {
+    let mouse = mouse.map(|m| {
+        m.parse::<MouseButton>()
+            .map_or_else(|_| "Mouse button".to_owned(), mouse_label)
+    });
+    match (key.map(key_label), mouse) {
+        (Some(key), Some(mouse)) => format!("{key} or {mouse}"),
+        (Some(one), None) | (None, Some(one)) => one,
+        (None, None) => "None".to_owned(),
     }
 }
 
@@ -1186,7 +1157,6 @@ impl AudioPage {
                 "Captured",
                 "CapturedMouse",
                 "ClearKey",
-                "Mouse",
                 "Button",
                 "Slide",
                 "SlideReleased",
@@ -1364,8 +1334,6 @@ pub enum AudioMessage {
     CapturedMouse(iced::mouse::Button),
     /// **Clear** beside the key.
     ClearKey,
-    /// The mouse button menu.
-    Mouse(MouseChoice),
     /// The gamepad button menu.
     Button(ButtonChoice),
 }
@@ -1414,7 +1382,6 @@ impl AudioMessage {
             Self::Captured(_) => "Captured",
             Self::CapturedMouse(_) => "CapturedMouse",
             Self::ClearKey => "ClearKey",
-            Self::Mouse(_) => "Mouse",
             Self::Button(_) => "Button",
         }
     }
@@ -1572,28 +1539,29 @@ impl App {
                 }
                 Capture::Bound(binding) => {
                     self.stop_capture();
-                    self.edit_audio(|s| s.push_to_talk.key = Some(binding))
+                    self.edit_audio(|s| {
+                        s.push_to_talk.key = Some(binding);
+                        s.push_to_talk.mouse_button = None;
+                    })
                 }
             },
             M::CapturedMouse(_) if !self.audio_ui.capturing => Task::none(),
             M::CapturedMouse(button) => match crate::ptt::mouse_binding(button) {
                 Some(binding) => {
                     self.stop_capture();
-                    self.edit_audio(|s| s.push_to_talk.mouse_button = Some(binding.to_string()))
+                    self.edit_audio(|s| {
+                        s.push_to_talk.mouse_button = Some(binding.to_string());
+                        s.push_to_talk.key = None;
+                    })
                 }
                 None => {
                     self.audio_ui.capture_note = Some(UNBINDABLE_MOUSE);
                     Task::none()
                 }
             },
-            M::ClearKey => self.edit_audio(|s| s.push_to_talk.key = None),
-            M::Mouse(choice) => self.edit_audio(|s| {
-                s.push_to_talk.mouse_button = match choice {
-                    MouseChoice::None => None,
-                    MouseChoice::Button(button) => Some(button.to_string()),
-                    // Not offered; picking it again keeps what is saved.
-                    MouseChoice::Unknown => s.push_to_talk.mouse_button.take(),
-                };
+            M::ClearKey => self.edit_audio(|s| {
+                s.push_to_talk.key = None;
+                s.push_to_talk.mouse_button = None;
             }),
             M::Button(choice) => self.edit_audio(|s| {
                 s.push_to_talk.gamepad_button = match choice {
@@ -2801,42 +2769,59 @@ mod tests {
         }
 
         #[test]
-        fn the_mouse_menu_offers_the_middle_and_side_buttons_and_keeps_the_saved_one() {
-            let (menu, chosen) = MouseChoice::menu(Some("back"));
-            assert_eq!(menu.len(), 4);
-            assert_eq!(chosen, MouseChoice::Button(MouseButton::BACK));
-            assert_eq!(chosen.to_string(), "Back side button (mouse 4)");
-            let labels: std::collections::HashSet<String> =
-                menu.iter().map(ToString::to_string).collect();
-            assert_eq!(labels.len(), menu.len(), "every label differs");
-            assert_eq!(MouseChoice::menu(None).1, MouseChoice::None);
-            let (menu, chosen) = MouseChoice::menu(Some("left"));
-            assert_eq!(chosen, MouseChoice::Unknown);
-            assert_eq!(menu.last(), Some(&MouseChoice::Unknown));
-            // A numbered button set with Set key... is shown, where the
-            // system has them.
-            if let Some(twelve) = MouseButton::other(12) {
-                let (menu, chosen) = MouseChoice::menu(Some("button12"));
-                assert_eq!(chosen, MouseChoice::Button(twelve));
-                assert_eq!(menu.last(), Some(&chosen));
-                assert_eq!(chosen.to_string(), "Button 12");
+        fn mouse_buttons_read_in_words_and_in_the_key_row() {
+            if let Some(_twelve) = MouseButton::other(12) {
                 assert_eq!(mouse_words("button12"), "mouse button 12");
+                assert_eq!(binding_words(None, Some("button12")), "Mouse button 12");
             }
             assert_eq!(mouse_words("middle"), "the middle mouse button");
             assert_eq!(mouse_words("forward"), "the forward side button (mouse 5)");
             assert_eq!(mouse_words("nonsense"), "the mouse button");
+            assert_eq!(binding_words(None, None), "None");
+            assert_eq!(binding_words(Some("ctrl+shift+KeyT"), None), "Ctrl+Shift+T");
+            assert_eq!(
+                binding_words(None, Some("back")),
+                "Back side button (mouse 4)"
+            );
+            assert_eq!(binding_words(None, Some("left")), "Mouse button");
+            assert_eq!(
+                binding_words(Some("F13"), Some("middle")),
+                "F13 or Middle button (wheel click)",
+                "an older file with both shows both"
+            );
+        }
 
+        #[test]
+        fn capturing_one_kind_replaces_the_other() {
+            use iced::mouse::Button as B;
             let (mut app, mut rx) = card();
-            let forward = MouseChoice::Button(MouseButton::FORWARD);
-            let _ = app.update(audio(AudioMessage::Mouse(forward)));
+            let _ = app.update(audio(AudioMessage::CaptureKey));
+            let _ = app.update(audio(AudioMessage::CapturedMouse(B::Back)));
             let s = sent_one(&mut rx);
-            assert_eq!(s.push_to_talk.mouse_button.as_deref(), Some("forward"));
-            assert_eq!(s.push_to_talk.key, stored().push_to_talk.key);
+            assert_eq!(s.push_to_talk.mouse_button.as_deref(), Some("back"));
+            assert_eq!(s.push_to_talk.key, None, "the key is cleared");
+            assert_eq!(
+                s.push_to_talk.gamepad_button,
+                stored().push_to_talk.gamepad_button
+            );
             let _ = app.update(core(CoreEvent::AudioSettings(s)));
-            let _ = app.update(audio(AudioMessage::Mouse(MouseChoice::None)));
-            assert_eq!(sent_one(&mut rx).push_to_talk.mouse_button, None);
-            let _ = app.update(audio(AudioMessage::Mouse(MouseChoice::Unknown)));
-            assert!(drain(&mut rx).is_empty(), "not offered: nothing changes");
+            let _ = app.update(audio(AudioMessage::CaptureKey));
+            let _ = app.update(key(Code::KeyY, Modifiers::CTRL));
+            let s = sent_one(&mut rx);
+            assert!(s.push_to_talk.key.is_some());
+            assert_eq!(s.push_to_talk.mouse_button, None, "the mouse is cleared");
+        }
+
+        #[test]
+        fn clear_clears_both_kinds() {
+            let (mut app, mut rx) = card();
+            let mut both = stored();
+            both.push_to_talk.mouse_button = Some("back".into());
+            let _ = app.update(core(CoreEvent::AudioSettings(both)));
+            let _ = app.update(audio(AudioMessage::ClearKey));
+            let s = sent_one(&mut rx);
+            assert_eq!(s.push_to_talk.key, None);
+            assert_eq!(s.push_to_talk.mouse_button, None);
         }
 
         #[test]
@@ -2858,11 +2843,7 @@ mod tests {
             let _ = app.update(audio(AudioMessage::CapturedMouse(B::Middle)));
             let s = sent_one(&mut rx);
             assert_eq!(s.push_to_talk.mouse_button.as_deref(), Some("middle"));
-            assert_eq!(
-                s.push_to_talk.key,
-                stored().push_to_talk.key,
-                "the key stays"
-            );
+            assert_eq!(s.push_to_talk.key, None, "the key is replaced");
             assert!(!app.audio_ui.capturing);
             // No system numbers another button 3 (winit names it, or it is
             // a click or the wheel).
@@ -3189,7 +3170,6 @@ mod tests {
                 AudioMessage::Captured(key),
                 AudioMessage::CapturedMouse(iced::mouse::Button::Back),
                 AudioMessage::ClearKey,
-                AudioMessage::Mouse(MouseChoice::None),
                 AudioMessage::Button(ButtonChoice::None),
             ]
         }

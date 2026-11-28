@@ -3860,7 +3860,6 @@ mod audio {
             "Bitrate",
             "Skip",
             "Mode",
-            "Mouse",
             "Button",
             // A key or mouse button press, and a timer.
             "Captured",
