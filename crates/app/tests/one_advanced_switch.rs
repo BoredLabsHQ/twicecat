@@ -6,6 +6,12 @@
 use std::fs;
 use std::path::Path;
 
+/// A path with forward slashes, so the suffix checks below hold on Windows,
+/// where `Path::display` writes backslashes.
+fn slashed(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 fn sources(dir: &Path, out: &mut Vec<(String, String)>) {
     for entry in fs::read_dir(dir).expect("a readable source dir") {
         let path = entry.expect("a dir entry").path();
@@ -13,7 +19,7 @@ fn sources(dir: &Path, out: &mut Vec<(String, String)>) {
             sources(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
             let text = fs::read_to_string(&path).expect("a readable source file");
-            out.push((path.display().to_string(), text));
+            out.push((slashed(&path.display().to_string()), text));
         }
     }
 }
@@ -90,4 +96,10 @@ fn there_is_no_more_audio_options_button() {
             "{name} still has the button to the separate audio card"
         );
     }
+}
+
+#[test]
+fn a_windows_path_is_matched_by_its_forward_slash_suffix() {
+    let name = slashed(r"C:\work\crates\app\src\audio_settings.rs");
+    assert!(name.ends_with("src/audio_settings.rs"), "{name}");
 }

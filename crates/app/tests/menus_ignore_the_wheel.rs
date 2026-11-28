@@ -11,6 +11,12 @@
 use std::fs;
 use std::path::Path;
 
+/// A path with forward slashes, so the suffix checks below hold on Windows,
+/// where `Path::display` writes backslashes.
+fn slashed(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 fn sources(dir: &Path, out: &mut Vec<(String, String)>) {
     for entry in fs::read_dir(dir).expect("a readable source dir") {
         let path = entry.expect("a dir entry").path();
@@ -18,7 +24,7 @@ fn sources(dir: &Path, out: &mut Vec<(String, String)>) {
             sources(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
             let text = fs::read_to_string(&path).expect("a readable source file");
-            out.push((path.display().to_string(), text));
+            out.push((slashed(&path.display().to_string()), text));
         }
     }
 }
@@ -217,4 +223,11 @@ fn the_scan_tells_a_wrapped_widget_from_a_bare_one() {
     assert_eq!(bare("a_slider(ui, settings)", "slider"), 0);
     assert_eq!(bare("fn limit_slider(ui: u8)", "slider"), 0);
     assert_eq!(bare("// slider(0..=1, v, f)", "slider"), 0);
+}
+
+#[test]
+fn a_windows_path_is_matched_by_its_forward_slash_suffix() {
+    let name = slashed(r"C:\work\crates\app\src\screens\room_list_pane.rs");
+    assert!(name.ends_with("screens/room_list_pane.rs"), "{name}");
+    assert_eq!(slashed("src/a.rs"), "src/a.rs");
 }
