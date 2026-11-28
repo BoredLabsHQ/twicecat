@@ -137,6 +137,7 @@ Force-pushes: none recorded in this ledger; the controller asks the human before
 Thanks for the review. Every point is addressed on the branch; here is where each went.
 
 1. Settings hard to find: a labelled **Settings** button at the top right of a new top bar.
+1. (corrected) Settings hard to find: Settings is in the account menu (the username drop-down) as before, and Ctrl+, opens it; it was not given a separate top-bar button, by decision.
 2. Members / info / settings hard to find: one room panel on the right with **Members**, **Info** and **Thread** tabs, opened by labelled toggles in the room header; the two modals are gone.
 3. Log out next to the account switcher: Log out now lives only inside the account card, under a divider.
 4. Push-to-talk set in two places: one **Set key...** row takes a key or a mouse button and shows which one is bound.
@@ -164,3 +165,4 @@ Human decisions: fix the Info tab encryption bug; keep icons at 16 px (`ICON_SIZ
 Superseded: earlier ledger lines saying the Members/Info tabs "stay open across a room switch" no longer hold; they close on SelectRoom.
 Still open (not changed): ChipClicked dead code, ring card blocks Settings, sharing pill vs the recovery busy modal, gallery pinned to the Collapsed rail.
 Final review fixes applied (human decisions: fix the Info tab encryption bug; keep icons at 16 px): Info tab reads the three-state RoomEncryption from the room list (Unknown -> "Encryption not known yet", no "Enable encryption"), fixup folded into the Task 5 commit (the autosquash conflicted in rooms.rs / ui_gallery.rs imports and tests and was redone by an agent with a backup branch; the resulting tree was byte-identical, backup deleted); docs commit fixes the call-dock lock wording, the fixup paragraph, D10/Task 16 text. check-commits.sh 6cd1433 exits 0, no fixup! commits, gate green (tests 0 failed). Still open (listed in PROGRESS.md): leave_warning and the "picture is not encrypted" note still read details.is_encrypted (Unknown looks like not encrypted there); ChipClicked dead code; ring card blocks Settings; sharing pill not drawn over the "Setting up recovery" busy modal; gallery tests pinned to the Collapsed rail; unread-badge bug on main (not fixed by decision).
+Top bar Settings button removed (human decision): fixup of the Task 2 commit (code and tests) plus docs commit; Settings stays in the account card and on Ctrl+,. Reply draft point 1 corrected above (the original line is kept). Docs, PROGRESS.md checkpoint and the 14-item mapping updated.

@@ -80,9 +80,10 @@ Rules the code follows (all in tests):
 - A top bar runs along the whole window: the app name and **Search rooms
   (Ctrl+K)** on the left, **You are sharing your screen** with **Stop sharing**
   in the middle while a share goes out, and on the right the sync words (with
-  a dot, never colour alone), **Settings** and the account button. Below 900
-  px the search and Settings buttons and the account name drop their words and
-  keep the icon and a tooltip. The main column is `[top bar, banner, panes]`.
+  a dot, never colour alone) and the account button. There is no Settings
+  button in the bar: Settings is the first entry of the account card, and
+  **Ctrl+,** opens it from anywhere. Below 900 px the search button and the
+  account name drop their words and keep the icon and a tooltip. The main column is `[top bar, banner, panes]`.
 - The account button at the top right of the window opens a card with
   Settings, Voice & audio, Sessions and, after a divider, Log out. It is a
   card of buttons, not a drop-down list, so Ctrl + wheel (the zoom gesture)
@@ -142,9 +143,10 @@ column is `[top bar, banner, panes]`; there is no status bar.
 
 - **Top bar: the whole app.** The app name and **Search rooms (Ctrl+K)**, the
   screen-sharing bar in the middle while a share goes out, and on the right the
-  sync words (with a dot), **Settings** and the account button. The account
-  card holds Settings, Voice & audio, Sessions and Log out. Below 900 px the
-  buttons keep their icon and a tooltip.
+  sync words (with a dot) and the account button. The account card (the
+  user name drop-down) holds Settings, Voice & audio, Sessions and Log out;
+  **Ctrl+,** also opens Settings. Below 900 px the search button keeps its
+  icon and a tooltip.
 - **Left: spaces and rooms.** The spaces rail (200 px with names, or the
   72 px icon rail, with a Collapse / Expand control that is a Tab stop and is
   saved) and the room list. The list header is one row: a filter drop-down,

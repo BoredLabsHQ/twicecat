@@ -3,7 +3,7 @@ Status: APPROVED
 
 ## Goal
 Address every point of the reviewer comment on PR #44 (branch `feat/ui-ux-rework`, `crates/app`, iced =0.14.0). The comment says that controls are scattered, so people do not know where to look. This plan gives each area of the window one job:
-- **top bar:** the whole app (Settings, the account, global actions);
+- **top bar:** the whole app (the account, global actions; Settings is an account-card entry and Ctrl+,);
 - **left:** spaces and their rooms;
 - **right:** the current room (members, info and settings, threads);
 - **centre:** the conversation.
@@ -20,7 +20,7 @@ Every reviewer item below is mapped to a task, or marked already satisfied with 
 No pinned dependency changes. No new crates or iced features.
 
 ### Decisions (the human's answers to the planning questions)
-- **D1 (top bar contents):** as written in Task 2: app name + Search rooms (Ctrl+K) | sharing bar | sync status, Settings, account.
+- **D1 (top bar contents):** as written in Task 2: app name + Search rooms (Ctrl+K) | sharing bar | sync status, account. (Amended by the human: no Settings button in the bar; Settings stays in the account card and on Ctrl+,.)
 - **D2 (status bar):** removed. The main column becomes `[top bar, banner, panes]`, replacing `[banner, panes, status]` from `ui-ux-rework.md`.
 - **D3 (right panel):** one room panel with tabs (Members, Info, Thread) replaces the members and room-settings modals. The call participants panel stays its own slot, so `tests/calls.rs` is unchanged. A list of all threads is out of scope (no core API).
 - **D4 (room-list filters):** all nine filters in one drop-down.
@@ -119,9 +119,9 @@ Acceptance criteria:
 - A top bar of one row, built with the kit:
   - left: the app name, then a search button "Search rooms (Ctrl+K)" that sends the switcher's existing open message;
   - middle: the screen-sharing bar while sharing (moved from the status bar, same messages);
-  - right: the sync dot plus words (`sync_text`, never colour alone), a labelled **Settings** button (gear icon plus the word "Settings", sends `SettingsMessage::Open`), and the account button from Task 1.
+  - right: the sync dot plus words (`sync_text`, never colour alone) and the account button from Task 1. No Settings button (human decision): `SettingsMessage::Open` stays reachable from the account card entry and Ctrl+,.
 - The status bar is removed (D2). The main column becomes `[top bar, banner slot, panes]`, always three slots built with `from_vec`. The `main_view.rs` doc comment and the gallery slot test change with it. The test checks that the room pane keeps its place in the tree when a banner, the thread panel, the call panel or the dock come and go.
-- At 720 px the top bar fits without clipping. Below a width constant, the search button and the Settings button drop their words and keep icon + tooltip. This is a pure `top_bar_compact(width) -> bool`, table-tested, and the gallery lays it out at 720 and 1280 px.
+- At 720 px the top bar fits without clipping. Below a width constant, the search button drops its words and keep icon + tooltip. This is a pure `top_bar_compact(width) -> bool`, table-tested, and the gallery lays it out at 720 and 1280 px.
 - A unit test lists every message the old status bar could send, plus the sharing bar's messages, and checks that each is reachable from the top bar.
 - One `feat(app): …` commit with `Step: uirf.2`; later fixes to it are folded in with `--fixup` (see "Commits on this branch").
 
