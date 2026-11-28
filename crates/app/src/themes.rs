@@ -567,6 +567,14 @@ mod tests {
             std::fs::write(&path, bytes).expect("write a test file");
             path
         }
+
+        /// Whether this filesystem treats `a` and `A` as one name (macOS and
+        /// Windows by default): found by writing a file and looking it up in
+        /// the other case.
+        fn is_case_insensitive(&self) -> bool {
+            self.put("probe-case.tmp", b"");
+            self.0.join("PROBE-CASE.TMP").exists()
+        }
     }
 
     impl Drop for Dir {
@@ -708,12 +716,31 @@ mod tests {
 
     // ---- the design file and the fixtures ----------------------------------
 
+    /// `bytes` with every CRLF turned into LF, for files read from a checkout
+    /// that converted line ends.
+    fn lf(bytes: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len());
+        for (i, &b) in bytes.iter().enumerate() {
+            if !(b == b'\r' && bytes.get(i + 1) == Some(&b'\n')) {
+                out.push(b);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn lf_turns_crlf_into_lf_and_leaves_the_rest() {
+        assert_eq!(lf(b"a\r\nb\nc\rd\r\n"), b"a\nb\nc\rd\n");
+        assert_eq!(lf(b""), b"");
+    }
+
     #[test]
     fn the_design_tokens_file_is_the_copied_one() {
-        let bytes = include_bytes!("../assets/themes/twicecat.tokens.json");
+        // A checkout with CRLF line ends (Windows autocrlf) is the same file.
+        let bytes = lf(include_bytes!("../assets/themes/twicecat.tokens.json"));
         assert_eq!(bytes.len(), 13_555);
         assert_eq!(
-            sha256(bytes),
+            sha256(&bytes),
             "0388d3cff0874d672be530e62d153b8085558331e31d5bad6e67c1dfda8bcf2b"
         );
     }
@@ -1329,8 +1356,14 @@ mod tests {
         dir.put("nord.dark.json", built_in_doc_with(&[]).as_bytes());
         let loaded = load_dir(&dir.0);
         assert_eq!(looks(&loaded), [("Nord".into(), true, false)]);
-        assert_eq!(lines(&loaded).len(), 1, "{:?}", lines(&loaded));
-        assert!(lines(&loaded)[0].ends_with("same name and mode as another file"));
+        if dir.is_case_insensitive() {
+            // The filesystem itself keeps one file for both spellings, so
+            // there is no second file to report: one theme, nothing said.
+            assert!(loaded.report.is_empty(), "{:?}", lines(&loaded));
+        } else {
+            assert_eq!(lines(&loaded).len(), 1, "{:?}", lines(&loaded));
+            assert!(lines(&loaded)[0].ends_with("same name and mode as another file"));
+        }
         // Other mode: a pair, under the spelling that sorts first.
         let dir = Dir::new();
         dir.put("Nord.dark.json", built_in_doc_with(&[]).as_bytes());
@@ -1644,22 +1677,30 @@ mod tests {
 
     // ---- docs/themes.md stays in sync ----
 
-    const DOC: &str = include_str!("../../../docs/themes.md");
+    const DOC_RAW: &str = include_str!("../../../docs/themes.md");
+
+    /// The doc with LF line ends, whatever the checkout did to them.
+    fn doc() -> String {
+        DOC_RAW.replace("\r\n", "\n")
+    }
 
     #[test]
     fn the_doc_shows_daylight_exactly_as_the_fixture_has_it() {
-        let block = DOC
+        let doc = doc();
+        let block = doc
             .split("```json\n")
             .nth(1)
             .and_then(|rest| rest.split("```").next())
             .expect("a json block in docs/themes.md");
-        let fixture = include_str!("../tests/fixtures/themes/Daylight.light.json");
+        let fixture =
+            include_str!("../tests/fixtures/themes/Daylight.light.json").replace("\r\n", "\n");
         assert_eq!(block, fixture);
     }
 
     #[test]
     fn the_doc_lists_the_tokens_in_order() {
-        let section = DOC
+        let doc = doc();
+        let section = doc
             .split("## The 15 tokens")
             .nth(1)
             .and_then(|rest| rest.split("\n## ").next())
@@ -1689,9 +1730,9 @@ mod tests {
             "~/Library/Application Support/io.github.ga_lep.Twicecat/themes/Daylight.light.json",
             "%APPDATA%\\ga_lep\\Twicecat\\config\\themes\\Daylight.light.json",
         ] {
-            assert!(DOC.contains(path), "{path}");
+            assert!(doc().contains(path), "{path}");
         }
-        let lower = DOC.to_lowercase();
+        let lower = doc().to_lowercase();
         for banned in ["violet", "dark look only", "dark-only", "dark only"] {
             assert!(!lower.contains(banned), "{banned}");
         }
@@ -1709,7 +1750,7 @@ mod tests {
             "--ephemeral",
             "Twicecat-copy.json",
         ] {
-            assert!(DOC.contains(wanted), "{wanted}");
+            assert!(doc().contains(wanted), "{wanted}");
         }
     }
 }

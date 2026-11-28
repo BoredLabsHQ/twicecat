@@ -9,3 +9,11 @@ dev/element/** text eol=lf
 # The bundled font's files are checked byte for byte against the SHA-256s in
 # their SOURCE.md (scripts/check-font-assets.sh).
 crates/app/assets/fonts/** -text
+# Tests read these files byte for byte or split them on "\n" (the design
+# tokens' size and SHA-256, the json block of docs/themes.md against the
+# fixture, the source scans of crates/app), so a CRLF checkout on Windows
+# would fail them.
+*.rs text eol=lf
+*.md text eol=lf
+crates/app/assets/themes/*.json text eol=lf
+crates/app/tests/fixtures/themes/**/*.json text eol=lf

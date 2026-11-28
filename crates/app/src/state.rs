@@ -14609,7 +14609,9 @@ mod tests {
                     "{file}"
                 );
             }
-            let masked = crate::source_scan::mask(include_str!("settings.rs"));
+            // CRLF checkouts (Windows autocrlf) would hide the "\n    }\n" end.
+            let masked =
+                crate::source_scan::mask(&include_str!("settings.rs").replace("\r\n", "\n"));
             let reload = masked
                 .split("fn reload_themes")
                 .nth(1)
