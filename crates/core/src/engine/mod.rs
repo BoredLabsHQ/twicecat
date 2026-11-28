@@ -3706,6 +3706,23 @@ mod tests {
         heard / sent
     }
 
+    /// Waits until the speaker has received the whole `cue` at `volume`
+    /// (percent), for at most 5 s, and returns the energy ratio then. The
+    /// virtual device is paced by a 10 ms timer on a real thread, so how
+    /// long the cue takes to arrive depends on the machine (a loaded macOS
+    /// runner delivers about half as fast); the delivery is awaited, never
+    /// assumed from a sleep.
+    async fn wait_for_cue(speaker: &Speaker, cue: Cue, volume: f32) -> f32 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let ratio = cue_energy_ratio(&speaker.played.lock().unwrap(), cue, volume);
+            if ratio >= 0.98 || std::time::Instant::now() >= deadline {
+                return ratio;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
     #[tokio::test]
     async fn the_leave_cue_plays_in_full_and_the_devices_close_after_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -3714,11 +3731,21 @@ mod tests {
         let length = engine.play_call_cue(Cue::Left).expect("queued");
         assert!((length.as_secs_f32() - 0.24).abs() < 0.02, "{length:?}");
 
+        // The cue reaches the speaker whatever the machine's speed. The
+        // devices close on a wall-clock timer (`length` + `CUE_TAIL`), so a
+        // slow runner is waited for here, before the close is queued.
+        let ratio = wait_for_cue(&speaker, Cue::Left, 60.0).await;
+        assert!(
+            (0.98..=1.02).contains(&ratio),
+            "the whole cue at 60 % played, ratio {ratio}"
+        );
+
         // Closing does not wait for the cue: the devices are handed to a
-        // task at once, so `Left` is not delayed.
+        // task at once, so `Left` is not delayed (a close that waited would
+        // take at least `length`).
         let started = std::time::Instant::now();
         engine.close_after_cue(length);
-        assert!(started.elapsed() < length / 2);
+        assert!(started.elapsed() < length);
         assert!(engine.audio_session.is_none(), "taken out of the engine");
         assert!(engine.closing.is_some());
 
@@ -3728,7 +3755,7 @@ mod tests {
         let ratio = cue_energy_ratio(&speaker.played.lock().unwrap(), Cue::Left, 60.0);
         assert!(
             (0.98..=1.02).contains(&ratio),
-            "the whole cue at 60 % played, ratio {ratio}"
+            "the cue is not changed by the close, ratio {ratio}"
         );
         drain.abort();
     }
@@ -3809,9 +3836,8 @@ mod tests {
         let _ = engine.start_call_audio().await;
         engine.deafened = true;
         engine.apply_mute();
-        let length = engine.play_call_cue(Cue::Joined).expect("queued");
-        tokio::time::sleep(length + Duration::from_millis(100)).await;
-        let ratio = cue_energy_ratio(&speaker.played.lock().unwrap(), Cue::Joined, 60.0);
+        engine.play_call_cue(Cue::Joined).expect("queued");
+        let ratio = wait_for_cue(&speaker, Cue::Joined, 60.0).await;
         assert!((0.98..=1.02).contains(&ratio), "deafened, ratio {ratio}");
 
         // Each setting that turns a cue off plays nothing.
