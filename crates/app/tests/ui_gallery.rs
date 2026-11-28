@@ -1391,6 +1391,39 @@ fn a_long_name_or_preview_is_cut_at_its_slot_and_never_drawn_under_the_tags_or_t
     }
 }
 
+/// Task 16: the caption size grew to 13, so a row's own content (name line,
+/// preview line, tags) must still fit its fixed height at both densities. The
+/// text scale multiplies the whole window, so at 200 % the layout is the
+/// 100 % one in a window half as large: both are laid out here.
+#[test]
+fn room_rows_fit_their_text_in_both_densities_at_100_and_200_percent_text_scale() {
+    let renderer = renderer();
+    let mut checked = 0;
+    for window in [WIDE, Size::new(WIDE.width / 2.0, WIDE.height / 2.0)] {
+        for density in DENSITIES {
+            let mut app = fixture::crowded_room_list("A room with a name");
+            let mut settings = variants(false)[0].settings();
+            settings.density = density.0;
+            app.set_ui_settings(settings);
+            let mut laid = Laid::new(&app, &renderer, window);
+            laid.settle(&renderer, window);
+            let (rows, _) = list_rows(&laid);
+            for (rect, node) in &rows {
+                let content = &node.children()[1].children()[0];
+                let needs = content.bounds().height + 2.0 * twicecat_app::ui::tokens::XS;
+                assert!(
+                    needs <= rect.height + 0.5,
+                    "{:?} at {window:?}: the row's text needs {needs}, the row is {}",
+                    density.0,
+                    rect.height
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= 8, "{checked} rows checked");
+}
+
 #[test]
 fn ten_thousand_rooms_build_only_the_rows_in_view_for_every_density_and_the_rail() {
     use twicecat_core::api::{RoomId, RoomSummary};

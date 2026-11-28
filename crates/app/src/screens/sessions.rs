@@ -151,7 +151,7 @@ fn page(app: &App, window_height: f32) -> Element<'_, Message> {
     if model.other_devices().is_some_and(|n| n > 0) {
         footer = footer.push(sign_out_all(model));
     }
-    let content = column![header, bars, list, footer].spacing(tokens::L);
+    let content = column![header, bars, list, footer].spacing(tokens::M);
     let height = (window_height - 2.0 * CARD_PADDING - 2.0 * tokens::L)
         .clamp(MIN_CARD_HEIGHT, CARD_HEIGHT - 2.0 * CARD_PADDING);
     modal(container(content).height(Length::Fixed(height)), CARD_WIDTH)

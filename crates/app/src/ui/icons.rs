@@ -246,9 +246,21 @@ impl Icon {
     }
 }
 
+/// The size iced drew icon glyphs at before icons had their own size.
+const PREVIOUS_ICON_SIZE: f32 = 16.0;
+
+/// The size of an icon's glyph: at least running-text size and never smaller
+/// than the 16 px icons were drawn at before, so raising the type scale can
+/// not shrink them; it follows `BODY` upward if `BODY` ever grows past 16.
+pub const ICON_SIZE: f32 = if crate::ui::tokens::BODY > PREVIOUS_ICON_SIZE {
+    crate::ui::tokens::BODY
+} else {
+    PREVIOUS_ICON_SIZE
+};
+
 /// The widget for `icon`: the one place an [`Icon`] becomes something drawn.
 pub fn icon<'a, M: 'a>(icon: Icon) -> Element<'a, M> {
-    text(icon.glyph()).into()
+    text(icon.glyph()).size(ICON_SIZE).into()
 }
 
 /// The symbols of `source` that sit outside comments and test code, with
@@ -311,6 +323,13 @@ mod tests {
         assert_eq!(Icon::ALL.len(), 43);
         assert_eq!(Icon::Home.label(), "Home");
         assert_eq!(Icon::Members.label(), "Members");
+    }
+
+    #[test]
+    fn icon_glyphs_are_never_below_body_size_and_never_smaller_than_before() {
+        const { assert!(ICON_SIZE >= crate::ui::tokens::BODY) };
+        const { assert!(ICON_SIZE >= PREVIOUS_ICON_SIZE) };
+        assert_eq!(PREVIOUS_ICON_SIZE, 16.0);
     }
 
     #[test]

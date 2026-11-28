@@ -23,7 +23,7 @@ pub const LARGE: f32 = 12.0;
 pub const ROUND: f32 = 999.0;
 
 /// Type size of captions, timestamps and hints.
-pub const CAPTION: f32 = 12.0;
+pub const CAPTION: f32 = 13.0;
 /// Type size of running text.
 pub const BODY: f32 = 14.0;
 /// Type size of emphasised running text.
@@ -103,7 +103,7 @@ mod tests {
         assert_eq!([SMALL, MEDIUM, LARGE], [4.0, 8.0, 12.0]);
         assert_eq!(
             [CAPTION, BODY, BODY_LARGE, TITLE, HEADLINE, DISPLAY],
-            [12.0, 14.0, 16.0, 18.0, 24.0, 32.0]
+            [13.0, 14.0, 16.0, 18.0, 24.0, 32.0]
         );
         const { assert!(ROUND > LARGE * 10.0) };
     }

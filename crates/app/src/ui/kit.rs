@@ -338,7 +338,7 @@ fn compact<'a, M: Clone + 'a>(
     on_press: M,
     style: fn(&Theme, Status) -> button::Style,
 ) -> Element<'a, M> {
-    let button = button(text(icon.glyph()).size(tokens::CAPTION))
+    let button = button(text(icon.glyph()).size(icons::ICON_SIZE))
         .padding(tokens::XS)
         .on_press(on_press)
         .style(style);
@@ -1015,7 +1015,7 @@ pub fn disabled_bar<'a, M: 'a>(fill: f32) -> Element<'a, M> {
 pub fn icon_tag<'a, M: 'a>(icon: Icon, label: String, highlight: bool) -> Element<'a, M> {
     container(
         row![
-            text(icon.glyph()).size(tokens::CAPTION),
+            text(icon.glyph()).size(icons::ICON_SIZE),
             text(label).size(tokens::CAPTION)
         ]
         .spacing(tokens::XS)
