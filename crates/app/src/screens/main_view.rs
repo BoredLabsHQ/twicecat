@@ -9,24 +9,26 @@ use iced::widget::{
     text_editor, text_input,
 };
 use iced::{Element, Fill, Length};
-use twicecat_core::api::{MessageText, RoomId, SyncState, UserId, UserTrust};
+use twicecat_core::api::{MessageText, RoomEncryption, RoomId, SyncState, UserId, UserTrust};
 
 use crate::actions::{self, Picker};
 use crate::audio_settings::AudioMessage;
 use crate::calls::{CallButton, CallMessage};
 use crate::composer::{self, EditorAction, Mode, Suggestions};
 use crate::emoji;
+use crate::keys::Shortcut;
 use crate::links::{CheckedUrl, LinkBar, LinkKind};
-use crate::notifications::ModeChoice;
+use crate::notifications::HeaderMode;
 use crate::rooms::RoomsMessage;
 use crate::screens::loading::sync_label;
 use crate::screens::timeline_pane::RichEnv;
 use crate::screens::{
-    call, media_viewer, room_dialogs, room_list_pane, security, sessions, spaces_sidebar, stage,
-    thread_panel, timeline_pane,
+    call, media_viewer, room_dialogs, room_list_pane, room_panel, security, sessions,
+    spaces_sidebar, stage, timeline_pane,
 };
 use crate::sessions::SessionsMessage;
 use crate::settings::SettingsMessage;
+use crate::sidebar_menu::SidebarMenuMessage;
 use crate::state::{App, Message};
 use crate::text_safety::{MAX_NAME_CHARS, name_or_placeholder, one_line_capped};
 use crate::theme;
@@ -126,6 +128,26 @@ fn room_topic(_app: &App) -> Option<&str> {
     None
 }
 
+/// Room pane width (logical pixels) under which the header's panel toggles
+/// keep their icon and a tooltip only. Above it they read **Members** and
+/// **Info**.
+pub const HEADER_LABELS_BELOW: f32 = 480.0;
+
+/// Whether the header's panel toggles carry words at this pane width.
+pub fn header_labels(width: f32) -> bool {
+    width >= HEADER_LABELS_BELOW
+}
+
+/// The words of the **Members** toggle: with the count when the core has
+/// listed the members (`(count, truncated)`).
+fn members_label(count: Option<(usize, bool)>) -> String {
+    match count {
+        Some((n, true)) => format!("Members ({n}+)"),
+        Some((n, false)) => format!("Members ({n})"),
+        None => "Members".to_owned(),
+    }
+}
+
 /// A control in the room header, with the message a press sends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HeaderAction {
@@ -171,11 +193,11 @@ pub fn room_pane_width(app: &App) -> f32 {
     let layout = app.pane_layout();
     let mut width = app.window_width;
     if layout.sidebar && !app.spaces.is_empty() {
-        width -= spaces_sidebar::SIDEBAR_WIDTH + 1.0;
+        width -= spaces_sidebar::rail_width(app.rail_expanded()) + 1.0;
     }
     width -= room_list_pane::pane_width(layout.list) + 1.0;
     if !layout.panel_fills {
-        if layout.thread {
+        if layout.room_panel {
             width -= crate::threads::PANEL_WIDTH;
         }
         if layout.call {
@@ -185,14 +207,20 @@ pub fn room_pane_width(app: &App) -> f32 {
     (width - 2.0 * ROOM_PANE_PADDING).max(0.0)
 }
 
-/// The room as a panel header names it: the lock when it is encrypted, then
-/// the cleaned name.
-pub fn context_line(name: &str, encrypted: bool) -> String {
+/// The words that flag a room, only when it is known to be unencrypted:
+/// an encrypted room is the normal case, and a room whose encryption is not
+/// known yet is not claimed to be anything.
+pub fn unencrypted_words(encryption: RoomEncryption) -> Option<&'static str> {
+    (encryption == RoomEncryption::NotEncrypted).then_some(Icon::LockOpen.label())
+}
+
+/// The room as a panel header names it: the cleaned name, then "Not
+/// encrypted" when the room is known to be unencrypted.
+pub fn context_line(name: &str, encryption: RoomEncryption) -> String {
     let name = display_name(name);
-    if encrypted {
-        format!("{} {name}", room_list_pane::LOCK_MARK)
-    } else {
-        name
+    match unencrypted_words(encryption) {
+        Some(words) => format!("{name} \u{b7} {words}"),
+        None => name,
     }
 }
 
@@ -211,7 +239,7 @@ pub fn panel_title<'a>(app: &'a App, title: text::Text<'a>, fills: bool) -> Elem
     match room {
         Some(room) => column![
             title,
-            text(context_line(&room.name, room.is_encrypted))
+            text(context_line(&room.name, room.encryption))
                 .size(tokens::CAPTION)
                 .style(kit::muted)
         ]
@@ -232,7 +260,7 @@ pub fn trust_strip(app: &App) -> Option<Element<'_, Message>> {
 }
 
 /// The room header: the avatar, the name and a line under it, tags for the
-/// lock, Voice and the trust of the other person (with Verify), then the
+/// open lock (unencrypted rooms only), Voice and the trust of the other person (with Verify), then the
 /// buttons. Always one element, so the column around it keeps its widget
 /// types. In a narrow pane the buttons wrap onto their own line under the
 /// tags, so nothing is cut off and the trust tag is always seen.
@@ -258,8 +286,8 @@ fn header<'a>(app: &'a App, title: String) -> Element<'a, Message> {
     // other person's ID on its own line.
     let mut tag_list: Vec<Element<'a, Message>> = Vec::new();
     if let Some(room) = selected {
-        if room.is_encrypted {
-            tag_list.push(kit::tag(Icon::Lock.label()));
+        if let Some(words) = unencrypted_words(room.encryption) {
+            tag_list.push(kit::severity_tag(Severity::Warning, words));
         }
         if room.is_call_room {
             tag_list.push(kit::tag("Voice"));
@@ -326,12 +354,25 @@ fn header<'a>(app: &'a App, title: String) -> Element<'a, Message> {
     let mut controls: Vec<Element<'a, Message>> = Vec::new();
     if let Some(room) = selected.filter(|room| !room.is_invite) {
         controls.push(notification_menu(app, &room.id));
-        controls.push(kit::icon_button(
+        let words = header_labels(room_pane_width(app));
+        let count = app
+            .rooms_ui
+            .known
+            .as_ref()
+            .filter(|known| known.room == room.id)
+            .map(|known| (known.members.len(), known.truncated));
+        controls.push(kit::toggle_labelled_button(
             Icon::Members,
+            members_label(count),
+            words,
+            app.members_tab_shown(),
             HeaderAction::Members.message(),
         ));
-        controls.push(kit::icon_button(
+        controls.push(kit::toggle_labelled_button(
             Icon::Settings,
+            "Info",
+            words,
+            app.info_tab_shown(),
             HeaderAction::Settings.message(),
         ));
         if let Some(video) = app.calls.video_button(room) {
@@ -413,13 +454,13 @@ fn invite_buttons<'a>(app: &App, room: &RoomId) -> Element<'a, Message> {
 /// The room's notification menu: a drop-down with the four choices of plan
 /// Q11. It shows what the user picked at once, since the room list lags
 /// behind a change.
-fn notification_menu<'a>(app: &'a App, room: &RoomId) -> Element<'a, Message> {
+pub(crate) fn notification_menu<'a>(app: &'a App, room: &RoomId) -> Element<'a, Message> {
     // The menu has a value, so Ctrl + wheel (zoom) must not reach it.
     let menu = kit::menu(
         pick_list(
-            ModeChoice::ALL,
-            Some(app.room_mode_choice(room)),
-            Message::RoomModeChosen,
+            HeaderMode::ALL,
+            Some(HeaderMode(app.room_mode_choice(room))),
+            |mode| Message::RoomModeChosen(mode.0),
         )
         .text_size(tokens::CAPTION)
         .padding([tokens::XS, tokens::S])
@@ -428,9 +469,10 @@ fn notification_menu<'a>(app: &'a App, room: &RoomId) -> Element<'a, Message> {
     kit::tip(menu, "Notifications")
 }
 
-/// The main screen: panes above a status bar.
+/// The main screen: a top bar above the panes.
 pub fn view(app: &App) -> Element<'_, Message> {
     let content = main_column(
+        top_bar(app, top_bar_compact(app.window_width)),
         security::banner_slot(
             &app.security,
             crate::screens::updates::bars(app)
@@ -439,7 +481,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
                 .collect(),
         ),
         main_row(app),
-        status_bar(app),
     );
     security::layer(
         content,
@@ -447,7 +488,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     )
 }
 
-/// The panes, always `[spaces sidebar, room list, room pane, thread panel,
+/// The panes, always `[spaces sidebar, room list, room pane, room panel,
 /// call panel]`: a slot with nothing to show is an empty space, so the room
 /// pane (timeline scroll, editor focus) keeps its place in the widget tree
 /// when a panel opens or closes, or the window narrows (see
@@ -465,7 +506,7 @@ pub(crate) fn main_row(app: &App) -> Element<'_, Message> {
         sidebar,
         list_pane(app),
         room_pane(app, layout.panel_fills),
-        thread_panel::slot(app, layout),
+        room_panel::slot(app, layout),
         call::panel_slot(app, layout),
     ])
     .width(Fill)
@@ -489,24 +530,26 @@ pub fn rich_env<'a>(app: &'a App, theme: &'a iced::Theme) -> RichEnv<'a> {
         actions: &app.actions,
         rooms: &app.rooms,
         members: app.known_members(),
+        member_avatars: app.known_member_avatars(),
+        avatars: &app.avatars,
         media: &app.media,
         room: app.selected.as_ref(),
         density: app.density(),
     }
 }
 
-/// The main column, always `[banner slot, panes, status bar]`: the slot is
-/// an empty column when there is no banner, so the panes (timeline scroll,
-/// editor focus) keep their place in the widget tree when a banner comes
-/// or goes. `from_vec` does not look at its children, so the column is told
-/// to fill the window: left at its default it shrinks to the banner slot and
-/// the whole window collapses.
+/// The main column, always `[top bar, banner slot, panes]`: the slot is an
+/// empty column when there is no banner, so the panes (timeline scroll,
+/// editor focus) keep their place in the widget tree when a banner comes or
+/// goes. `from_vec` does not look at its children, so the column is told to
+/// fill the window: left at its default it shrinks to the banner slot and the
+/// whole window collapses.
 fn main_column<'a>(
+    top: Element<'a, Message>,
     banner: Element<'a, Message>,
     panes: Element<'a, Message>,
-    status: Element<'a, Message>,
 ) -> Element<'a, Message> {
-    Column::from_vec(vec![banner, panes, status])
+    Column::from_vec(vec![top, banner, panes])
         .width(Fill)
         .height(Fill)
         .into()
@@ -842,6 +885,7 @@ fn picker_panel(picker: &Picker) -> Element<'_, Message> {
         column![
             row![
                 text_input("Search emoji", &picker.query)
+                    .style(kit::text_input_style)
                     .id(actions::PICKER_INPUT_ID)
                     .on_input(|query| Message::PickerQuery(MessageText::from(query)))
                     .on_submit(Message::PickerSubmitted),
@@ -1040,10 +1084,10 @@ pub fn account_label(user_id: Option<&UserId>) -> String {
     })
 }
 
-/// An entry of the account menu in the status bar. Log out is not one: the
-/// menu has nothing selected, and iced's `pick_list` then picks its last
-/// option on Ctrl + wheel up (the zoom gesture), so no destructive action may
-/// be in it. Log out is its own button.
+/// An entry of the account card in the status bar. The card is not a
+/// `pick_list`: a closed `pick_list` with nothing selected picks its last
+/// option on Ctrl + wheel up (the zoom gesture), which would have been Log
+/// out. A card of buttons takes no wheel, so Log out can sit in it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccountAction {
     /// **Settings**.
@@ -1052,14 +1096,18 @@ pub enum AccountAction {
     VoiceAudio,
     /// **Sessions**.
     Sessions,
+    /// **Log out**, which starts the usual logout flow (and its warning).
+    LogOut,
 }
 
 impl AccountAction {
-    /// The menu's entries, in order. Log out is deliberately absent: the
-    /// menu is a `pick_list` with nothing selected, and Ctrl + wheel up (the
-    /// zoom gesture) makes it pick its last entry, which must never be
-    /// destructive. Log out is a separate button, see [`log_out_message`].
-    pub const ALL: [Self; 3] = [Self::Settings, Self::VoiceAudio, Self::Sessions];
+    /// The card's entries, in order. Log out is last, after a divider.
+    pub const ALL: [Self; 4] = [
+        Self::Settings,
+        Self::VoiceAudio,
+        Self::Sessions,
+        Self::LogOut,
+    ];
 
     /// The message choosing the entry sends.
     pub fn message(self) -> Message {
@@ -1067,6 +1115,7 @@ impl AccountAction {
             Self::Settings => Message::Settings(SettingsMessage::Open),
             Self::VoiceAudio => Message::Audio(AudioMessage::Open),
             Self::Sessions => Message::Sessions(SessionsMessage::Open),
+            Self::LogOut => Message::LogoutRequested,
         }
     }
 }
@@ -1077,13 +1126,51 @@ impl fmt::Display for AccountAction {
             Self::Settings => "Settings",
             Self::VoiceAudio => "Voice & audio",
             Self::Sessions => "Sessions",
+            Self::LogOut => "Log out",
         })
     }
 }
 
-/// What the status bar's **Log out** button sends.
-pub fn log_out_message() -> Message {
-    Message::LogoutRequested
+/// The account card: Settings, Voice & audio, Sessions, a divider, and Log
+/// out. It follows the Sort card: a [`kit::dialog`] with a close button.
+/// Every choice sends [`SidebarMenuMessage::Account`], which closes the card
+/// and then does what the old menu entry did.
+pub fn account_card(app: &App, window_height: f32) -> Element<'_, Message> {
+    let close = || Message::SidebarMenu(SidebarMenuMessage::Close);
+    let entry = |action: AccountAction| {
+        let press = Some(Message::SidebarMenu(SidebarMenuMessage::Account(action)));
+        if action == AccountAction::LogOut {
+            kit::danger_button(action.to_string(), press)
+        } else {
+            kit::secondary_button(action.to_string(), press)
+        }
+        .width(Fill)
+    };
+    let body = column![
+        entry(AccountAction::Settings),
+        entry(AccountAction::VoiceAudio),
+        entry(AccountAction::Sessions),
+        kit::divider(),
+        entry(AccountAction::LogOut),
+    ]
+    .spacing(tokens::S);
+    let label = account_label(app.user_id.as_ref());
+    kit::dialog(
+        kit::dialog_header(
+            if label.is_empty() {
+                "Account".to_owned()
+            } else {
+                label
+            },
+            close(),
+        ),
+        body.into(),
+        Some(kit::dialog_footer(vec![
+            kit::secondary_button("Close", Some(close())).into(),
+        ])),
+        crate::screens::sidebar_menu::CARD_WIDTH,
+        window_height,
+    )
 }
 
 /// How well the sync is going, for the colour of the status dot. The words
@@ -1102,9 +1189,48 @@ pub fn sync_text(state: &SyncState) -> String {
     format!("Sync: {}", sync_label(state))
 }
 
-/// A thin line, then the sync dot with words, the account and the account
-/// menu (Settings, Voice & audio, Sessions), then a Log out button.
-fn status_bar(app: &App) -> Element<'_, Message> {
+/// The window width below which the top bar's search button drops its
+/// words and keeps the icon and a tooltip.
+pub const TOP_BAR_COMPACT_BELOW: f32 = 900.0;
+
+/// The top bar's height, whole pixels so the lines below it stay sharp.
+pub const TOP_BAR_HEIGHT: f32 = 40.0;
+
+/// Whether the top bar is compact at this window width.
+pub fn top_bar_compact(width: f32) -> bool {
+    width < TOP_BAR_COMPACT_BELOW
+}
+
+/// A top-bar button: the icon and, unless `compact`, the word. Compact keeps
+/// a tooltip with the word, so the button is still named.
+fn top_bar_button<'a>(
+    icon: Icon,
+    word: &'static str,
+    tip: String,
+    compact: bool,
+    press: Message,
+) -> Element<'a, Message> {
+    let content: Element<'a, Message> = if compact {
+        icons::icon(icon)
+    } else {
+        row![icons::icon(icon), text(word).wrapping(Wrapping::None)]
+            .spacing(tokens::XS)
+            .align_y(iced::Center)
+            .into()
+    };
+    let button = button(content)
+        .on_press(press)
+        .padding([tokens::XS, tokens::S])
+        .style(kit::secondary_style);
+    kit::tip(button, tip)
+}
+
+/// The top bar, one row for the whole app: the app name and **Search rooms**
+/// on the left, the screen-sharing bar (while sharing) in the middle, and the
+/// sync dot with words and the account button on the right (Settings is an
+/// entry of the account card, and **Ctrl+,**). It is always
+/// `[left, middle, right]`, so the widgets keep their place.
+fn top_bar(app: &App, compact: bool) -> Element<'_, Message> {
     let account = account_label(app.user_id.as_ref());
     let severity = sync_severity(&app.sync_state);
     let dot =
@@ -1112,37 +1238,65 @@ fn status_bar(app: &App) -> Element<'_, Message> {
             text_color: Some(severity.color(theme)),
             ..container::Style::default()
         });
-    let menu = kit::menu(
-        pick_list(AccountAction::ALL, None::<AccountAction>, |action| {
-            action.message()
-        })
-        .placeholder(if account.is_empty() {
-            "Account".to_owned()
-        } else {
-            account
-        })
-        .text_size(tokens::BODY)
+    let mut who = row![].spacing(tokens::S).align_y(iced::Center);
+    if let Some(id) = &app.user_id {
+        who = who.push(kit::avatar_sized(id, &account, None, &app.avatars, 20.0));
+    }
+    if !compact {
+        who = who.push(
+            text(if account.is_empty() {
+                "Account".to_owned()
+            } else {
+                account
+            })
+            .size(tokens::BODY)
+            .wrapping(Wrapping::None),
+        );
+    }
+    who = who.push(icons::icon(Icon::SectionOpen));
+    let account_button = button(who)
+        .on_press(Message::SidebarMenu(SidebarMenuMessage::OpenAccount))
         .padding([tokens::XS, tokens::S])
-        .style(kit::menu_style),
-    );
+        .style(kit::secondary_style);
+    let left = row![
+        text("Twicecat").size(tokens::BODY),
+        top_bar_button(
+            Icon::Search,
+            "Search rooms (Ctrl+K)",
+            "Search rooms (Ctrl+K)".to_owned(),
+            compact,
+            Message::Shortcut {
+                shortcut: Shortcut::Switcher,
+                captured: false,
+            },
+        ),
+    ]
+    .spacing(tokens::M)
+    .align_y(iced::Center);
+    let middle = container(stage::sharing_bar(app).unwrap_or_else(|| space().into()))
+        .center_x(Fill)
+        .width(Fill);
+    let right = row![
+        dot,
+        text(sync_text(&app.sync_state))
+            .size(tokens::CAPTION)
+            .style(kit::muted)
+            .wrapping(Wrapping::None),
+        kit::tip(account_button, "Account"),
+    ]
+    .spacing(tokens::S)
+    .align_y(iced::Center);
     column![
-        kit::divider(),
         container(
-            row![
-                dot,
-                text(sync_text(&app.sync_state))
-                    .size(tokens::CAPTION)
-                    .style(kit::muted),
-                space().width(Fill),
-                menu,
-                kit::secondary_button("Log out", Some(log_out_message())),
-            ]
-            .spacing(tokens::S)
-            .align_y(iced::Center),
+            row![left, middle, right]
+                .spacing(tokens::M)
+                .align_y(iced::Center),
         )
-        .padding([tokens::XS, tokens::M])
+        .padding([0.0, tokens::M])
+        .center_y(TOP_BAR_HEIGHT)
         .width(Fill)
         .style(kit::surface_style),
+        kit::divider(),
     ]
     .into()
 }
@@ -1167,25 +1321,26 @@ mod tests {
     }
 
     #[test]
-    fn the_status_bar_still_reaches_every_message_the_old_one_sent() {
-        // The old bar was one pick_list: Settings, Sessions, Log out. Settings
-        // and Sessions are menu entries now; Log out is its own button.
-        assert_eq!(debug(&log_out_message()), debug(&Message::LogoutRequested));
-        let menu: Vec<String> = AccountAction::ALL
+    fn the_account_card_reaches_every_message_the_old_bar_sent() {
+        // The old bar was one pick_list (Settings, Sessions, Log out) and a
+        // Log out button. All of them are entries of the card now, and Log
+        // out is reachable only from there.
+        let card: Vec<String> = AccountAction::ALL
             .into_iter()
             .map(|a| debug(&a.message()))
             .collect();
         for old in [
             Message::Settings(SettingsMessage::Open),
             Message::Sessions(SessionsMessage::Open),
+            Message::LogoutRequested,
         ] {
-            assert!(menu.contains(&debug(&old)), "{old:?} unreachable");
+            assert!(card.contains(&debug(&old)), "{old:?} unreachable");
         }
     }
 
     #[test]
-    fn the_account_menu_has_no_log_out_and_adds_voice_and_audio() {
-        let menu: Vec<(String, String)> = AccountAction::ALL
+    fn the_account_card_lists_four_entries_with_log_out_last() {
+        let card: Vec<(String, String)> = AccountAction::ALL
             .into_iter()
             .map(|a| (a.to_string(), debug(&a.message())))
             .collect();
@@ -1196,12 +1351,52 @@ mod tests {
                 debug(&Message::Audio(crate::audio_settings::AudioMessage::Open)),
             ),
             ("Sessions", debug(&Message::Sessions(SessionsMessage::Open))),
+            ("Log out", debug(&Message::LogoutRequested)),
         ];
         let expect: Vec<(String, String)> = expect
             .into_iter()
             .map(|(label, msg)| (label.to_owned(), msg))
             .collect();
-        assert_eq!(menu, expect);
+        assert_eq!(card, expect);
+    }
+
+    #[test]
+    fn the_top_bar_drops_its_words_below_a_width() {
+        for (width, compact) in [
+            (1920.0, false),
+            (1280.0, false),
+            (TOP_BAR_COMPACT_BELOW, false),
+            (TOP_BAR_COMPACT_BELOW - 1.0, true),
+            (720.0, true),
+            (520.0, true),
+        ] {
+            assert_eq!(top_bar_compact(width), compact, "{width}");
+        }
+    }
+
+    #[test]
+    fn the_header_keeps_its_words_down_to_a_width() {
+        for (width, words) in [
+            (1920.0, true),
+            (HEADER_LABELS_BELOW, true),
+            (HEADER_LABELS_BELOW - 1.0, false),
+            (320.0, false),
+        ] {
+            assert_eq!(header_labels(width), words, "{width}");
+        }
+    }
+
+    #[test]
+    fn the_members_toggle_shows_the_count_when_known() {
+        assert_eq!(members_label(None), "Members");
+        assert_eq!(members_label(Some((12, false))), "Members (12)");
+        assert_eq!(members_label(Some((500, true))), "Members (500+)");
+    }
+
+    #[test]
+    fn the_account_card_builds() {
+        let app = app();
+        let _ = account_card(&app, 600.0);
     }
 
     #[test]
@@ -1327,7 +1522,7 @@ mod tests {
         use twicecat_core::api::RoomSummary;
         let mut app = app();
         let mut joined = RoomSummary::new(RoomId::from("!j:example.org"), "Lounge".into());
-        joined.is_encrypted = true;
+        joined.encryption = RoomEncryption::NotEncrypted;
         joined.is_call_room = true;
         let mut invite = RoomSummary::new(RoomId::from("!i:example.org"), "Club".into());
         invite.is_invite = true;
@@ -1335,7 +1530,7 @@ mod tests {
         for room in [None, Some(joined), Some(invite)] {
             app.selected = room.map(|r| r.id);
             let _ = header(&app, "title".to_owned());
-            let _ = status_bar(&app);
+            let _ = top_bar(&app, top_bar_compact(app.window_width));
         }
     }
 
@@ -1372,11 +1567,19 @@ mod tests {
     }
 
     #[test]
-    fn the_context_line_names_the_room_and_its_lock() {
-        assert_eq!(context_line("Lounge", false), "Lounge");
-        let locked = context_line("Lounge", true);
-        assert!(locked.starts_with(room_list_pane::LOCK_MARK) && locked.ends_with("Lounge"));
-        let hostile = context_line("Lo\u{202e}unge\nx", true);
+    fn the_context_line_and_the_header_flag_only_unencrypted_rooms() {
+        for (encryption, flagged) in [
+            (RoomEncryption::Encrypted, false),
+            (RoomEncryption::Unknown, false),
+            (RoomEncryption::NotEncrypted, true),
+        ] {
+            assert_eq!(unencrypted_words(encryption).is_some(), flagged);
+            let line = context_line("Lounge", encryption);
+            assert!(line.contains("Lounge"));
+            assert_eq!(line.contains("Not encrypted"), flagged, "{encryption:?}");
+        }
+        assert_eq!(context_line("Lounge", RoomEncryption::Encrypted), "Lounge");
+        let hostile = context_line("Lo\u{202e}unge\nx", RoomEncryption::NotEncrypted);
         assert!(!hostile.contains('\u{202e}') && !hostile.contains('\n'));
     }
 
@@ -1475,9 +1678,9 @@ mod tests {
         ) -> Element<'a, Message> {
             let panes = row![timeline_layer(space().into(), None), text_editor(content)].into();
             let base = main_column(
+                text("top bar").into(),
                 security::banner_slot(model, Vec::new()),
                 panes,
-                text("status").into(),
             );
             security::layer(base, security::screen(model))
         }
@@ -1489,7 +1692,7 @@ mod tests {
                     .iter()
                     .map(|c| c.tag)
                     .collect::<Vec<_>>(),
-                tree.children[0].children[1]
+                tree.children[0].children[2]
                     .children
                     .iter()
                     .map(|c| c.tag)

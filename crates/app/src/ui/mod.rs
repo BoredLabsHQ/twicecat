@@ -4,9 +4,11 @@
 //! from [`kit`], so a later change of look touches these files only.
 
 pub mod app_icon;
+pub mod focus_stop;
 pub mod fonts;
 pub mod guard;
 pub mod icons;
 pub mod kit;
+pub mod press_spy;
 pub mod tokens;
 pub mod video_view;

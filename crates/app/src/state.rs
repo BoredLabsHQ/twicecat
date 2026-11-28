@@ -4,7 +4,7 @@
 //! [`Task`]s. It never awaits, never touches the network and never sees an SDK
 //! type.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ use twicecat_core::api::{
     RoomNotificationModeView, RoomSummary, SyncState, TimelineItem, TimelineItemKind, TypingUser,
     UiSettings, UserId, UserTrust,
 };
+use twicecat_core::paths::DataPaths;
 
 use crate::actions::{self, ActionButtons, ActionState, NOTICE_DURATION, Notice, Picker};
 use crate::avatars::Avatars;
@@ -27,27 +28,36 @@ use crate::bridge::{self, Bridge, EventsSlot};
 use crate::calls::{self, CallMessage, CallModel};
 use crate::composer::{self, Composer, ComposerKey, EditorAction, SearchStep};
 use crate::dialogs::{self, Clipboard, ClipboardContent, Dialogs, SystemClipboard, SystemDialogs};
+use crate::drag::Drag;
 use crate::emoji;
 use crate::keys;
 use crate::links::{self, LinkBar};
+use crate::list_drop::ListKey;
 use crate::media::{self, Decoded, MediaModel, SavePath};
 use crate::notifications::{self, Folding, ModeChoice, NoNotifier, Notifier};
 use crate::ptt::{PttMessage, PttModel, PttStarter, ServiceStarter};
+use crate::rail_reorder::RailReorder;
 use crate::rich_text::{LinkTarget, MAX_REVEALED, Revealed};
 use crate::room_list;
 use crate::rooms::{RoomsMessage, RoomsModel};
 use crate::screens::login::{self, BrowserUrl, LoginForm};
 use crate::screens::{self, loading, main_view};
+use crate::sections;
 use crate::security::{Busy, SecurityMessage, SecurityModel};
 use crate::sessions::{SessionsMessage, SessionsModel, logout_needs_warning};
 use crate::settings::{NoSettingsStore, SettingsMessage, SettingsModel, SettingsStore};
-use crate::spaces::{SpacesMessage, SpacesModel};
+use crate::sidebar::{Op as SidebarOp, Refused as SidebarRefused, SidebarModel};
+use crate::sidebar_menu::{SidebarMenu, SidebarMenuMessage};
+use crate::sidebar_store::{NoSidebarStore, SidebarAnswer, SidebarStore};
+use crate::spaces::{RailKey, SpacesMessage, SpacesModel};
 use crate::text_safety;
+use crate::themes::Loaded;
 use crate::threads::{ThreadsMessage, ThreadsModel};
 use crate::timeline::{self, Effects, TimelineView};
 use crate::tray::{self, NoTrayFactory, SystemTrayFactory, TrayAction, TrayFactory, TrayModel};
 use crate::upload::{self, Outcome, UploadModel, UploadPaths};
 use crate::verification::{VerificationMessage, VerificationModel};
+use crate::view_store::{NoViewStore, ViewAnswer, ViewStore};
 
 /// How many users' trust the app keeps: the selected peer, and a stale one or
 /// two from watchers the core replaced.
@@ -198,6 +208,14 @@ pub enum Message {
     Core(Box<CoreEvent>),
     /// The core's event channel closed.
     CoreClosed,
+    /// A sidebar layout was read for an account (the answer to the load a
+    /// login starts). Its `Debug` hides the account and shows counts only.
+    SidebarLoaded(SidebarAnswer),
+    /// The space remembered for an account was read (the answer to the load
+    /// a login starts). Its `Debug` hides the account and the space.
+    ViewLoaded(ViewAnswer),
+    /// The options card of the spaces rail and its name dialog.
+    SidebarMenu(SidebarMenuMessage),
     /// The system theme mode, at boot or after a change.
     ThemeMode(theme::Mode),
     /// The server field changed.
@@ -278,8 +296,12 @@ pub enum Message {
     LogoutRequested,
     /// The user picked a room in the list.
     SelectRoom(RoomId),
-    /// The user picked a tab above the room list.
-    TabSelected(RoomListTab),
+    /// The user clicked a filter chip: clicking the active chip goes back to
+    /// **All**.
+    ChipClicked(RoomListTab),
+    /// The user chose a filter in the header's drop-down. It only sets the
+    /// tab: choosing the one already shown keeps it.
+    TabChosen(RoomListTab),
     /// The room list search field changed.
     SearchChanged(String),
     /// The room list scrolled, or its size changed.
@@ -444,6 +466,8 @@ pub enum Message {
     Spaces(SpacesMessage),
     /// A thread summary row or a control of the thread panel.
     Threads(ThreadsMessage),
+    /// A control of the room panel (tabs, close).
+    RoomPanel(crate::room_panel::RoomPanelMessage),
     /// A keyboard shortcut (see `keys`); `captured` says a widget used the
     /// key already.
     Shortcut {
@@ -500,6 +524,8 @@ pub struct App {
     pub window_scale: f32,
     /// The side panel opened last (see [`crate::layout::layout_for`]).
     pub newest_panel: crate::layout::SidePanel,
+    /// Whether the room panel is open, and its tab.
+    pub room_panel: crate::room_panel::RoomPanel,
     /// The row height the list was last laid out with, so a change of the
     /// list as shown keeps the place in it.
     pub(crate) shown_row_height: f32,
@@ -541,8 +567,41 @@ pub struct App {
     /// The Settings screen.
     pub settings_ui: SettingsModel,
     pub(crate) settings_store: Box<dyn SettingsStore>,
+    /// The logged-in account's sidebar layout (the rail shows its order and folders).
+    pub sidebar: SidebarModel,
+    pub(crate) sidebar_store: Box<dyn SidebarStore>,
+    /// Where the selected space is remembered (Task 11d).
+    pub(crate) view_store: Box<dyn ViewStore>,
+    /// Where the restore of the remembered space stands.
+    pub(crate) view_restore: crate::spaces::ViewRestore,
     /// The spaces the user is in (the sidebar).
     pub spaces: SpacesModel,
+    /// The options card or the name dialog of the rail, when one is open.
+    pub sidebar_menu: Option<SidebarMenu>,
+    /// The rail item under the pointer.
+    pub rail_hover: Option<RailKey>,
+    /// The rail item the left button went down on and has not left since: a
+    /// release over the same item is a click (`SpacesMessage::Release`). Cleared
+    /// when the pointer leaves it, when a drag is picked, and at the click.
+    pub rail_press: Option<RailKey>,
+    /// The drag of the rail that runs, if any: its sweeten column and the keys
+    /// the column held when the item was picked (sidebar rework plan, S3).
+    pub rail_reorder: Option<RailReorder>,
+    /// Flips whenever a rail drag is cancelled by the app (Esc, focus lost, a
+    /// card opened). The rail's column is wrapped in one more widget on odd
+    /// values, which makes iced drop sweeten's state and so ends the drag it
+    /// still holds: sweeten has no way to cancel (plan S3).
+    pub rail_generation: u32,
+    /// The top-level spaces whose sub-spaces the rail shows under them (the
+    /// space tree). Memory only: not in the sidebar file, empty at the start
+    /// and at logout (sidebar rework plan, T5).
+    pub rail_expanded: HashSet<RoomId>,
+    /// The room row or section header of the sectioned list under the pointer.
+    pub list_hover: Option<ListKey>,
+    /// The same state machine (`drag.rs`) for the sectioned room list: a
+    /// press on a row or header that is a click, or becomes a drag. A press on
+    /// the rail ends it, as there is one pointer.
+    pub list_drag: Drag<ListKey>,
     /// The thread panel.
     pub threads: ThreadsModel,
     /// The room switcher (Ctrl+K).
@@ -581,6 +640,13 @@ pub struct App {
     pub actions: ActionState,
     /// The system theme mode.
     pub theme_mode: theme::Mode,
+    /// Where the themes folder is, and how to create it.
+    pub(crate) data_paths: DataPaths,
+    /// The custom themes last read from the themes folder; `None` until the
+    /// first load finishes.
+    pub themes: Option<Loaded>,
+    /// A load of the themes folder is running.
+    pub themes_loading: bool,
     /// Spoilers the user revealed in the open room.
     pub revealed: Revealed,
     /// Who is typing in the open room (other users, at most
@@ -652,7 +718,7 @@ impl std::fmt::Debug for App {
             .field("verification", &self.verification)
             .field("sessions", &self.sessions)
             .field("calls", &self.calls)
-            .field("audio_ui", &self.audio_ui.open)
+            .field("audio_ui", &self.audio_ui.inline)
             .field("ptt", &self.ptt)
             .finish_non_exhaustive()
     }
@@ -681,6 +747,7 @@ impl App {
             window_width: crate::layout::DEFAULT_WINDOW_WIDTH,
             window_scale: 1.0,
             newest_panel: crate::layout::SidePanel::default(),
+            room_panel: crate::room_panel::RoomPanel::default(),
             shown_row_height: 0.0,
             load_more_at: None,
             pending_open: None,
@@ -699,7 +766,19 @@ impl App {
             rooms_ui: RoomsModel::default(),
             settings_ui: SettingsModel::default(),
             settings_store: Box::new(NoSettingsStore),
+            sidebar: SidebarModel::default(),
+            sidebar_store: Box::new(NoSidebarStore),
+            view_store: Box::new(NoViewStore),
+            view_restore: crate::spaces::ViewRestore::default(),
             spaces: SpacesModel::default(),
+            sidebar_menu: None,
+            rail_hover: None,
+            rail_press: None,
+            rail_reorder: None,
+            rail_generation: 0,
+            rail_expanded: HashSet::new(),
+            list_hover: None,
+            list_drag: Drag::default(),
             threads: ThreadsModel::default(),
             switcher: crate::switcher::SwitcherModel::default(),
             escape_spent: false,
@@ -719,6 +798,9 @@ impl App {
             send_error: None,
             actions: ActionState::default(),
             theme_mode: theme::Mode::None,
+            data_paths: DataPaths::at(std::env::temp_dir().join("twicecat-no-data-dir")),
+            themes: None,
+            themes_loading: false,
             revealed: Revealed::new(),
             typing: Vec::new(),
             window_focused: true,
@@ -755,7 +837,9 @@ impl App {
         startup: Startup,
         ui_settings: UiSettings,
         store: impl SettingsStore + Clone + 'static,
+        sidebar_store: impl SidebarStore + Clone + 'static,
         crash: (std::path::PathBuf, Option<crate::crash::PendingReport>),
+        paths: DataPaths,
     ) -> impl Fn() -> (App, Task<Message>) {
         let startup = Mutex::new(Some(startup));
         move || {
@@ -770,6 +854,12 @@ impl App {
             app.updates.mechanism = twicecat_core::api::UpdateMechanism::current();
             let task = Task::batch([task, app.start_update_checks()]);
             app.set_settings_store(Box::new(store.clone()));
+            app.set_sidebar_store(Box::new(sidebar_store.clone()));
+            app.set_view_store(Box::new(crate::view_store::DiskView::new(paths.clone())));
+            app.data_paths = paths.clone();
+            // The first read of the themes folder runs off the UI thread; the
+            // window shows Twicecat until it is done.
+            let task = Task::batch([task, app.reload_themes()]);
             app.set_notifier(Box::new(notifications::SystemNotifier));
             app.set_tray_factory(Box::new(SystemTrayFactory));
             if let Some(runtime) = app.sink.runtime() {
@@ -805,13 +895,102 @@ impl App {
         self.settings_store = store;
     }
 
-    /// The theme the window uses: the user's override, else the system's.
+    /// Replaces where the sidebar layout is kept (tests use a fake).
+    pub fn set_sidebar_store(&mut self, store: Box<dyn SidebarStore>) {
+        self.sidebar_store = store;
+    }
+
+    /// Replaces where the selected space is remembered (tests use a fake).
+    pub fn set_view_store(&mut self, store: Box<dyn ViewStore>) {
+        self.view_store = store;
+    }
+
+    /// Does a change of the sidebar layout and saves it. Refused (and nothing
+    /// saved) when no layout is loaded, when the stored file is protected or
+    /// when the layout would pass a limit.
+    pub fn apply_sidebar(&mut self, op: SidebarOp) -> Result<Task<Message>, SidebarRefused> {
+        let known: Vec<RoomId> = self
+            .spaces
+            .entries()
+            .iter()
+            .map(|space| space.id.clone())
+            .collect();
+        let task = self
+            .sidebar
+            .apply_known(op, &known, &*self.sidebar_store)
+            .map(Task::discard)?;
+        // A folder may have dissolved, or a space gone into a closed one.
+        self.clear_stale_rail_keys();
+        Ok(task)
+    }
+
+    /// The loaded looks of the stored theme name (ASCII capitals do not
+    /// matter: the loader merges names that differ only in them). Empty while
+    /// the folder is not read, when no name is stored, and when the name is not
+    /// among the themes that loaded.
+    fn stored_looks(&self) -> Vec<&crate::theme::Resolved> {
+        let (Some(name), Some(loaded)) = (self.ui_settings.theme_name, self.themes.as_ref()) else {
+            return Vec::new();
+        };
+        loaded
+            .themes
+            .iter()
+            .filter(|t| t.name.eq_ignore_ascii_case(name.as_str()))
+            .collect()
+    }
+
+    /// The theme the window uses: the stored custom theme if it loaded, else
+    /// the built-in Twicecat. A theme with one look is shown as it is, in its
+    /// own mode; `ui_settings.theme` and the system mode are read only for a
+    /// pair (see [`crate::theme::pick_look`]).
     pub fn current_theme(&self) -> Theme {
-        crate::theme::theme_for_choice(
-            self.theme_mode,
-            self.ui_settings.theme,
-            crate::theme::resolve_family(self.ui_settings.palette),
-        )
+        let looks = self.stored_looks();
+        match crate::theme::pick_look(&looks, self.ui_settings.theme, self.theme_mode) {
+            Some(look) => crate::theme::theme_of(look),
+            None => crate::theme::built_in(),
+        }
+    }
+
+    /// Whether the stored theme is loaded and comes as a light and dark pair,
+    /// so that the System/Light/Dark choice applies to it.
+    pub fn selected_is_paired(&self) -> bool {
+        self.stored_looks().iter().any(|look| look.both_modes)
+    }
+
+    /// Why the stored theme is not shown, once the folder is read: a line of
+    /// words fixed by the app and a name that passed the name rules.
+    pub fn theme_fallback(&self) -> Option<String> {
+        let name = self.ui_settings.theme_name?;
+        let loaded = self.themes.as_ref()?;
+        if !self.stored_looks().is_empty() {
+            return None;
+        }
+        let reason = loaded
+            .report
+            .iter()
+            .filter(|line| {
+                line.name.as_deref().is_some_and(|label| {
+                    let label = label
+                        .strip_suffix(" (light)")
+                        .or_else(|| label.strip_suffix(" (dark)"))
+                        .unwrap_or(label);
+                    label.eq_ignore_ascii_case(name.as_str())
+                })
+            })
+            .find_map(|line| match line.note {
+                crate::themes::Note::Problem(problem) => Some(problem.reason()),
+                _ => None,
+            })
+            .unwrap_or("it is not in the themes folder");
+        Some(format!(
+            "Theme \"{}\" could not be used: {reason}. Showing Twicecat.",
+            name.as_str()
+        ))
+    }
+
+    /// Replaces the themes read from the folder (tests use this).
+    pub fn set_themes(&mut self, loaded: Loaded) {
+        self.themes = Some(loaded);
     }
 
     /// Replaces the desktop notification service (tests use a fake).
@@ -830,13 +1009,14 @@ impl App {
     }
 
     /// Runs push-to-talk while it is needed (plan Q1): in push-to-talk or
-    /// toggle mode, during a call, the mic test, or with the Voice & audio
-    /// card open. Called after every message, from `update`, so the service
+    /// toggle mode, during a call, the mic test, or with an audio page of
+    /// Settings on show. Called after every message, from `update`, so the service
     /// is started and dropped on the main thread.
     fn sync_ptt(&mut self) {
         let in_call = self.calls.call.is_some();
         let mic_test = self.audio_ui.mic_test.is_some();
-        let needed = self.screen == Screen::Main && (in_call || mic_test || self.audio_ui.open);
+        let needed =
+            self.screen == Screen::Main && (in_call || mic_test || self.audio_pages_shown());
         let wanted = if needed {
             self.calls
                 .settings
@@ -1052,6 +1232,34 @@ impl App {
 
     /// Applies a message.
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // Pointer, hover and scroll messages cannot change what is drawn:
+        // settling would rebuild every line for nothing.
+        let settles = !matches!(
+            message,
+            Message::RoomListScrolled { .. }
+                | Message::Spaces(
+                    SpacesMessage::PointerMoved(_)
+                        | SpacesMessage::ListOver(..)
+                        | SpacesMessage::ListEnter(_)
+                        | SpacesMessage::ListExit(_)
+                        | SpacesMessage::ListPress(_)
+                        | SpacesMessage::Enter(_)
+                        | SpacesMessage::Exit(_)
+                        | SpacesMessage::RailPressed(_)
+                )
+        );
+        let task = self.apply_message(message);
+        // Whatever the message was (a room that left, another space, a
+        // search), a card or dialog of the sidebar that is about something no
+        // longer drawn goes away.
+        self.close_sidebar_menu_if_gone();
+        if settles {
+            self.settle_list_drag();
+        }
+        task
+    }
+
+    fn apply_message(&mut self, message: Message) -> Task<Message> {
         let touches_composer = matches!(
             message,
             Message::Composer(_)
@@ -1064,12 +1272,13 @@ impl App {
                 | Message::Pasted(_)
                 | Message::PasteFallback(_)
         );
-        let thread_before = self.threads.panel.is_some();
+        let panel_before = self.room_panel_shown();
         let call_before = self.calls.panel_shown(self.selected.as_ref());
         let resized = matches!(message, Message::WindowResized(_));
         let fills_before = self.pane_layout().panel_fills;
         let task = self.update_inner(message);
-        self.note_panels(thread_before, call_before);
+        self.sync_tabs();
+        self.note_panels(panel_before, call_before);
         let task = Task::batch([task, self.video_sync_views()]);
         // The reaction picker takes the keyboard: it must never stay open in
         // a pane the user cannot see.
@@ -1119,6 +1328,16 @@ impl App {
         } else {
             task
         }
+    }
+
+    /// Sets the room list filter, keeping the search and the space.
+    fn set_tab(&mut self, tab: RoomListTab) -> Task<Message> {
+        let query = RoomListQuery {
+            tab,
+            search: self.query.search.clone(),
+            space: self.query.space.clone(),
+        };
+        self.set_query(query)
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
@@ -1272,6 +1491,9 @@ impl App {
                 // A key release may happen where this window does not see it.
                 self.calls.chord_held = false;
                 if !focused {
+                    // A button released outside the window is never seen.
+                    self.cancel_rail_reorder();
+                    let _ = self.list_drag.cancel();
                     self.ptt.window_unfocused();
                     self.stop_capture();
                 }
@@ -1397,6 +1619,12 @@ impl App {
             },
             Message::Security(message) => self.on_security(message),
             Message::Update(message) => self.on_update(message),
+            Message::SidebarLoaded(SidebarAnswer { account, load }) => {
+                self.sidebar.loaded(&account, load);
+                self.clear_stale_rail_keys();
+                Task::none()
+            }
+            Message::ViewLoaded(answer) => self.on_view_loaded(answer),
             Message::Crash(message) => self.on_crash(message),
             Message::Verification(message) => self.on_verification(message),
             Message::Sessions(message) => self.on_sessions(message),
@@ -1429,9 +1657,22 @@ impl App {
                 }
                 Task::none()
             }
-            Message::Spaces(SpacesMessage::Select(space)) => self.select_space(space),
+            Message::Spaces(message) => self.on_rail(message),
+            Message::SidebarMenu(message) => self.on_sidebar_menu(message),
             Message::Threads(message) => self.on_threads(message),
-            Message::Shortcut { shortcut, captured } => self.on_shortcut(shortcut, captured),
+            Message::RoomPanel(message) => self.on_room_panel(message),
+            Message::Shortcut { shortcut, captured } => {
+                // The rail's card and dialog are not in `keys.rs`'s list of
+                // layers (that file is not changed for them): Esc and the
+                // room-stepping chords are settled here, before it.
+                match self
+                    .rail_escape(shortcut)
+                    .or_else(|| self.sidebar_menu_shortcut(shortcut))
+                {
+                    Some(task) => task,
+                    None => self.on_shortcut(shortcut, captured),
+                }
+            }
             Message::Switcher(message) => self.on_switcher(message),
             // Ctrl+U and drops are for the room: with its pane hidden behind
             // a panel the user would pick files for a room they cannot see.
@@ -1551,6 +1792,15 @@ impl App {
                 self.clear_draft();
                 self.reset_link_state();
                 self.rooms_ui.reset_room();
+                // The Members and Info tabs belong to the room they were
+                // opened for.
+                if matches!(
+                    self.room_panel.tab,
+                    crate::room_panel::RoomPanelTab::Members
+                        | crate::room_panel::RoomPanelTab::Info
+                ) {
+                    self.room_panel.open = false;
+                }
                 Task::batch([
                     stop_typing,
                     marker,
@@ -1559,14 +1809,16 @@ impl App {
                     self.send(Command::SelectRoom(id)),
                 ])
             }
-            Message::TabSelected(tab) => {
-                let query = RoomListQuery {
-                    tab,
-                    search: self.query.search.clone(),
-                    space: self.query.space.clone(),
+            Message::ChipClicked(tab) => {
+                // A chip is a toggle: clicking the active one goes back to All.
+                let tab = if tab == self.query.tab {
+                    RoomListTab::All
+                } else {
+                    tab
                 };
-                self.set_query(query)
+                self.set_tab(tab)
             }
+            Message::TabChosen(tab) => self.set_tab(tab),
             Message::SearchChanged(search) => {
                 let query = RoomListQuery {
                     tab: self.query.tab,
@@ -1649,6 +1901,31 @@ impl App {
                 self.security.fresh_login = !restored;
                 self.room_modes.clear();
                 self.folding.clear();
+                // A question about another session's layout is not this one's.
+                self.settings_ui.reset_sidebar_ask = false;
+                // The layout of this account only; nothing is written.
+                let account = user_id.clone();
+                let load = self
+                    .sidebar
+                    .load_for(user_id.clone(), &*self.sidebar_store)
+                    .map(move |load| {
+                        Message::SidebarLoaded(SidebarAnswer::new(account.clone(), load))
+                    });
+                task = Task::batch([task, load]);
+                // The space this account had selected last time, unless this
+                // is the same login again.
+                if self.user_id.as_ref() != Some(&user_id)
+                    || self.view_restore == crate::spaces::ViewRestore::Idle
+                {
+                    task = Task::batch([task, self.load_view(&user_id)]);
+                }
+                // Another account with no logout in between: nothing of the
+                // old one's rail (open trees, hover) carries over.
+                if self.user_id.as_ref() != Some(&user_id) {
+                    self.rail_expanded.clear();
+                    self.rail_hover = None;
+                    self.cancel_rail_reorder();
+                }
                 self.user_id = Some(user_id);
                 self.notice = None;
                 self.end_login_attempt();
@@ -1672,7 +1949,12 @@ impl App {
                 self.end_login_attempt();
                 self.screen = Screen::Login;
             }
-            CoreEvent::LoggedOut => task = self.back_to_login("You were logged out."),
+            CoreEvent::LoggedOut => {
+                // An explicit logout drops what was remembered for the
+                // account (a session that only expired keeps it).
+                let forget = self.forget_view();
+                task = Task::batch([self.back_to_login("You were logged out."), forget]);
+            }
             CoreEvent::SessionExpired => {
                 task = self.back_to_login("Your session expired. Please log in again.");
             }
@@ -1680,6 +1962,8 @@ impl App {
             CoreEvent::SyncState(state) => self.sync_state = state,
             CoreEvent::RoomListChanged(diffs) => {
                 room_list::apply_room_diffs(&mut self.rooms, &diffs);
+                // The sections under a drag were placed anew.
+                self.list_drag.forget_seen();
                 self.reconcile_room_modes();
                 // A search or tab filters the list, so an open room missing
                 // from it is only hidden: keep it and its draft. Without a
@@ -1777,6 +2061,17 @@ impl App {
                 if self.selected.as_ref() == Some(&room_id) {
                     task = self.show_notice(action, &error);
                 }
+            }
+            // A tag is set from the sidebar, where the room need not be the
+            // open one: the notice is shown whichever room it was.
+            CoreEvent::ActionFailed {
+                action: ActionKind::RoomTag,
+                error,
+                ..
+            } => {
+                // Fixed words only: an error's text can name a room.
+                let reason = actions::room_tag_reason(&error);
+                task = self.show_notice_detail(ActionKind::RoomTag, reason);
             }
             CoreEvent::ActionFailed {
                 room_id,
@@ -1912,6 +2207,7 @@ impl App {
                 self.tray
                     .set_unread(notifications, self.ui_settings.tray_badge);
             }
+            CoreEvent::SpaceUnread { spaces, outside } => self.on_space_unread(spaces, outside),
             CoreEvent::RoomCreated { room_id } => task = self.on_room_created(room_id),
             CoreEvent::RoomJoined { room_id } => task = self.on_room_joined(room_id),
             CoreEvent::RoomDetails(details) => task = self.on_room_details(details),
@@ -2104,22 +2400,36 @@ impl App {
         crate::layout::layout_for(
             self.window_width,
             self.ui_settings.room_list,
-            self.threads.panel.is_some(),
+            self.room_panel_shown(),
             self.calls.panel_shown(self.selected.as_ref()),
             self.newest_panel,
         )
     }
 
+    /// Whether the spaces rail is shown wide: the saved choice, unless the
+    /// window or the open panels leave the room pane too little (see
+    /// [`crate::layout::rail_expanded_shown`]). Never changes the choice.
+    pub fn rail_expanded(&self) -> bool {
+        let layout = self.pane_layout();
+        crate::layout::rail_expanded_shown(
+            self.window_width,
+            self.ui_settings.spaces_rail,
+            layout.list,
+            layout.room_panel,
+            layout.call,
+        )
+    }
+
     /// Remembers which side panel was opened last, given which were open
     /// before the message. Closing one leaves the other as it was.
-    fn note_panels(&mut self, thread_before: bool, call_before: bool) {
-        let thread = self.threads.panel.is_some();
+    fn note_panels(&mut self, panel_before: bool, call_before: bool) {
+        let panel = self.room_panel_shown();
         let call = self.calls.panel_shown(self.selected.as_ref());
         if call && !call_before {
             self.newest_panel = crate::layout::SidePanel::Call;
         }
-        if thread && !thread_before {
-            self.newest_panel = crate::layout::SidePanel::Thread;
+        if panel && !panel_before {
+            self.newest_panel = crate::layout::SidePanel::Room;
         }
     }
 
@@ -2139,20 +2449,40 @@ impl App {
     /// requested this session (plan Q11): one `FetchAvatars`, or nothing when
     /// the set is empty. An ID is requested once per session whatever the
     /// answer, so a failing homeserver is not hit again by scrolling.
-    fn request_avatars(&mut self) -> Task<Message> {
-        let len = self.rooms.len();
-        let range = room_list::visible_range(
-            self.list_offset_y,
-            self.list_viewport_h,
-            self.room_row_height(),
-            len,
-            room_list::OVERSCAN_ROWS,
-        );
-        let ids = self.avatars.take_unrequested(
-            self.rooms[range]
+    pub(crate) fn request_avatars(&mut self) -> Task<Message> {
+        let avatars: Vec<twicecat_core::api::AvatarId> = if let Some(lines) = self.section_lines() {
+            let offsets = sections::line_offsets(&lines, self.density());
+            let range = sections::visible_lines(
+                &offsets,
+                self.list_offset_y,
+                self.list_viewport_h,
+                room_list::OVERSCAN_ROWS,
+            );
+            lines[range]
                 .iter()
-                .filter_map(|room| room.avatar.clone()),
-        );
+                .filter_map(|line| match line {
+                    sections::Line::Room(room) => room.avatar.clone(),
+                    sections::Line::Participant(person) => person.member.avatar.clone(),
+                    _ => None,
+                })
+                .collect()
+        } else {
+            let len = self.rooms.len();
+            let range = room_list::visible_range(
+                self.list_offset_y,
+                self.list_viewport_h,
+                self.room_row_height(),
+                len,
+                room_list::OVERSCAN_ROWS,
+            );
+            // The rows as shown: in the sort's order.
+            let order = self.flat_order();
+            range
+                .map(|at| &self.rooms[order.as_ref().map_or(at, |order| order[at])])
+                .filter_map(|room| room.avatar.clone())
+                .collect()
+        };
+        let ids = self.avatars.take_unrequested(avatars);
         if ids.is_empty() {
             return Task::none();
         }
@@ -2166,6 +2496,16 @@ impl App {
         let len = self.rooms.len();
         if self.load_more_at == Some(len) {
             return Task::none();
+        }
+        if self.sections_shown() || self.flat_loads_all() {
+            // Sections need every room to be placed, and a sorted flat list
+            // every room to be in order, so the pages are asked for one
+            // after the other, wherever the viewport is.
+            if !sections::must_load_all(len, self.total_rooms) {
+                return Task::none();
+            }
+            self.load_more_at = Some(len);
+            return self.send(Command::LoadMoreRooms);
         }
         let range = room_list::visible_range(
             self.list_offset_y,
@@ -2252,7 +2592,7 @@ impl App {
     fn composer_key_at(&mut self, key: ComposerKey, now: Instant) -> Task<Message> {
         // A dialog, card or screen is over the room: the editor may still
         // have the keyboard focus, but its keys are not for it.
-        if self.any_overlay_open() {
+        if self.any_overlay_open() || self.sidebar_menu_open() {
             return Task::none();
         }
         match key {
@@ -2304,7 +2644,9 @@ impl App {
     fn pane_shows_item(&self, in_thread: bool) -> bool {
         let layout = self.pane_layout();
         if in_thread {
-            layout.thread && self.threads.panel.is_some()
+            layout.room_panel
+                && self.room_panel.tab == crate::room_panel::RoomPanelTab::Thread
+                && self.threads.panel.is_some()
         } else {
             !layout.panel_fills
         }
@@ -2458,7 +2800,12 @@ impl App {
 
     /// Shows the failure line of a delete or reaction for 5 seconds.
     fn show_notice(&mut self, action: ActionKind, error: &CoreError) -> Task<Message> {
-        let Some(text) = actions::notice_text(action, &safe_line(&error.to_string())) else {
+        self.show_notice_detail(action, &safe_line(&error.to_string()))
+    }
+
+    /// [`Self::show_notice`] with the detail already chosen.
+    fn show_notice_detail(&mut self, action: ActionKind, detail: &str) -> Task<Message> {
+        let Some(text) = actions::notice_text(action, detail) else {
             return Task::none();
         };
         self.show_notice_text(text)
@@ -2565,6 +2912,15 @@ impl App {
         self.settings_ui = SettingsModel::default();
         self.notification_settings = None;
         self.spaces.clear();
+        self.rail_hover = None;
+        self.rail_expanded.clear();
+        self.cancel_rail_reorder();
+        self.list_hover = None;
+        self.list_drag = Drag::default();
+        self.sidebar_menu = None;
+        // Memory only: no sidebar file is touched at logout.
+        self.sidebar.unload();
+        self.view_restore = crate::spaces::ViewRestore::Idle;
         self.forget_threads();
         // Nothing of the old account outlives it: the switcher (its rooms),
         // a room still to open, the search, tab and space (the core keeps
@@ -2582,6 +2938,7 @@ impl App {
 
     pub(crate) fn deselect(&mut self) {
         self.selected = None;
+        self.room_panel.open = false;
         self.reset_threads();
         self.timeline.reset();
         self.media.reset_view();
@@ -2643,7 +3000,7 @@ impl App {
             return Task::none();
         }
         let effects = self.timeline.apply_diffs(diffs);
-        let members = self.members_for_pills();
+        let members = self.members_for_timeline();
         Task::batch([self.timeline_effects(effects), members])
     }
 
@@ -2689,6 +3046,7 @@ impl App {
             tasks.push(self.show_notice_text(JUMP_FAILED_TEXT.to_owned()));
         }
         tasks.push(self.fetch_visible_media());
+        tasks.push(self.fetch_member_avatars());
         tasks.push(self.read_receipt(Instant::now()));
         Task::batch(tasks)
     }
@@ -2944,15 +3302,24 @@ impl App {
                 screens::verification::layer(base, self)
             }
             Screen::Main => screens::call::ring_layer(
+                // Above every card, dialog and screen, under the ring card.
                 screens::stage::sharing_layer(
                     screens::verification::layer(
                         screens::switcher::layer(
-                            screens::upload_dialog::layer(
-                                screens::media_viewer::layer(
-                                    screens::audio_settings::layer(
+                            screens::sidebar_menu::layer(
+                                screens::upload_dialog::layer(
+                                    screens::media_viewer::layer(
                                         screens::settings::layer(
                                             screens::room_dialogs::layer(
-                                                screens::stage::layers(main_view::view(self), self),
+                                                screens::stage::layers(
+                                                    // The drag's ghost is over the
+                                                    // list and under every card.
+                                                    screens::room_list_pane::ghost_layer(
+                                                        main_view::view(self),
+                                                        self,
+                                                    ),
+                                                    self,
+                                                ),
                                                 self,
                                             ),
                                             self,
@@ -3019,6 +3386,7 @@ impl App {
             window::resize_events().map(|(_, size)| Message::WindowResized(size.width)),
             tray::subscription(),
             self.ptt.subscription(),
+            self.list_drag_subscription(),
         ])
     }
 
@@ -3209,19 +3577,40 @@ mod tests {
     }
 
     #[test]
-    fn theme_follows_the_mode() {
+    fn the_single_look_theme_is_shown_whatever_the_system_mode_is() {
         let (mut app, _rx) = app_with(8);
         let name = |app: &App| app.theme().expect("always themed").to_string();
-        let light = crate::theme::theme_for(theme::Mode::Light).to_string();
-        let dark = crate::theme::theme_for(theme::Mode::Dark).to_string();
-        assert_eq!(name(&app), light);
-        let _ = app.update(Message::ThemeMode(theme::Mode::Dark));
-        assert_eq!(name(&app), dark);
-        assert!(app.theme().expect("themed").extended_palette().is_dark);
-        let _ = app.update(Message::ThemeMode(theme::Mode::Light));
-        assert_eq!(name(&app), light);
-        let _ = app.update(Message::ThemeMode(theme::Mode::None));
-        assert_eq!(name(&app), light);
+        for mode in [
+            theme::Mode::None,
+            theme::Mode::Dark,
+            theme::Mode::Light,
+            theme::Mode::None,
+        ] {
+            let _ = app.update(Message::ThemeMode(mode));
+            assert_eq!(app.theme_mode, mode, "the system mode is still tracked");
+            assert_eq!(name(&app), "Twicecat", "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn twicecat_keeps_its_palette_for_every_stored_choice_and_system_mode() {
+        let (mut app, _rx) = app_with(8);
+        let twicecat = crate::theme::built_in().palette();
+        for choice in [
+            twicecat_core::api::ThemeChoice::System,
+            twicecat_core::api::ThemeChoice::Light,
+            twicecat_core::api::ThemeChoice::Dark,
+        ] {
+            app.ui_settings.theme = choice;
+            for mode in [theme::Mode::Light, theme::Mode::Dark, theme::Mode::None] {
+                let _ = app.update(Message::ThemeMode(mode));
+                assert_eq!(
+                    app.current_theme().palette(),
+                    twicecat,
+                    "{choice:?} {mode:?}"
+                );
+            }
+        }
     }
 
     // ---- Task 9: screens ----
@@ -3346,6 +3735,1688 @@ mod tests {
         logged_in(&mut app);
         let _ = app.update(core(CoreEvent::SessionExpired));
         assert_ne!(first, app.notice, "the two notices differ");
+    }
+
+    // ---- the sidebar layout (Task sbc.2) ----
+
+    mod sidebar_layout {
+        use super::*;
+        use crate::sidebar::{Op, Refused, SidebarState};
+        use crate::sidebar_store::{Call, MemorySidebar, SidebarLoad};
+        use twicecat_core::api::{FolderLayout, RailEntry, SidebarLayout};
+
+        fn sidebar_app() -> (App, MemorySidebar) {
+            let (mut app, _rx) = login_app();
+            let store = MemorySidebar::default();
+            app.set_sidebar_store(Box::new(store.clone()));
+            (app, store)
+        }
+
+        fn log_in(app: &mut App, user: &str) {
+            let _ = app.update(core(CoreEvent::LoggedIn {
+                user_id: UserId::from(user),
+                device_id: DeviceId::from("D"),
+                restored: false,
+            }));
+        }
+
+        fn layout_for(user: &str) -> SidebarLayout {
+            let mut layout = SidebarLayout::new(UserId::from(user));
+            layout.rail = vec![RailEntry::Folder(FolderLayout {
+                id: 1,
+                name: None,
+                open: false,
+                spaces: vec![RoomId::from("!secretin1:x"), RoomId::from("!secretin2:x")],
+            })];
+            layout
+        }
+
+        fn saves(store: &MemorySidebar) -> Vec<(UserId, SidebarLayout)> {
+            store
+                .calls()
+                .into_iter()
+                .filter_map(|c| match c {
+                    Call::Save(user, layout) => Some((user, layout)),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn answer(app: &mut App, user: &str, load: SidebarLoad) {
+            let _ = app.update(Message::SidebarLoaded(SidebarAnswer::new(
+                UserId::from(user),
+                load,
+            )));
+        }
+
+        #[test]
+        fn logging_in_loads_once_for_that_account() {
+            let (mut app, store) = sidebar_app();
+            assert_eq!(app.sidebar.state(), SidebarState::NotLoaded);
+            log_in(&mut app, "@a:x");
+            assert_eq!(store.calls(), vec![Call::Load(UserId::from("@a:x"))]);
+            answer(&mut app, "@a:x", SidebarLoad::Layout(layout_for("@a:x")));
+            assert_eq!(app.sidebar.state(), SidebarState::Loaded);
+            assert_eq!(app.sidebar.layout(), Some(&layout_for("@a:x")));
+            assert_eq!(store.calls().len(), 1, "no second load");
+        }
+
+        #[test]
+        fn newer_and_other_account_refuse_every_change_without_a_save() {
+            for (load, state) in [
+                (SidebarLoad::Newer, SidebarState::Newer),
+                (SidebarLoad::OtherAccount, SidebarState::OtherAccount),
+            ] {
+                let (mut app, store) = sidebar_app();
+                log_in(&mut app, "@a:x");
+                answer(&mut app, "@a:x", load);
+                assert_eq!(app.sidebar.state(), state);
+                assert_eq!(
+                    app.apply_sidebar(Op::ToggleFolder(1)).err(),
+                    Some(Refused::Protected)
+                );
+                assert!(saves(&store).is_empty());
+            }
+        }
+
+        #[test]
+        fn a_change_saves_once_for_the_logged_in_account() {
+            let (mut app, store) = sidebar_app();
+            log_in(&mut app, "@a:x");
+            answer(&mut app, "@a:x", SidebarLoad::Layout(layout_for("@a:x")));
+            assert!(app.apply_sidebar(Op::ToggleFolder(1)).is_ok());
+            let saved = saves(&store);
+            assert_eq!(saved.len(), 1);
+            assert_eq!(saved[0].0, UserId::from("@a:x"));
+            assert_eq!(saved[0].1.account, UserId::from("@a:x"));
+            assert_eq!(Some(&saved[0].1), app.sidebar.layout());
+            // A refused change saves nothing.
+            assert!(app.apply_sidebar(Op::ToggleFolder(9)).is_err());
+            assert_eq!(saves(&store).len(), 1);
+        }
+
+        #[test]
+        fn a_click_on_a_folder_toggles_it_and_saves_once() {
+            use crate::spaces::{RailKey, SpacesMessage};
+            let (mut app, store) = sidebar_app();
+            log_in(&mut app, "@a:x");
+            answer(&mut app, "@a:x", SidebarLoad::Layout(layout_for("@a:x")));
+            let open = |app: &App| match &app.sidebar.layout().expect("a layout").rail[0] {
+                RailEntry::Folder(f) => f.open,
+                RailEntry::Space(_) => unreachable!(),
+            };
+            let key = RailKey::Folder(1);
+            // A press alone, or a release alone, does nothing.
+            let _ = app.update(Message::Spaces(SpacesMessage::RailPressed(key.clone())));
+            assert!(saves(&store).is_empty());
+            let _ = app.update(Message::Spaces(SpacesMessage::Release(key.clone())));
+            assert!(open(&app));
+            assert_eq!(saves(&store).len(), 1);
+            let _ = app.update(Message::Spaces(SpacesMessage::Release(key.clone())));
+            assert_eq!(saves(&store).len(), 1, "a release alone is no click");
+            let _ = app.update(Message::Spaces(SpacesMessage::RailPressed(key.clone())));
+            let _ = app.update(Message::Spaces(SpacesMessage::Release(key)));
+            assert!(!open(&app));
+            assert_eq!(saves(&store).len(), 2);
+            // A folder the layout does not have saves nothing.
+            let ghost = RailKey::Folder(9);
+            let _ = app.update(Message::Spaces(SpacesMessage::RailPressed(ghost.clone())));
+            let _ = app.update(Message::Spaces(SpacesMessage::Release(ghost)));
+            assert_eq!(saves(&store).len(), 2);
+        }
+
+        #[test]
+        fn logout_and_session_expiry_call_no_store_and_drop_the_layout() {
+            for event in [CoreEvent::LoggedOut, CoreEvent::SessionExpired] {
+                let (mut app, store) = sidebar_app();
+                log_in(&mut app, "@a:x");
+                answer(&mut app, "@a:x", SidebarLoad::Layout(layout_for("@a:x")));
+                let before = store.calls();
+                let _ = app.update(core(event));
+                assert_eq!(store.calls(), before, "no save, no reset, no load");
+                assert_eq!(app.sidebar.state(), SidebarState::NotLoaded);
+                assert!(app.sidebar.layout().is_none());
+                // A change between logout and the next login is refused.
+                assert_eq!(
+                    app.apply_sidebar(Op::ToggleFolder(1)).err(),
+                    Some(Refused::NotLoaded)
+                );
+                assert_eq!(store.calls(), before);
+            }
+        }
+
+        #[test]
+        fn another_account_logging_in_loads_and_saves_for_itself_only() {
+            let (mut app, store) = sidebar_app();
+            log_in(&mut app, "@a:x");
+            answer(&mut app, "@a:x", SidebarLoad::Layout(layout_for("@a:x")));
+            let _ = app.update(core(CoreEvent::LoggedOut));
+            let mark = store.calls().len();
+            log_in(&mut app, "@b:x");
+            // A late answer for the first account changes nothing.
+            answer(&mut app, "@a:x", SidebarLoad::Layout(layout_for("@a:x")));
+            assert_eq!(app.sidebar.state(), SidebarState::NotLoaded);
+            answer(&mut app, "@b:x", SidebarLoad::Default);
+            assert!(
+                app.apply_sidebar(Op::ToggleSection {
+                    space: RoomId::from("!sp:x"),
+                    key: twicecat_core::api::SectionKey::Direct,
+                })
+                .is_ok()
+            );
+            let after = store.calls()[mark..].to_vec();
+            let b = UserId::from("@b:x");
+            assert_eq!(after.len(), 2, "{after:?}");
+            assert_eq!(after[0], Call::Load(b.clone()));
+            assert!(matches!(&after[1], Call::Save(user, layout)
+                if *user == b && layout.account == b));
+            assert!(
+                after.iter().all(|c| match c {
+                    Call::Load(u) | Call::Save(u, _) | Call::Reset(u) => *u != UserId::from("@a:x"),
+                }),
+                "no call names the first account after the logout"
+            );
+        }
+
+        #[test]
+        fn debug_of_the_app_sidebar_holds_no_room_id() {
+            let (mut app, _store) = sidebar_app();
+            log_in(&mut app, "@a:x");
+            answer(&mut app, "@a:x", SidebarLoad::Layout(layout_for("@a:x")));
+            let text = format!("{:?}", app.sidebar);
+            assert!(!text.contains("secretin"), "{text}");
+            let message = format!(
+                "{:?}",
+                Message::SidebarLoaded(SidebarAnswer::new(
+                    UserId::from("@a:x"),
+                    SidebarLoad::Layout(layout_for("@a:x"))
+                ))
+            );
+            assert!(!message.contains("secretin"), "{message}");
+        }
+    }
+
+    // ---- Reset sidebar layout (Task sbc.13) ----
+
+    mod sidebar_reset {
+        use super::*;
+        use crate::settings::SettingsMessage as S;
+        use crate::sidebar::SidebarState;
+        use crate::sidebar_store::{Call, MemorySidebar, ResetAnswer, ResetOutcome, SidebarLoad};
+        use twicecat_core::api::{FolderLayout, RailEntry, SidebarLayout};
+
+        fn layout_for(user: &str) -> SidebarLayout {
+            let mut layout = SidebarLayout::new(UserId::from(user));
+            layout.rail = vec![RailEntry::Folder(FolderLayout {
+                id: 1,
+                name: None,
+                open: false,
+                spaces: vec![RoomId::from("!in1:x"), RoomId::from("!in2:x")],
+            })];
+            layout
+        }
+
+        /// Logged in as `@a:x` with a stored layout, Settings open.
+        fn ready(load: SidebarLoad) -> (App, MemorySidebar) {
+            let (mut app, _rx) = login_app();
+            let store = MemorySidebar::default();
+            app.set_sidebar_store(Box::new(store.clone()));
+            let _ = app.update(core(CoreEvent::LoggedIn {
+                user_id: UserId::from("@a:x"),
+                device_id: DeviceId::from("D"),
+                restored: false,
+            }));
+            let _ = app.update(core(room_event(&["a", "b"])));
+            let _ = app.update(Message::SidebarLoaded(SidebarAnswer::new(
+                UserId::from("@a:x"),
+                load,
+            )));
+            let _ = app.update(Message::Settings(S::Open));
+            assert!(app.settings_ui.open);
+            (app, store)
+        }
+
+        fn stored() -> SidebarLoad {
+            SidebarLoad::Layout(layout_for("@a:x"))
+        }
+
+        fn resets(store: &MemorySidebar) -> Vec<UserId> {
+            store
+                .calls()
+                .into_iter()
+                .filter_map(|c| match c {
+                    Call::Reset(user) => Some(user),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn send(app: &mut App, message: S) {
+            let _ = app.update(Message::Settings(message));
+        }
+
+        #[test]
+        fn asking_opens_the_confirmation_and_changes_nothing() {
+            let (mut app, store) = ready(stored());
+            let before = store.calls();
+            send(&mut app, S::ResetSidebarAsk);
+            assert!(app.settings_ui.reset_sidebar_ask);
+            assert_eq!(store.calls(), before, "asking touches no store");
+            assert_eq!(app.sidebar.layout(), Some(&layout_for("@a:x")));
+        }
+
+        #[test]
+        fn cancel_changes_nothing() {
+            let (mut app, store) = ready(stored());
+            let before = store.calls();
+            send(&mut app, S::ResetSidebarAsk);
+            send(&mut app, S::ResetSidebarCancel);
+            assert!(!app.settings_ui.reset_sidebar_ask);
+            assert_eq!(store.calls(), before);
+            assert_eq!(app.sidebar.layout(), Some(&layout_for("@a:x")));
+        }
+
+        #[test]
+        fn confirming_resets_the_logged_in_account_only() {
+            let (mut app, store) = ready(stored());
+            send(&mut app, S::ResetSidebarAsk);
+            send(&mut app, S::ResetSidebarConfirm);
+            assert_eq!(resets(&store), [UserId::from("@a:x")]);
+            assert!(!app.settings_ui.reset_sidebar_ask);
+            assert_eq!(
+                app.sidebar.layout(),
+                Some(&SidebarLayout::new(UserId::from("@a:x")))
+            );
+            assert_eq!(app.sidebar.state(), SidebarState::Loaded);
+            assert!(app.settings_ui.error.is_none());
+            // Nothing else was saved, and the rail is the default one.
+            assert!(
+                !store.calls().iter().any(|c| matches!(c, Call::Save(..))),
+                "a reset saves nothing"
+            );
+        }
+
+        #[test]
+        fn a_confirm_without_the_ask_does_nothing() {
+            let (mut app, store) = ready(stored());
+            send(&mut app, S::ResetSidebarConfirm);
+            assert!(resets(&store).is_empty());
+            assert_eq!(app.sidebar.layout(), Some(&layout_for("@a:x")));
+        }
+
+        #[test]
+        fn a_second_confirm_does_not_reset_twice() {
+            let (mut app, store) = ready(stored());
+            send(&mut app, S::ResetSidebarAsk);
+            send(&mut app, S::ResetSidebarConfirm);
+            send(&mut app, S::ResetSidebarConfirm);
+            assert_eq!(resets(&store).len(), 1);
+        }
+
+        #[test]
+        fn a_newer_or_other_accounts_file_cannot_be_reset() {
+            for (load, state) in [
+                (SidebarLoad::Newer, SidebarState::Newer),
+                (SidebarLoad::OtherAccount, SidebarState::OtherAccount),
+            ] {
+                let (mut app, store) = ready(load);
+                assert_eq!(app.sidebar.state(), state);
+                assert!(!app.sidebar_reset_allowed());
+                let before = store.calls();
+                send(&mut app, S::ResetSidebarAsk);
+                assert!(!app.settings_ui.reset_sidebar_ask, "{state:?}");
+                // Even a confirm that arrives anyway is refused.
+                app.settings_ui.reset_sidebar_ask = true;
+                send(&mut app, S::ResetSidebarConfirm);
+                assert_eq!(store.calls(), before, "{state:?}: no store call at all");
+                assert!(!app.settings_ui.reset_sidebar_ask, "{state:?}");
+                assert_eq!(app.sidebar.state(), state);
+                assert!(app.sidebar.layout().is_none());
+            }
+        }
+
+        #[test]
+        fn before_the_layout_is_loaded_there_is_nothing_to_reset() {
+            let (mut app, _rx) = login_app();
+            let store = MemorySidebar::default();
+            app.set_sidebar_store(Box::new(store.clone()));
+            assert!(!app.sidebar_reset_allowed());
+            send(&mut app, S::ResetSidebarAsk);
+            assert!(!app.settings_ui.reset_sidebar_ask);
+            assert!(store.calls().is_empty());
+        }
+
+        fn answer_for(user: &str, outcome: ResetOutcome) -> S {
+            S::SidebarReset(ResetAnswer::new(UserId::from(user), outcome))
+        }
+
+        #[test]
+        fn a_failed_removal_says_so_and_an_overtaken_reset_does_not() {
+            let (mut app, _store) = ready(stored());
+            send(&mut app, answer_for("@a:x", ResetOutcome::Removed));
+            assert!(app.settings_ui.error.is_none());
+            send(&mut app, answer_for("@a:x", ResetOutcome::Overtaken));
+            assert!(app.settings_ui.error.is_none(), "nothing failed");
+            send(&mut app, answer_for("@a:x", ResetOutcome::Failed));
+            assert_eq!(
+                app.settings_ui.error,
+                Some(crate::settings::SettingsError::SidebarResetFailed)
+            );
+        }
+
+        #[test]
+        fn a_late_answer_for_another_account_shows_nothing() {
+            let (mut app, _store) = ready(stored());
+            let _ = app.update(core(CoreEvent::LoggedOut));
+            let _ = app.update(core(CoreEvent::LoggedIn {
+                user_id: UserId::from("@b:x"),
+                device_id: DeviceId::from("D"),
+                restored: false,
+            }));
+            send(&mut app, answer_for("@a:x", ResetOutcome::Failed));
+            assert!(app.settings_ui.error.is_none());
+            send(&mut app, answer_for("@b:x", ResetOutcome::Failed));
+            assert!(app.settings_ui.error.is_some());
+        }
+
+        #[test]
+        fn the_answer_carries_its_account_and_debug_hides_it() {
+            let text = format!("{:?}", answer_for("@secretme:x", ResetOutcome::Failed));
+            assert!(!text.contains("secretme"), "{text}");
+        }
+
+        #[test]
+        fn the_question_does_not_survive_a_login_of_another_account() {
+            let (mut app, store) = ready(stored());
+            send(&mut app, S::ResetSidebarAsk);
+            assert!(app.settings_ui.reset_sidebar_ask);
+            // A login for another account with no LoggedOut in between.
+            let _ = app.update(core(CoreEvent::LoggedIn {
+                user_id: UserId::from("@b:x"),
+                device_id: DeviceId::from("D"),
+                restored: false,
+            }));
+            assert!(!app.settings_ui.reset_sidebar_ask);
+            let _ = app.update(core(room_event(&["a", "b"])));
+            let _ = app.update(Message::SidebarLoaded(SidebarAnswer::new(
+                UserId::from("@b:x"),
+                SidebarLoad::Layout(layout_for("@b:x")),
+            )));
+            send(&mut app, S::ResetSidebarConfirm);
+            assert!(resets(&store).is_empty(), "{:?}", resets(&store));
+            assert_eq!(app.sidebar.layout(), Some(&layout_for("@b:x")));
+        }
+
+        #[test]
+        fn leaving_the_page_or_the_card_or_the_account_drops_the_ask() {
+            let (mut app, _store) = ready(stored());
+            send(&mut app, S::ResetSidebarAsk);
+            send(&mut app, S::Page(crate::settings::SettingsPage::About));
+            assert!(!app.settings_ui.reset_sidebar_ask, "page");
+            send(&mut app, S::Page(crate::settings::SettingsPage::Appearance));
+            send(&mut app, S::ResetSidebarAsk);
+            send(&mut app, S::Close);
+            assert!(!app.settings_ui.reset_sidebar_ask, "close");
+            send(&mut app, S::Open);
+            send(&mut app, S::ResetSidebarAsk);
+            let _ = app.update(core(CoreEvent::LoggedOut));
+            assert!(!app.settings_ui.reset_sidebar_ask, "logout");
+        }
+
+        #[test]
+        fn reset_never_names_another_account_after_a_logout_and_login() {
+            let (mut app, store) = ready(stored());
+            let _ = app.update(core(CoreEvent::LoggedOut));
+            let _ = app.update(core(CoreEvent::LoggedIn {
+                user_id: UserId::from("@b:x"),
+                device_id: DeviceId::from("D"),
+                restored: false,
+            }));
+            let _ = app.update(core(room_event(&["a", "b"])));
+            let _ = app.update(Message::SidebarLoaded(SidebarAnswer::new(
+                UserId::from("@b:x"),
+                SidebarLoad::Layout(layout_for("@b:x")),
+            )));
+            send(&mut app, S::Open);
+            send(&mut app, S::ResetSidebarAsk);
+            send(&mut app, S::ResetSidebarConfirm);
+            assert_eq!(resets(&store), [UserId::from("@b:x")]);
+        }
+    }
+
+    mod sidebar_menu_flow {
+        use super::*;
+        use crate::keys::Shortcut;
+        use crate::sidebar::SidebarState;
+        use crate::sidebar_menu::{
+            Entry, FolderPick, NAME_ERROR, NameDialog, Purpose, SidebarMenu,
+            SidebarMenuMessage as M, Target,
+        };
+        use crate::sidebar_store::{Call, MemorySidebar, SidebarLoad};
+        use crate::spaces::RailKey;
+        use twicecat_core::api::{FolderLayout, RailEntry, SidebarLabel, SidebarLayout, SpaceView};
+
+        pub(super) fn rid(id: &str) -> RoomId {
+            RoomId::from(id)
+        }
+
+        fn root(n: &str) -> EventId {
+            EventId::from(format!("${n}:x"))
+        }
+
+        pub(super) fn top_space(id: &str) -> SpaceView {
+            SpaceView {
+                id: rid(id),
+                name: id.to_owned(),
+                avatar: None,
+                level: 0,
+                children: 0,
+                rooms: Vec::new(),
+            }
+        }
+
+        fn sp(id: &str) -> RailEntry {
+            RailEntry::Space(rid(id))
+        }
+
+        pub(super) fn folder(id: u16, open: bool, spaces: &[&str]) -> RailEntry {
+            RailEntry::Folder(FolderLayout {
+                id,
+                name: None,
+                open,
+                spaces: spaces.iter().map(|s| rid(s)).collect(),
+            })
+        }
+
+        /// A main screen for `@a:x` with these spaces reported and this rail
+        /// stored, and the store that records the saves.
+        pub(super) fn menu_app(spaces: &[&str], rail: Vec<RailEntry>) -> (App, MemorySidebar) {
+            let (mut app, _rx) = main_app();
+            let store = MemorySidebar::default();
+            app.set_sidebar_store(Box::new(store.clone()));
+            let mut layout = SidebarLayout::new(UserId::from("@a:x"));
+            layout.rail = rail;
+            let _ = app.update(Message::SidebarLoaded(SidebarAnswer::new(
+                UserId::from("@a:x"),
+                SidebarLoad::Default,
+            )));
+            // `main_app` logged in before the store was set: load now.
+            let _ = app.sidebar.load_for(UserId::from("@a:x"), &store);
+            app.sidebar
+                .loaded(&UserId::from("@a:x"), SidebarLoad::Layout(layout));
+            let _ = app.update(core(CoreEvent::Spaces(
+                spaces.iter().map(|s| top_space(s)).collect(),
+            )));
+            assert_eq!(app.screen, Screen::Main);
+            assert_eq!(app.sidebar.state(), SidebarState::Loaded);
+            (app, store)
+        }
+
+        pub(super) fn saves(store: &MemorySidebar) -> Vec<SidebarLayout> {
+            store
+                .calls()
+                .into_iter()
+                .filter_map(|c| match c {
+                    Call::Save(_, layout) => Some(layout),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn send(app: &mut App, message: M) {
+            let _ = app.update(Message::SidebarMenu(message));
+        }
+
+        fn shape(app: &App) -> Vec<String> {
+            app.sidebar
+                .layout()
+                .expect("a layout")
+                .rail
+                .iter()
+                .map(|entry| match entry {
+                    RailEntry::Space(id) => id.as_str().to_owned(),
+                    RailEntry::Folder(f) => {
+                        let ids: Vec<&str> = f.spaces.iter().map(|s| s.as_str()).collect();
+                        format!("[{}: {}]", f.id, ids.join(" "))
+                    }
+                })
+                .collect()
+        }
+
+        fn open_on(app: &mut App, key: RailKey) {
+            send(app, M::Open(key));
+        }
+
+        fn dialog(app: &App) -> &NameDialog {
+            match &app.sidebar_menu {
+                Some(SidebarMenu::Name(dialog)) => dialog,
+                other => panic!("the name dialog is not open: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_right_click_opens_the_card_of_a_space_or_a_folder_and_not_of_home() {
+            let (mut app, _store) = menu_app(
+                &["!a:x", "!b:x", "!c:x"],
+                vec![sp("!a:x"), folder(1, false, &["!b:x", "!c:x"])],
+            );
+            open_on(&mut app, RailKey::Home);
+            assert!(app.sidebar_menu.is_none());
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            assert_eq!(
+                app.sidebar_menu,
+                Some(SidebarMenu::Card {
+                    target: Target::Space(rid("!a:x")),
+                    error: None
+                })
+            );
+            send(&mut app, M::Close);
+            assert!(app.sidebar_menu.is_none());
+            open_on(&mut app, RailKey::Folder(1));
+            assert_eq!(
+                app.sidebar_menu,
+                Some(SidebarMenu::Card {
+                    target: Target::Folder(1),
+                    error: None
+                })
+            );
+            send(&mut app, M::Close);
+            // Items the rail does not draw have no card.
+            open_on(&mut app, RailKey::Space(rid("!nope:x")));
+            open_on(&mut app, RailKey::Folder(9));
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
+        fn no_card_opens_when_customizing_is_off_or_another_layer_is_up() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            let _ = app.update(core(CoreEvent::LoggedOut));
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            assert!(app.sidebar_menu.is_none());
+
+            for load in [SidebarLoad::Newer, SidebarLoad::OtherAccount] {
+                let (mut app, store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+                app.sidebar.unload();
+                let _ = app.sidebar.load_for(UserId::from("@a:x"), &store);
+                app.sidebar.loaded(&UserId::from("@a:x"), load);
+                open_on(&mut app, RailKey::Space(rid("!a:x")));
+                assert!(app.sidebar_menu.is_none());
+            }
+
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            let _ = app.update(Message::Shortcut {
+                shortcut: Shortcut::Switcher,
+                captured: false,
+            });
+            assert!(app.switcher.open);
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            assert!(app.sidebar_menu.is_none(), "not over the switcher");
+        }
+
+        #[test]
+        fn move_down_on_a_space_moves_it_one_item_saves_once_and_closes_the_card() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            open_on(&mut app, RailKey::Space(rid("!b:x")));
+            send(&mut app, M::Entry(Entry::MoveDown));
+            assert_eq!(shape(&app), ["!a:x", "!c:x", "!b:x"]);
+            assert_eq!(saves(&store).len(), 1);
+            assert!(app.sidebar_menu.is_none());
+            // Up on the first item changes nothing, saves nothing and closes.
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            send(&mut app, M::Entry(Entry::MoveUp));
+            assert_eq!(shape(&app), ["!a:x", "!c:x", "!b:x"]);
+            assert_eq!(saves(&store).len(), 1);
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
+        fn inside_an_open_folder_it_moves_within_it_and_a_folders_own_card_moves_the_folder() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x", "!c:x", "!d:x"],
+                vec![folder(1, true, &["!a:x", "!b:x"]), sp("!c:x"), sp("!d:x")],
+            );
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            send(&mut app, M::Entry(Entry::MoveDown));
+            assert_eq!(shape(&app), ["[1: !b:x !a:x]", "!c:x", "!d:x"]);
+            // The folder's own card moves the folder as a whole.
+            open_on(&mut app, RailKey::Folder(1));
+            send(&mut app, M::Entry(Entry::MoveDown));
+            assert_eq!(shape(&app), ["!c:x", "[1: !b:x !a:x]", "!d:x"]);
+            assert_eq!(saves(&store).len(), 2);
+        }
+
+        #[test]
+        fn new_folder_opens_the_dialog_and_enter_saves_the_trimmed_name() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            open_on(&mut app, RailKey::Space(rid("!b:x")));
+            send(&mut app, M::Folder(FolderPick::New));
+            assert_eq!(dialog(&app).purpose, Purpose::NewFolder(rid("!b:x")));
+            assert_eq!(dialog(&app).text, "");
+            send(&mut app, M::NameInput("  Work  ".to_owned()));
+            assert_eq!(saves(&store).len(), 0, "typing saves nothing");
+            send(&mut app, M::NameSubmit);
+            assert!(app.sidebar_menu.is_none());
+            assert_eq!(shape(&app), ["!a:x", "[0: !b:x]", "!c:x"]);
+            let saved = saves(&store);
+            assert_eq!(saved.len(), 1);
+            let RailEntry::Folder(f) = &saved[0].rail[1] else {
+                panic!("a folder")
+            };
+            assert_eq!(f.name.as_ref().map(SidebarLabel::as_str), Some("Work"));
+        }
+
+        #[test]
+        fn a_blank_name_makes_an_unnamed_folder_and_a_pick_moves_into_an_existing_one() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x", "!c:x"],
+                vec![sp("!a:x"), folder(1, false, &["!b:x", "!c:x"])],
+            );
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            send(&mut app, M::Folder(FolderPick::New));
+            send(&mut app, M::NameInput("   ".to_owned()));
+            send(&mut app, M::NameSubmit);
+            assert_eq!(shape(&app), ["[0: !a:x]", "[1: !b:x !c:x]"]);
+            // Into the existing folder.
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            let _ = &store;
+            send(&mut app, M::Folder(FolderPick::Existing(1)));
+            assert_eq!(shape(&app), ["[1: !b:x !c:x !a:x]"]);
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
+        fn a_name_that_is_not_valid_shows_the_error_saves_nothing_and_esc_cancels() {
+            for bad in ["w".repeat(33), "\u{202E}x".to_owned()] {
+                let (mut app, store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+                open_on(&mut app, RailKey::Space(rid("!b:x")));
+                send(&mut app, M::Folder(FolderPick::New));
+                send(&mut app, M::NameInput(bad));
+                send(&mut app, M::NameSubmit);
+                assert_eq!(dialog(&app).error, Some(NAME_ERROR));
+                assert!(saves(&store).is_empty());
+                assert_eq!(shape(&app), Vec::<String>::new());
+                // Typing again clears the line.
+                send(&mut app, M::NameInput("ok".to_owned()));
+                assert_eq!(dialog(&app).error, None);
+                // Esc cancels: nothing saved.
+                let _ = app.update(Message::Shortcut {
+                    shortcut: Shortcut::Escape,
+                    captured: true,
+                });
+                assert!(app.sidebar_menu.is_none());
+                assert!(saves(&store).is_empty());
+            }
+        }
+
+        #[test]
+        fn the_field_keeps_at_most_128_characters() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            open_on(&mut app, RailKey::Space(rid("!b:x")));
+            send(&mut app, M::Folder(FolderPick::New));
+            send(&mut app, M::NameInput("n".repeat(5000)));
+            assert_eq!(
+                dialog(&app).text.chars().count(),
+                crate::sidebar_menu::MAX_NAME_INPUT
+            );
+        }
+
+        #[test]
+        fn rename_opens_the_dialog_with_the_current_name_and_saves_the_new_one() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x"],
+                vec![RailEntry::Folder(FolderLayout {
+                    id: 4,
+                    name: Some(SidebarLabel::try_from("Old").expect("valid")),
+                    open: false,
+                    spaces: vec![rid("!a:x"), rid("!b:x")],
+                })],
+            );
+            open_on(&mut app, RailKey::Folder(4));
+            send(&mut app, M::Entry(Entry::Rename));
+            assert_eq!(dialog(&app).purpose, Purpose::RenameFolder(4));
+            assert_eq!(dialog(&app).text, "Old");
+            send(&mut app, M::NameInput(" New ".to_owned()));
+            send(&mut app, M::NameSubmit);
+            let saved = saves(&store);
+            let RailEntry::Folder(f) = &saved[0].rail[0] else {
+                panic!("a folder")
+            };
+            assert_eq!(f.name.as_ref().map(SidebarLabel::as_str), Some("New"));
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
+        fn ungroup_and_remove_from_folder_go_through_the_card() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x", "!c:x"],
+                vec![folder(1, true, &["!a:x", "!b:x", "!c:x"])],
+            );
+            open_on(&mut app, RailKey::Space(rid("!b:x")));
+            send(&mut app, M::Entry(Entry::RemoveFromFolder));
+            assert_eq!(shape(&app), ["[1: !a:x !c:x]", "!b:x"]);
+            open_on(&mut app, RailKey::Folder(1));
+            send(&mut app, M::Entry(Entry::Ungroup));
+            assert_eq!(shape(&app), ["!a:x", "!c:x", "!b:x"]);
+            assert_eq!(saves(&store).len(), 2);
+        }
+
+        #[test]
+        fn a_full_layout_keeps_the_card_open_with_the_line_and_saves_nothing() {
+            use twicecat_core::api::sidebar::limits::MAX_FOLDERS;
+            let ids: Vec<String> = (0..=MAX_FOLDERS).map(|n| format!("!s{n}:x")).collect();
+            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let mut rail: Vec<RailEntry> = refs[..MAX_FOLDERS]
+                .iter()
+                .enumerate()
+                .map(|(n, id)| folder(u16::try_from(n).expect("small"), false, &[id]))
+                .collect();
+            rail.push(sp(refs[MAX_FOLDERS]));
+            let (mut app, store) = menu_app(&refs, rail);
+            open_on(&mut app, RailKey::Space(rid(refs[MAX_FOLDERS])));
+            send(&mut app, M::Folder(FolderPick::New));
+            send(&mut app, M::NameSubmit);
+            // The dialog stays, with the line.
+            assert_eq!(
+                dialog(&app).error,
+                Some("The sidebar layout is full"),
+                "{:?}",
+                app.sidebar_menu
+            );
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn esc_closes_the_dialog_or_the_card_and_nothing_under_it() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("r"))));
+            let esc = |app: &mut App| {
+                let _ = app.update(Message::Shortcut {
+                    shortcut: Shortcut::Escape,
+                    captured: false,
+                });
+            };
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            esc(&mut app);
+            assert!(app.sidebar_menu.is_none());
+            assert!(
+                app.threads.panel.is_some(),
+                "the thread panel is not closed"
+            );
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            send(&mut app, M::Folder(FolderPick::New));
+            esc(&mut app);
+            assert!(app.sidebar_menu.is_none());
+            assert!(app.threads.panel.is_some());
+            // With nothing of the rail open, Esc is as before.
+            esc(&mut app);
+            assert!(app.threads.panel.is_none());
+        }
+
+        #[test]
+        fn the_switcher_is_over_the_card_and_takes_esc_first() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            let _ = app.update(Message::Shortcut {
+                shortcut: Shortcut::Switcher,
+                captured: false,
+            });
+            assert!(app.switcher.open && app.sidebar_menu.is_some());
+            let esc = Message::Shortcut {
+                shortcut: Shortcut::Escape,
+                captured: false,
+            };
+            let _ = app.update(esc.clone());
+            assert!(!app.switcher.open);
+            assert!(app.sidebar_menu.is_some(), "the card is still there");
+            let _ = app.update(esc);
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
+        fn the_account_card_opens_closes_with_esc_and_closes_after_each_choice() {
+            use crate::screens::main_view::AccountAction;
+            let esc = Message::Shortcut {
+                shortcut: Shortcut::Escape,
+                captured: false,
+            };
+            let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+            send(&mut app, M::OpenAccount);
+            assert_eq!(app.sidebar_menu, Some(SidebarMenu::Account));
+            let _ = app.update(esc.clone());
+            assert!(app.sidebar_menu.is_none(), "Esc closes the card");
+            // The switcher is over the card and takes Esc first.
+            send(&mut app, M::OpenAccount);
+            let _ = app.update(Message::Shortcut {
+                shortcut: Shortcut::Switcher,
+                captured: false,
+            });
+            let _ = app.update(esc.clone());
+            assert!(!app.switcher.open && app.sidebar_menu.is_some());
+            let _ = app.update(esc);
+            assert!(app.sidebar_menu.is_none());
+            // Every entry sends what it sent in the old menu and closes.
+            for action in [
+                AccountAction::Settings,
+                AccountAction::VoiceAudio,
+                AccountAction::Sessions,
+            ] {
+                let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+                send(&mut app, M::OpenAccount);
+                send(&mut app, M::Account(action));
+                assert!(app.sidebar_menu.is_none(), "{action:?} closes the card");
+                match action {
+                    AccountAction::Settings => assert!(app.settings_open()),
+                    // The card opens only while the audio is live; the
+                    // message it sends is checked in `main_view`.
+                    AccountAction::VoiceAudio => {}
+                    AccountAction::Sessions => assert!(app.sessions.open),
+                    AccountAction::LogOut => unreachable!(),
+                }
+            }
+        }
+
+        #[test]
+        fn the_add_card_opens_closes_with_esc_covers_the_bar_and_closes_after_each_choice() {
+            use crate::rooms::RoomsMessage;
+            use crate::screens::room_list_pane::AddAction;
+            let esc = Message::Shortcut {
+                shortcut: Shortcut::Escape,
+                captured: false,
+            };
+            let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+            send(&mut app, M::OpenAdd);
+            assert_eq!(app.sidebar_menu, Some(SidebarMenu::Add));
+            assert!(
+                app.sidebar_menu_open(),
+                "the card is a layer, so the sharing bar is drawn again over it"
+            );
+            let _ = app.update(esc.clone());
+            assert!(app.sidebar_menu.is_none(), "Esc closes the card");
+            // The switcher is over the card and takes Esc first.
+            send(&mut app, M::OpenAdd);
+            let _ = app.update(Message::Shortcut {
+                shortcut: Shortcut::Switcher,
+                captured: false,
+            });
+            let _ = app.update(esc.clone());
+            assert!(!app.switcher.open && app.sidebar_menu.is_some());
+            let _ = app.update(esc);
+            assert!(app.sidebar_menu.is_none());
+            // Every entry closes the card and sends what the old buttons did.
+            assert_eq!(AddAction::ALL.len(), 3);
+            for action in AddAction::ALL {
+                let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+                send(&mut app, M::OpenAdd);
+                send(&mut app, M::Add(action));
+                assert!(app.sidebar_menu.is_none(), "{action:?} closes the card");
+                assert!(
+                    matches!(
+                        action.message(),
+                        Message::Rooms(
+                            RoomsMessage::OpenCreate
+                                | RoomsMessage::OpenDm
+                                | RoomsMessage::OpenJoin
+                        )
+                    ),
+                    "{action:?}"
+                );
+                assert!(app.any_overlay_open(), "{action:?} opens its dialog");
+            }
+        }
+
+        #[test]
+        fn the_add_card_does_not_open_over_another_layer() {
+            let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+            let _ = app.update(Message::Settings(SettingsMessage::Open));
+            send(&mut app, M::OpenAdd);
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
+        fn log_out_in_the_account_card_asks_through_the_logout_flow() {
+            use crate::screens::main_view::AccountAction;
+            let (mut app, mut rx) = main_app();
+            send(&mut app, M::OpenAccount);
+            send(&mut app, M::Account(AccountAction::LogOut));
+            assert!(app.sidebar_menu.is_none());
+            // Either the warning is up, or the logout went out: the same as
+            // `Message::LogoutRequested` does.
+            let sent = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+            assert!(
+                app.sessions.logout_warning || matches!(sent.as_slice(), [Command::Logout]),
+                "{sent:?}"
+            );
+        }
+
+        #[test]
+        fn the_account_card_does_not_open_over_another_layer() {
+            let (mut app, _store) = menu_app(&["!a:x"], Vec::new());
+            let _ = app.update(Message::Settings(SettingsMessage::Open));
+            send(&mut app, M::OpenAccount);
+            assert!(app.sidebar_menu.is_none());
+        }
+
+        #[test]
+        fn the_room_stepping_chords_and_the_composer_wait_under_the_card() {
+            let (mut app, mut rx) = main_app();
+            let store = MemorySidebar::default();
+            app.set_sidebar_store(Box::new(store.clone()));
+            let _ = app.sidebar.load_for(UserId::from("@a:x"), &store);
+            app.sidebar
+                .loaded(&UserId::from("@a:x"), SidebarLoad::Default);
+            let _ = app.update(core(CoreEvent::Spaces(vec![top_space("!s:x")])));
+            type_in(&mut app, "hello");
+            while rx.try_recv().is_ok() {}
+            open_on(&mut app, RailKey::Space(rid("!s:x")));
+            assert!(app.sidebar_menu.is_some());
+            let selected = app.selected.clone();
+            let _ = app.update(Message::Shortcut {
+                shortcut: Shortcut::NextRoom,
+                captured: false,
+            });
+            assert_eq!(app.selected, selected, "the room did not change");
+            let _ = app.update(Message::ComposerKey(crate::composer::ComposerKey::Send));
+            assert!(rx.try_recv().is_err(), "the draft is not sent");
+        }
+
+        #[test]
+        fn hover_and_press_of_a_folder_go_when_a_change_dissolves_it() {
+            let (mut app, _store) =
+                menu_app(&["!a:x", "!b:x"], vec![folder(1, false, &["!a:x", "!b:x"])]);
+            let key = RailKey::Folder(1);
+            let _ = app.update(Message::Spaces(crate::spaces::SpacesMessage::Enter(
+                key.clone(),
+            )));
+            let _ = app.update(Message::Spaces(crate::spaces::SpacesMessage::RailPressed(
+                key.clone(),
+            )));
+            assert!(
+                app.apply_sidebar(crate::sidebar::Op::UngroupFolder(1))
+                    .is_ok()
+            );
+            assert_eq!(app.rail_hover, None);
+            assert_eq!(app.rail_press, None);
+        }
+
+        #[test]
+        fn the_card_closes_when_its_item_is_gone_and_at_logout() {
+            let (mut app, _store) =
+                menu_app(&["!a:x", "!b:x"], vec![folder(1, false, &["!a:x", "!b:x"])]);
+            open_on(&mut app, RailKey::Folder(1));
+            assert!(app.sidebar_menu.is_some());
+            let _ = app.update(core(CoreEvent::Spaces(vec![top_space("!other:x")])));
+            assert!(
+                app.sidebar_menu.is_none(),
+                "the folder is not drawn any more"
+            );
+
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            send(&mut app, M::Folder(FolderPick::New));
+            let _ = app.update(core(CoreEvent::Spaces(vec![top_space("!b:x")])));
+            assert!(app.sidebar_menu.is_none(), "the space is gone");
+
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            open_on(&mut app, RailKey::Space(rid("!a:x")));
+            let _ = app.update(core(CoreEvent::LoggedOut));
+            assert!(app.sidebar_menu.is_none());
+        }
+    }
+
+    mod space_tree {
+        use super::sidebar_menu_flow::{menu_app, rid, saves, top_space};
+        use super::*;
+        use crate::sidebar_menu::{
+            Entry, SidebarMenu, SidebarMenuMessage as M, Target, tree_entry,
+        };
+        use crate::sidebar_store::MemorySidebar;
+        use crate::spaces::{RailKey, SpacesMessage as S};
+        use twicecat_core::api::{SectionKey, SpaceView};
+
+        fn send(app: &mut App, message: S) {
+            let _ = app.update(Message::Spaces(message));
+        }
+
+        /// `!p:x` with the sub-spaces `!s1:x` and `!s2:x`, and `!lonely:x`
+        /// with none, on a rail that is loaded.
+        fn tree_app() -> (App, MemorySidebar) {
+            let (mut app, store) = menu_app(&["!p:x", "!lonely:x"], Vec::new());
+            let held = |id: &str, level, rooms: &[&str]| SpaceView {
+                level,
+                rooms: rooms.iter().map(|r| rid(r)).collect(),
+                ..top_space(id)
+            };
+            let _ = app.update(core(CoreEvent::Spaces(vec![
+                held("!p:x", 0, &["!s1:x", "!s2:x", "!room:x"]),
+                held("!s1:x", 1, &["!a:x", "!s1:x"]),
+                held("!s2:x", 1, &["!s2:x"]),
+                held("!lonely:x", 0, &["!room2:x"]),
+            ])));
+            (app, store)
+        }
+
+        fn calls(store: &MemorySidebar) -> usize {
+            store.calls().len()
+        }
+
+        #[test]
+        fn a_click_on_the_chevron_toggles_the_tree_and_saves_nothing() {
+            let (mut app, store) = tree_app();
+            let before = calls(&store);
+            assert!(app.rail_expanded.is_empty(), "closed at the start");
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert!(app.rail_expanded.contains(&rid("!p:x")));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert!(app.rail_expanded.is_empty());
+            assert_eq!(calls(&store), before, "no store call at all");
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn a_space_with_no_sub_spaces_and_an_unknown_space_do_not_toggle() {
+            let (mut app, _store) = tree_app();
+            send(&mut app, S::ToggleTree(rid("!lonely:x")));
+            send(&mut app, S::ToggleTree(rid("!s1:x")));
+            send(&mut app, S::ToggleTree(rid("!nope:x")));
+            assert!(app.rail_expanded.is_empty());
+        }
+
+        #[test]
+        fn the_tree_toggle_ends_a_rail_drag_and_forgets_a_press() {
+            let (mut app, _store) = tree_app();
+            send(&mut app, S::RailPressed(RailKey::Space(rid("!p:x"))));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert!(app.rail_press.is_none());
+        }
+
+        #[test]
+        fn the_card_entries_show_and_hide_the_tree_and_save_nothing() {
+            let (mut app, store) = tree_app();
+            let before = calls(&store);
+            let open = |app: &mut App, id: &str| {
+                let _ = app.update(Message::SidebarMenu(M::Open(RailKey::Space(rid(id)))));
+                assert!(matches!(
+                    &app.sidebar_menu,
+                    Some(SidebarMenu::Card {
+                        target: Target::Space(_),
+                        ..
+                    })
+                ));
+            };
+            open(&mut app, "!p:x");
+            let _ = app.update(Message::SidebarMenu(M::Entry(Entry::ShowSubSpaces)));
+            assert!(app.rail_expanded.contains(&rid("!p:x")));
+            assert!(
+                app.sidebar_menu.is_none(),
+                "the card closes, as after any entry"
+            );
+            open(&mut app, "!p:x");
+            let _ = app.update(Message::SidebarMenu(M::Entry(Entry::HideSubSpaces)));
+            assert!(app.rail_expanded.is_empty());
+            assert_eq!(calls(&store), before, "no store call");
+            // On a space with no sub-spaces the entries do nothing.
+            open(&mut app, "!lonely:x");
+            let _ = app.update(Message::SidebarMenu(M::Entry(Entry::ShowSubSpaces)));
+            assert!(app.rail_expanded.is_empty());
+        }
+
+        #[test]
+        fn the_card_offers_one_tree_entry_only_to_a_space_that_has_sub_spaces() {
+            assert_eq!(tree_entry(false, false), None);
+            assert_eq!(tree_entry(false, true), None);
+            assert_eq!(tree_entry(true, false), Some(Entry::ShowSubSpaces));
+            assert_eq!(tree_entry(true, true), Some(Entry::HideSubSpaces));
+            assert_eq!(Entry::ShowSubSpaces.label(), "Show sub-spaces");
+            assert_eq!(Entry::HideSubSpaces.label(), "Hide sub-spaces");
+        }
+
+        #[test]
+        fn logout_and_session_expiry_empty_the_tree() {
+            for event in [CoreEvent::LoggedOut, CoreEvent::SessionExpired] {
+                let (mut app, _store) = tree_app();
+                send(&mut app, S::ToggleTree(rid("!p:x")));
+                assert!(!app.rail_expanded.is_empty());
+                let _ = app.update(core(event));
+                assert!(app.rail_expanded.is_empty());
+            }
+        }
+
+        #[test]
+        fn a_login_of_another_account_with_no_logout_empties_the_tree() {
+            let (mut app, _store) = tree_app();
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            send(&mut app, S::Enter(RailKey::Space(rid("!s1:x"))));
+            assert!(!app.rail_expanded.is_empty() && app.rail_hover.is_some());
+            let _ = app.update(core(CoreEvent::LoggedIn {
+                user_id: UserId::from("@other:x"),
+                device_id: DeviceId::from("D2"),
+                restored: false,
+            }));
+            assert!(app.rail_expanded.is_empty(), "the tree of the old account");
+            assert_eq!(app.rail_hover, None);
+        }
+
+        #[test]
+        fn a_sub_spaces_hover_survives_while_its_parent_is_open_and_goes_when_it_closes() {
+            let (mut app, _store) = tree_app();
+            let sub = RailKey::Space(rid("!s1:x"));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            send(&mut app, S::Enter(sub.clone()));
+            // Something else changes the rail: the open tree's slot is still drawn.
+            let _ = app.update(core(CoreEvent::SpaceUnread {
+                spaces: Vec::new(),
+                outside: Default::default(),
+            }));
+            app.clear_stale_rail_keys();
+            assert_eq!(app.rail_hover, Some(sub.clone()));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert_eq!(app.rail_hover, None, "its slot is not drawn any more");
+        }
+
+        #[test]
+        fn selecting_a_sub_space_filters_the_list_to_it_and_sections_it() {
+            let (mut app, store) = tree_app();
+            let before = calls(&store);
+            send(&mut app, S::Select(Some(rid("!s1:x"))));
+            assert_eq!(app.query.space, Some(rid("!s1:x")));
+            assert!(app.sections_shown(), "the sub-space's list is sectioned");
+            let lines = app.section_lines().expect("sections");
+            let own: Vec<_> = lines
+                .iter()
+                .filter_map(|l| match l {
+                    crate::sections::Line::Header(h) => Some(h.key.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                own.iter().all(|k| !matches!(k, SectionKey::SubSpace(_))),
+                "a level 1 space has no sub-space sections"
+            );
+            assert_eq!(calls(&store), before, "choosing a space saves nothing");
+            // A click is a press and a release on the sub-space's slot.
+            send(&mut app, S::Select(None));
+            assert_eq!(app.query.space, None);
+        }
+
+        #[test]
+        fn a_selected_sub_space_survives_its_tree_closing() {
+            let (mut app, _store) = tree_app();
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            send(&mut app, S::Select(Some(rid("!s2:x"))));
+            send(&mut app, S::ToggleTree(rid("!p:x")));
+            assert_eq!(app.query.space, Some(rid("!s2:x")));
+            assert!(
+                app.spaces
+                    .holds_selected(&rid("!p:x"), app.query.space.as_ref()),
+                "the closed parent stands for it"
+            );
+        }
+    }
+
+    mod rail_dragging {
+        use super::sidebar_menu_flow::{folder, menu_app, rid, saves, top_space};
+        use super::*;
+        use crate::keys::Shortcut;
+        use crate::rail_reorder::{RailColumn, ReorderEvent};
+        use crate::spaces::SpacesMessage as S;
+        use twicecat_core::api::RailEntry;
+
+        fn send(app: &mut App, message: S) {
+            let _ = app.update(Message::Spaces(message));
+        }
+
+        fn key(id: &str) -> RailKey {
+            RailKey::Space(rid(id))
+        }
+
+        fn reorder(app: &mut App, column: RailColumn, event: ReorderEvent) {
+            send(app, S::RailReorder(column, event));
+        }
+
+        /// What sweeten reports when item `from` of the top column is picked.
+        fn pick(app: &mut App, id: &str, from: usize) {
+            send(app, S::Enter(key(id)));
+            send(app, S::RailPressed(key(id)));
+            reorder(app, RailColumn::Top, ReorderEvent::Picked { index: from });
+            assert!(app.rail_reorder.is_some());
+        }
+
+        fn drop_on(app: &mut App, from: usize, to: usize) {
+            reorder(
+                app,
+                RailColumn::Top,
+                ReorderEvent::Dropped {
+                    index: from,
+                    target_index: to,
+                },
+            );
+        }
+
+        fn order(app: &App) -> Vec<String> {
+            app.sidebar
+                .layout()
+                .expect("a layout")
+                .rail
+                .iter()
+                .map(|e| match e {
+                    RailEntry::Space(id) => id.as_str().to_owned(),
+                    RailEntry::Folder(f) => format!(
+                        "[{}]",
+                        f.spaces
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    ),
+                })
+                .collect()
+        }
+
+        #[test]
+        fn a_drop_after_a_later_space_moves_it_and_saves_once() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            pick(&mut app, "!a:x", 0);
+            assert!(saves(&store).is_empty(), "nothing is saved before the drop");
+            drop_on(&mut app, 0, 1);
+            assert_eq!(order(&app), ["!b:x", "!a:x", "!c:x"]);
+            assert_eq!(saves(&store).len(), 1);
+            assert!(app.rail_reorder.is_none() && app.rail_press.is_none());
+        }
+
+        #[test]
+        fn a_drop_before_an_earlier_space_moves_it_up() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            pick(&mut app, "!c:x", 2);
+            drop_on(&mut app, 2, 0);
+            assert_eq!(order(&app), ["!c:x", "!a:x", "!b:x"]);
+            assert_eq!(saves(&store).len(), 1);
+        }
+
+        #[test]
+        fn a_drop_where_it_is_or_with_no_drag_saves_nothing() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            pick(&mut app, "!a:x", 0);
+            drop_on(&mut app, 0, 0);
+            assert!(app.rail_reorder.is_none(), "the drag is over");
+            // A drop that was never picked is ignored.
+            drop_on(&mut app, 0, 1);
+            assert!(saves(&store).is_empty());
+            assert_eq!(order(&app), Vec::<String>::new(), "the layout is untouched");
+            // An index out of range is no place.
+            pick(&mut app, "!a:x", 0);
+            drop_on(&mut app, 0, 7);
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn a_canceled_drag_saves_nothing_and_ends() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            pick(&mut app, "!a:x", 0);
+            reorder(
+                &mut app,
+                RailColumn::Top,
+                ReorderEvent::Canceled { index: 0 },
+            );
+            assert!(app.rail_reorder.is_none());
+            drop_on(&mut app, 0, 2);
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn esc_and_losing_the_focus_cancel_flip_the_generation_and_save_nothing() {
+            for cancel in ["esc", "focus"] {
+                let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+                let before = app.rail_generation;
+                pick(&mut app, "!a:x", 0);
+                assert_eq!(app.rail_generation, before, "picking flips nothing");
+                match cancel {
+                    "esc" => {
+                        let _ = app.update(Message::Shortcut {
+                            shortcut: Shortcut::Escape,
+                            captured: false,
+                        });
+                    }
+                    _ => {
+                        let _ = app.update(Message::WindowFocus(false));
+                    }
+                }
+                assert!(app.rail_reorder.is_none(), "{cancel}");
+                assert_ne!(app.rail_generation, before, "{cancel}: sweeten is reset");
+                // What the old column still reports after that drops nothing.
+                drop_on(&mut app, 0, 2);
+                assert!(saves(&store).is_empty(), "{cancel}");
+                assert_eq!(app.query.space, None, "{cancel}: no click either");
+            }
+        }
+
+        #[test]
+        fn esc_with_no_drag_is_not_taken_by_the_rail() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            assert!(app.rail_escape(Shortcut::Escape).is_none());
+            send(&mut app, S::RailPressed(key("!a:x")));
+            assert!(
+                app.rail_escape(Shortcut::Escape).is_none(),
+                "a press is no drag"
+            );
+            let before = app.rail_generation;
+            let _ = app.update(Message::WindowFocus(false));
+            assert_eq!(app.rail_generation, before, "nothing ran, nothing flips");
+            assert!(app.rail_press.is_none(), "the press is forgotten");
+        }
+
+        #[test]
+        fn a_press_and_a_release_on_one_item_is_a_click() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            send(&mut app, S::RailPressed(key("!a:x")));
+            send(&mut app, S::Release(key("!a:x")));
+            assert_eq!(app.query.space, Some(rid("!a:x")), "a click selects");
+            assert!(saves(&store).is_empty());
+            assert!(app.rail_press.is_none(), "the click is used up");
+            // A second release with no press is none.
+            send(&mut app, S::RailPressed(key("!b:x")));
+            send(&mut app, S::Exit(key("!b:x")));
+            send(&mut app, S::Release(key("!b:x")));
+            assert_eq!(app.query.space, Some(rid("!a:x")), "it left the item");
+        }
+
+        #[test]
+        fn a_release_nobody_pressed_is_no_click() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            send(&mut app, S::Release(key("!a:x")));
+            assert_eq!(app.query.space, None);
+            // The press was on another item.
+            send(&mut app, S::RailPressed(key("!b:x")));
+            send(&mut app, S::Release(key("!a:x")));
+            assert_eq!(app.query.space, None);
+        }
+
+        #[test]
+        fn a_picked_item_is_no_click_and_neither_is_the_release_before_the_drop() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            pick(&mut app, "!b:x", 1);
+            assert!(app.rail_press.is_none(), "picking ends the click");
+            // The release reaches the item before the column reports the drop.
+            send(&mut app, S::Release(key("!b:x")));
+            drop_on(&mut app, 1, 0);
+            assert_eq!(app.query.space, None, "a drag is no click");
+        }
+
+        #[test]
+        fn home_is_a_click_only_and_a_layout_that_cannot_change_is_not_dragged() {
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            send(&mut app, S::RailPressed(RailKey::Home));
+            send(&mut app, S::Release(RailKey::Home));
+            assert_eq!(app.query.space, None);
+            // No layout loaded: arranging is off, so a pick is not taken.
+            let (mut app, _rx) = main_app();
+            let _ = app.update(core(CoreEvent::Spaces(vec![
+                top_space("!a:x"),
+                top_space("!b:x"),
+            ])));
+            send(&mut app, S::RailPressed(key("!a:x")));
+            reorder(&mut app, RailColumn::Top, ReorderEvent::Picked { index: 0 });
+            assert!(app.rail_reorder.is_none());
+        }
+
+        #[test]
+        fn a_pick_of_an_index_the_column_does_not_have_is_not_taken() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            reorder(&mut app, RailColumn::Top, ReorderEvent::Picked { index: 2 });
+            assert!(app.rail_reorder.is_none());
+            reorder(
+                &mut app,
+                RailColumn::Folder(9),
+                ReorderEvent::Picked { index: 0 },
+            );
+            assert!(app.rail_reorder.is_none(), "no such folder");
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn keys_that_changed_between_the_pick_and_the_drop_save_nothing() {
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            pick(&mut app, "!a:x", 0);
+            let before = app.rail_generation;
+            // The core reports another set of spaces under the drag.
+            let _ = app.update(core(CoreEvent::Spaces(vec![
+                top_space("!a:x"),
+                top_space("!c:x"),
+            ])));
+            assert!(app.rail_reorder.is_none(), "the drag cannot go on");
+            assert_ne!(app.rail_generation, before, "sweeten is reset");
+            drop_on(&mut app, 0, 1);
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn a_drop_the_drag_did_not_start_in_the_same_column_is_ignored() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x", "!c:x"],
+                vec![folder(1, true, &["!b:x", "!c:x"])],
+            );
+            pick(&mut app, "!a:x", 0);
+            reorder(
+                &mut app,
+                RailColumn::Folder(1),
+                ReorderEvent::Dropped {
+                    index: 0,
+                    target_index: 1,
+                },
+            );
+            assert!(saves(&store).is_empty());
+            assert_eq!(app.rail_reorder, None, "the drag is over");
+        }
+
+        #[test]
+        fn inside_an_open_folder_a_drag_reorders_only_inside_it() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x", "!c:x", "!d:x"],
+                vec![
+                    RailEntry::Space(rid("!a:x")),
+                    folder(1, true, &["!b:x", "!c:x", "!d:x"]),
+                ],
+            );
+            send(&mut app, S::RailPressed(key("!b:x")));
+            reorder(
+                &mut app,
+                RailColumn::Folder(1),
+                ReorderEvent::Picked { index: 0 },
+            );
+            assert!(app.rail_reorder.is_some());
+            reorder(
+                &mut app,
+                RailColumn::Folder(1),
+                ReorderEvent::Dropped {
+                    index: 0,
+                    target_index: 2,
+                },
+            );
+            assert_eq!(order(&app), ["!a:x", "[!c:x,!d:x,!b:x]"]);
+            assert_eq!(saves(&store).len(), 1);
+        }
+
+        #[test]
+        fn a_closed_folder_is_dragged_as_one_item() {
+            let (mut app, store) = menu_app(
+                &["!a:x", "!b:x", "!c:x", "!d:x"],
+                vec![
+                    RailEntry::Space(rid("!a:x")),
+                    folder(1, false, &["!b:x", "!c:x"]),
+                    RailEntry::Space(rid("!d:x")),
+                ],
+            );
+            send(&mut app, S::RailPressed(RailKey::Folder(1)));
+            reorder(&mut app, RailColumn::Top, ReorderEvent::Picked { index: 1 });
+            drop_on(&mut app, 1, 2);
+            assert_eq!(order(&app), ["!a:x", "!d:x", "[!b:x,!c:x]"]);
+            assert_eq!(saves(&store).len(), 1);
+        }
+
+        #[test]
+        fn a_card_that_opens_ends_the_drag() {
+            use crate::sidebar_menu::SidebarMenuMessage;
+            let (mut app, store) = menu_app(&["!a:x", "!b:x", "!c:x"], Vec::new());
+            pick(&mut app, "!a:x", 0);
+            let before = app.rail_generation;
+            let _ = app.update(Message::SidebarMenu(SidebarMenuMessage::Open(key("!b:x"))));
+            assert!(app.sidebar_menu.is_some());
+            assert!(app.rail_reorder.is_none());
+            assert_ne!(app.rail_generation, before);
+            drop_on(&mut app, 0, 2);
+            assert!(saves(&store).is_empty());
+        }
+
+        #[test]
+        fn a_rail_drag_needs_no_window_listener() {
+            // Iced subscriptions are opaque; their count is what can be seen.
+            use iced::advanced::subscription::into_recipes;
+            let (mut app, _store) = menu_app(&["!a:x", "!b:x"], Vec::new());
+            let count = |app: &App| into_recipes(app.list_drag_subscription()).len();
+            send(&mut app, S::RailPressed(key("!a:x")));
+            assert_eq!(count(&app), 0, "pressed");
+            reorder(&mut app, RailColumn::Top, ReorderEvent::Picked { index: 0 });
+            assert_eq!(count(&app), 0, "dragging");
+        }
+
+        #[test]
+        fn the_listener_turns_the_cursor_and_the_left_button_into_messages() {
+            use iced::Point;
+            use iced::mouse::{Button, Event as M};
+            let ev = |m| crate::spaces::pointer_message(iced::Event::Mouse(m));
+            assert!(matches!(
+                ev(M::CursorMoved {
+                    position: Point::new(1.0, 2.0)
+                }),
+                Some(Message::Spaces(S::PointerMoved(_)))
+            ));
+            assert!(matches!(
+                ev(M::ButtonReleased(Button::Left)),
+                Some(Message::Spaces(S::PointerReleased))
+            ));
+            assert!(ev(M::ButtonReleased(Button::Right)).is_none());
+            assert!(ev(M::ButtonPressed(Button::Right)).is_none());
+        }
+
+        #[test]
+        fn the_listener_handles_touch_and_a_left_press_too() {
+            use iced::Point;
+            use iced::mouse::{Button, Event as M};
+            use iced::touch::{Event as T, Finger};
+            let p = Point::new(1.0, 2.0);
+            let f = Finger(1);
+            let ev = |e| crate::spaces::pointer_message(e);
+            let touch = |t| ev(iced::Event::Touch(t));
+            assert!(matches!(
+                touch(T::FingerMoved { id: f, position: p }),
+                Some(Message::Spaces(S::PointerMoved(_)))
+            ));
+            assert!(matches!(
+                touch(T::FingerLifted { id: f, position: p }),
+                Some(Message::Spaces(S::PointerReleased))
+            ));
+            // A cancelled touch is not a release: it must never drop.
+            assert!(matches!(
+                touch(T::FingerLost { id: f, position: p }),
+                Some(Message::Spaces(S::PointerCancelled))
+            ));
+            assert!(matches!(
+                touch(T::FingerPressed { id: f, position: p }),
+                Some(Message::Spaces(S::PointerPressed))
+            ));
+            assert!(matches!(
+                ev(iced::Event::Mouse(M::ButtonPressed(Button::Left))),
+                Some(Message::Spaces(S::PointerPressed))
+            ));
+        }
+    }
+
+    mod sidebar_findings {
+        use super::*;
+        use crate::sidebar_store::{MemorySidebar, SidebarLoad};
+        use crate::spaces::{RailKey, SpacesMessage};
+        use twicecat_core::api::{FolderLayout, RailEntry, SidebarLabel, SidebarLayout, SpaceView};
+
+        fn folder_layout() -> SidebarLayout {
+            let mut layout = SidebarLayout::new(UserId::from("@a:x"));
+            layout.rail = vec![RailEntry::Folder(FolderLayout {
+                id: 1,
+                name: Some(SidebarLabel::try_from("Payroll").expect("a valid name")),
+                open: false,
+                spaces: vec![RoomId::from("!s1:x"), RoomId::from("!s2:x")],
+            })];
+            layout
+        }
+
+        fn top_space(id: &str) -> SpaceView {
+            SpaceView {
+                id: RoomId::from(id),
+                name: id.to_owned(),
+                avatar: None,
+                level: 0,
+                children: 0,
+                rooms: Vec::new(),
+            }
+        }
+
+        fn app_with_folder() -> App {
+            let (mut app, _rx) = login_app();
+            app.set_sidebar_store(Box::new(MemorySidebar::default()));
+            let _ = app.update(core(CoreEvent::LoggedIn {
+                user_id: UserId::from("@a:x"),
+                device_id: DeviceId::from("D"),
+                restored: false,
+            }));
+            let _ = app.update(Message::SidebarLoaded(SidebarAnswer::new(
+                UserId::from("@a:x"),
+                SidebarLoad::Layout(folder_layout()),
+            )));
+            let _ = app.update(core(CoreEvent::Spaces(vec![
+                top_space("!s1:x"),
+                top_space("!s2:x"),
+            ])));
+            app
+        }
+
+        #[test]
+        fn the_debug_of_the_loaded_message_holds_no_account_room_or_name() {
+            let text = format!(
+                "{:?}",
+                Message::SidebarLoaded(SidebarAnswer::new(
+                    UserId::from("@a:x"),
+                    SidebarLoad::Layout(folder_layout())
+                ))
+            );
+            for secret in ["@a:x", "!s1", "Payroll"] {
+                assert!(!text.contains(secret), "{secret} is in {text}");
+            }
+        }
+
+        #[test]
+        fn a_folder_that_stops_being_drawn_loses_its_hover_and_press_keys() {
+            let mut app = app_with_folder();
+            let key = RailKey::Folder(1);
+            let _ = app.update(Message::Spaces(SpacesMessage::Enter(key.clone())));
+            let _ = app.update(Message::Spaces(SpacesMessage::RailPressed(key.clone())));
+            assert_eq!(app.rail_hover, Some(key.clone()));
+            assert_eq!(app.rail_press, Some(key.clone()));
+            // The core no longer reports its spaces: the folder is not drawn.
+            let _ = app.update(core(CoreEvent::Spaces(vec![top_space("!other:x")])));
+            assert_eq!(app.rail_hover, None);
+            assert_eq!(app.rail_press, None);
+        }
+
+        #[test]
+        fn a_folder_that_is_still_drawn_keeps_its_keys() {
+            let mut app = app_with_folder();
+            let key = RailKey::Folder(1);
+            let _ = app.update(Message::Spaces(SpacesMessage::Enter(key.clone())));
+            let _ = app.update(core(CoreEvent::Spaces(vec![
+                top_space("!s1:x"),
+                top_space("!s2:x"),
+                top_space("!more:x"),
+            ])));
+            assert_eq!(app.rail_hover, Some(key));
+        }
     }
 
     #[test]
@@ -4092,10 +6163,22 @@ mod tests {
     }
 
     #[test]
+    fn choosing_a_tab_from_the_drop_down_sets_it_and_never_toggles() {
+        let (mut app, _rx) = main_app();
+        let _ = app.update(Message::TabChosen(RoomListTab::People));
+        assert_eq!(app.query.tab, RoomListTab::People);
+        // The already-shown entry picked again keeps the tab.
+        let _ = app.update(Message::TabChosen(RoomListTab::People));
+        assert_eq!(app.query.tab, RoomListTab::People);
+        let _ = app.update(Message::TabChosen(RoomListTab::Rooms));
+        assert_eq!(app.query.tab, RoomListTab::Rooms);
+    }
+
+    #[test]
     fn switching_tabs_keeps_the_open_room_and_its_draft() {
         let (mut app, _rx) = main_app();
         type_in(&mut app, "unsent");
-        let _ = app.update(Message::TabSelected(RoomListTab::People));
+        let _ = app.update(Message::ChipClicked(RoomListTab::People));
         let _ = app.update(core(room_event(&["z"])));
         assert_eq!(app.selected, Some(RoomId::from("!a:x")));
         assert_eq!(app.composer.text(), "unsent");
@@ -4624,6 +6707,56 @@ mod tests {
         let _ = app.update(Message::PickerPicked(key("\u{1F604}")));
         assert!(drain(&mut rx).is_empty());
         assert!(app.actions.picker.is_none());
+    }
+
+    #[test]
+    fn a_failed_room_tag_shows_the_existing_notice_without_naming_the_room() {
+        let (mut app, _rx) = actions_app();
+        // The room of the tag need not be the open one: the user acted on it
+        // from the sidebar.
+        let _ = app.update(core(CoreEvent::ActionFailed {
+            room_id: RoomId::from("!secretroom:x"),
+            action: ActionKind::RoomTag,
+            error: CoreError::Network("offline".into()),
+        }));
+        let notice = app.actions.notice.clone().expect("a notice");
+        assert!(notice.text.contains("try again later"), "{}", notice.text);
+        assert!(!notice.text.contains("secretroom"), "{}", notice.text);
+        let _ = app.update(Message::NoticeExpired(notice.seq));
+        assert!(app.actions.notice.is_none());
+    }
+
+    #[test]
+    fn a_failed_room_tag_notice_never_carries_an_error_text() {
+        let (mut app, _rx) = actions_app();
+        let errors = [
+            CoreError::UnknownRoom(RoomId::from("!secretroom:x")),
+            CoreError::UnknownRoom(RoomId::from("secretroom \u{202E}\nmalformed")),
+            CoreError::Network("secretroom".into()),
+            CoreError::Internal("secretroom".into()),
+        ];
+        for error in errors {
+            let _ = app.update(core(CoreEvent::ActionFailed {
+                room_id: RoomId::from("!secretroom:x"),
+                action: ActionKind::RoomTag,
+                error,
+            }));
+            let text = app.actions.notice.take().expect("a notice").text;
+            assert!(!text.contains("secretroom"), "{text}");
+            assert!(text.starts_with("Could not update the favourite"), "{text}");
+        }
+        for (error, word) in [
+            (CoreError::NotAllowed, "not allowed"),
+            (CoreError::NotLoggedIn, "not logged in"),
+        ] {
+            let _ = app.update(core(CoreEvent::ActionFailed {
+                room_id: RoomId::from("!a:x"),
+                action: ActionKind::RoomTag,
+                error,
+            }));
+            let text = app.actions.notice.take().expect("a notice").text;
+            assert!(text.ends_with(word), "{text}");
+        }
     }
 
     #[test]
@@ -7448,10 +9581,10 @@ mod tests {
         assert_eq!(laid_out_size(&app), window, "setting up recovery");
     }
 
-    /// The Voice & audio card is a modal over the main view: the window
+    /// The audio pages of Settings are a modal over the main view: the window
     /// keeps its size with every section shown.
     #[test]
-    fn the_voice_and_audio_card_keeps_the_window_filled() {
+    fn the_audio_pages_of_settings_keep_the_window_filled() {
         use twicecat_core::api::{AudioSettings, NoiseSuppression};
         let (mut app, _rx) = main_app();
         let mut settings = AudioSettings::default();
@@ -9283,6 +11416,10 @@ mod tests {
             rooms(app, R::OpenSettings);
             let _ = drain(rx);
             let _ = app.update(core(CoreEvent::RoomDetails(details("!a:x", false, perms))));
+            // The list knows the room is unencrypted.
+            if let Some(room) = app.rooms.iter_mut().find(|r| r.id == id("!a:x")) {
+                room.encryption = twicecat_core::api::RoomEncryption::NotEncrypted;
+            }
         }
 
         #[test]
@@ -9728,7 +11865,9 @@ mod tests {
                     result: Ok(Box::new(upload())),
                 },
             );
-            rooms(&mut app, R::CloseSettings);
+            let _ = app.update(Message::RoomPanel(
+                crate::room_panel::RoomPanelMessage::Close,
+            ));
             rooms(
                 &mut app,
                 R::AvatarReady {
@@ -9776,6 +11915,31 @@ mod tests {
             rooms(&mut app, R::EncryptAsk);
             rooms(&mut app, R::EncryptConfirm);
             assert!(drain(&mut rx).is_empty(), "already encrypted");
+        }
+
+        #[test]
+        fn encryption_is_asked_only_for_a_room_the_list_knows_is_unencrypted() {
+            use twicecat_core::api::RoomEncryption as E;
+            for (encryption, sends) in [(E::NotEncrypted, 1), (E::Unknown, 0), (E::Encrypted, 0)] {
+                let (mut app, mut rx, _) = rig();
+                // The details say "not encrypted" in every case; the list
+                // decides.
+                open_settings(&mut app, &mut rx, all(true));
+                app.rooms
+                    .iter_mut()
+                    .find(|r| r.id == id("!a:x"))
+                    .expect("listed")
+                    .encryption = encryption;
+                rooms(&mut app, R::EncryptAsk);
+                rooms(&mut app, R::EncryptConfirm);
+                assert_eq!(drain(&mut rx).len(), sends, "{encryption:?}");
+            }
+            // A room missing from the list is Unknown.
+            let (mut app, mut rx, _) = rig();
+            open_settings(&mut app, &mut rx, all(true));
+            app.rooms.clear();
+            rooms(&mut app, R::EncryptAsk);
+            assert!(!app.rooms_ui.settings.as_ref().expect("open").encrypt_ask);
         }
 
         #[test]
@@ -9864,6 +12028,223 @@ mod tests {
             let ids: Vec<&str> = known.members.iter().map(|m| m.user_id.as_str()).collect();
             assert_eq!(ids, ["@c:x", "@m:x", "@a:x", "@z:x"]);
             assert!(known.truncated);
+        }
+
+        // ---- members in the room panel (uirf.4) ----
+
+        #[test]
+        fn the_members_button_opens_the_panel_switches_to_members_and_closes_it() {
+            use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            assert!(app.pane_layout().room_panel);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+            assert!(app.rooms_ui.members_panel.is_some());
+            let _ = drain(&mut rx);
+            // Members is shown: the button closes the panel.
+            rooms(&mut app, R::OpenMembers);
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.rooms_ui.members_panel.is_none());
+            // On another tab: the button switches to Members.
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Info,
+            )));
+            assert!(app.rooms_ui.members_panel.is_none());
+            rooms(&mut app, R::OpenMembers);
+            assert!(app.pane_layout().room_panel);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+            assert!(app.rooms_ui.members_panel.is_some());
+        }
+
+        #[test]
+        fn the_members_tab_is_not_an_overlay_and_esc_closes_the_panel() {
+            let (mut app, _rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            assert!(!app.any_overlay_open(), "a side panel covers nothing");
+            assert!(!app.rooms_ui.overlay_open());
+            assert!(crate::screens::room_dialogs::topmost(&app.rooms_ui).is_none());
+            let _ = app.update(Message::Shortcut {
+                shortcut: crate::keys::Shortcut::Escape,
+                captured: false,
+            });
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.rooms_ui.members_panel.is_none());
+            // A dialog over the panel still counts as an overlay.
+            rooms(&mut app, R::OpenMembers);
+            rooms(&mut app, R::OpenCreate);
+            assert!(app.any_overlay_open());
+        }
+
+        #[test]
+        fn leaving_the_members_tab_forgets_its_state_and_coming_back_asks_again() {
+            use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            let _ = drain(&mut rx);
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Info,
+            )));
+            assert!(app.rooms_ui.members_panel.is_none());
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Members,
+            )));
+            assert!(app.rooms_ui.members_panel.is_some());
+            assert!(
+                drain(&mut rx)
+                    .iter()
+                    .any(|c| matches!(c, Command::ListRoomMembers { .. }))
+            );
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Close));
+            assert!(app.rooms_ui.members_panel.is_none());
+        }
+
+        #[test]
+        fn switching_room_never_shows_the_old_rooms_members() {
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            let _ = drain(&mut rx);
+            let _ = app.update(core(CoreEvent::RoomMembers {
+                room_id: id("!a:x"),
+                members: vec![member("@old:x", Some("Old"), Role::User)],
+                truncated: false,
+            }));
+            assert!(crate::screens::members::shown(&app).is_some());
+            let _ = app.update(Message::SelectRoom(id("!b:x")));
+            assert!(crate::screens::members::shown(&app).is_none());
+            assert!(app.rooms_ui.members_panel.is_none());
+            assert!(app.rooms_ui.known.is_none());
+            assert!(!app.pane_layout().room_panel, "the Members tab closes");
+            // Even a panel left over for another room is not drawn.
+            app.room_panel = crate::room_panel::RoomPanel {
+                tab: crate::room_panel::RoomPanelTab::Members,
+                open: true,
+            };
+            app.rooms_ui.members_panel = Some(crate::rooms::MembersPanel {
+                room: id("!a:x"),
+                invite: String::new(),
+                shown: MEMBERS_PAGE,
+                status: None,
+            });
+            assert!(crate::screens::members::shown(&app).is_none());
+        }
+
+        // ---- room info and settings in the room panel (uirf.5) ----
+
+        fn escape_key(app: &mut App) {
+            let _ = app.update(Message::Shortcut {
+                shortcut: crate::keys::Shortcut::Escape,
+                captured: false,
+            });
+        }
+
+        #[test]
+        fn the_settings_button_opens_the_panel_on_info_and_closes_it_again() {
+            use crate::room_panel::RoomPanelTab;
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenSettings);
+            assert!(app.pane_layout().room_panel);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Info);
+            assert!(app.rooms_ui.settings.is_some());
+            let sent = drain(&mut rx);
+            assert!(
+                sent.iter()
+                    .any(|c| matches!(c, Command::OpenRoomDetails { .. }))
+            );
+            // Info is shown: the button closes the panel.
+            rooms(&mut app, R::OpenSettings);
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.rooms_ui.settings.is_none());
+        }
+
+        #[test]
+        fn settings_no_longer_close_the_members_tab_they_switch_to_info() {
+            use crate::room_panel::RoomPanelTab;
+            let (mut app, mut rx, _) = rig();
+            rooms(&mut app, R::OpenMembers);
+            let _ = drain(&mut rx);
+            rooms(&mut app, R::OpenSettings);
+            assert!(app.room_panel_shown(), "the panel stays open");
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Info);
+            assert!(app.rooms_ui.members_panel.is_none());
+            assert!(app.rooms_ui.settings.is_some());
+            // And back: the Members tab opens again.
+            rooms(&mut app, R::OpenMembers);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+            assert!(app.rooms_ui.members_panel.is_some());
+            assert!(app.rooms_ui.settings.is_none(), "the Info state is gone");
+        }
+
+        #[test]
+        fn the_info_tab_is_not_an_overlay_and_esc_cancels_a_question_before_closing_the_panel() {
+            let (mut app, mut rx, _) = rig();
+            open_settings(&mut app, &mut rx, all(true));
+            assert!(!app.any_overlay_open(), "a side panel covers nothing");
+            assert!(!app.rooms_ui.overlay_open());
+            assert!(crate::screens::room_dialogs::topmost(&app.rooms_ui).is_none());
+            rooms(&mut app, R::EncryptAsk);
+            assert!(app.rooms_ui.settings.as_ref().expect("open").encrypt_ask);
+            escape_key(&mut app);
+            let panel = app.rooms_ui.settings.as_ref().expect("still open");
+            assert!(!panel.encrypt_ask && !panel.leave_ask, "the question ends");
+            assert!(app.pane_layout().room_panel, "the panel stays");
+            assert!(drain(&mut rx).is_empty(), "nothing was confirmed");
+            rooms(&mut app, R::LeaveAsk);
+            escape_key(&mut app);
+            assert!(app.pane_layout().room_panel);
+            escape_key(&mut app);
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.rooms_ui.settings.is_none());
+            // A dialog over the panel still counts as an overlay.
+            rooms(&mut app, R::OpenSettings);
+            rooms(&mut app, R::OpenCreate);
+            assert!(app.any_overlay_open());
+        }
+
+        #[test]
+        fn a_room_switch_closes_the_info_tab_and_it_draws_only_the_selected_rooms_data() {
+            let (mut app, mut rx, _) = rig();
+            open_settings(&mut app, &mut rx, all(true));
+            assert!(crate::screens::room_settings::shown(&app).is_some());
+            let _ = app.update(Message::SelectRoom(id("!b:x")));
+            assert!(!app.room_panel_shown(), "the Info tab closes");
+            assert!(app.rooms_ui.settings.is_none());
+            assert!(app.rooms_ui.details.is_none());
+            assert!(crate::screens::room_settings::shown(&app).is_none());
+            // A panel left over for another room is never drawn.
+            app.room_panel = crate::room_panel::RoomPanel {
+                tab: crate::room_panel::RoomPanelTab::Info,
+                open: true,
+            };
+            app.rooms_ui.settings = Some(crate::rooms::SettingsPanel {
+                room: id("!a:x"),
+                name: String::new(),
+                topic: String::new(),
+                name_edited: false,
+                topic_edited: false,
+                encrypt_ask: false,
+                leave_ask: false,
+                avatar_busy: false,
+                error: None,
+            });
+            assert!(crate::screens::room_settings::shown(&app).is_none());
+        }
+
+        #[test]
+        fn an_invitation_room_has_no_members_or_info_tab() {
+            use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
+            let (mut app, mut rx, _) = rig();
+            with_invite(&mut app);
+            let _ = app.update(Message::SelectRoom(id("!inv:x")));
+            let _ = drain(&mut rx);
+            for tab in [RoomPanelTab::Members, RoomPanelTab::Info] {
+                let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(tab)));
+                assert!(!app.room_panel_shown(), "{tab:?}");
+            }
+            rooms(&mut app, R::OpenSettings);
+            rooms(&mut app, R::OpenMembers);
+            assert!(!app.room_panel_shown());
+            assert!(app.rooms_ui.settings.is_none() && app.rooms_ui.members_panel.is_none());
+            assert!(drain(&mut rx).is_empty());
         }
 
         #[test]
@@ -10075,6 +12456,63 @@ mod tests {
         }
 
         #[test]
+        fn the_avatars_of_the_senders_on_screen_are_asked_for_once_and_no_others() {
+            use twicecat_core::api::AvatarId;
+            let (mut app, mut rx, _) = rig();
+            let _ = app.update(core(CoreEvent::TimelineDiff {
+                room_id: id("!a:x"),
+                diffs: vec![ListDiff::PushBack {
+                    value: user_pill_item("plain", "@nobody:x"),
+                }],
+            }));
+            let _ = drain(&mut rx);
+            let mut sender = member("@s:x", Some("Sam"), Role::User);
+            sender.avatar = Some(AvatarId::from("mxc://x/sam"));
+            let mut other = member("@o:x", Some("Olly"), Role::User);
+            other.avatar = Some(AvatarId::from("mxc://x/olly"));
+            let members = || CoreEvent::RoomMembers {
+                room_id: id("!a:x"),
+                members: vec![sender.clone(), other.clone()],
+                truncated: false,
+            };
+            let _ = app.update(core(members()));
+            let _ = app.update(core(members()));
+            let fetched: Vec<AvatarId> = drain(&mut rx)
+                .into_iter()
+                .filter_map(|c| match c {
+                    Command::FetchAvatars(ids) => Some(ids),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            assert_eq!(fetched, [AvatarId::from("mxc://x/sam")]);
+        }
+
+        #[test]
+        fn a_message_asks_for_the_members_once_so_headers_can_show_pictures() {
+            let (mut app, mut rx, _) = rig();
+            let plain = |n: &str| {
+                let mut item = user_pill_item("plain", "@nobody:x");
+                item.id = n.to_owned();
+                if let TimelineItemKind::Message { details, .. } = &mut item.kind {
+                    details.content = RichText::default();
+                }
+                item
+            };
+            for n in ["one", "two"] {
+                let _ = app.update(core(CoreEvent::TimelineDiff {
+                    room_id: id("!a:x"),
+                    diffs: vec![ListDiff::PushBack { value: plain(n) }],
+                }));
+            }
+            let asked = drain(&mut rx)
+                .iter()
+                .filter(|c| matches!(c, Command::ListRoomMembers { .. }))
+                .count();
+            assert_eq!(asked, 1);
+        }
+
+        #[test]
         fn a_user_pill_opens_the_card_for_its_target_and_message_starts_a_dm() {
             let (mut app, mut rx, _) = rig();
             let _ = app.update(Message::LinkClicked(LinkTarget::User(UserId::from(
@@ -10200,8 +12638,10 @@ mod tests {
             rooms(&mut app, R::Escape);
             assert!(app.rooms_ui.dialog.is_none());
             assert!(app.rooms_ui.settings.is_some());
+            // The Info tab is a side panel: this Esc leaves it to the room
+            // panel's own turn (tested with the keys).
             rooms(&mut app, R::Escape);
-            assert!(app.rooms_ui.settings.is_none());
+            assert!(app.rooms_ui.settings.is_some());
         }
 
         #[test]
@@ -10292,6 +12732,7 @@ mod tests {
                 avatar: None,
                 level,
                 children: 0,
+                rooms: Vec::new(),
             }
         }
 
@@ -10346,12 +12787,120 @@ mod tests {
             app.threads.panel.as_ref().expect("an open thread")
         }
 
+        // ---- the room panel (uirf.3) ----
+
+        use crate::room_panel::{RoomPanelMessage, RoomPanelTab};
+
+        #[test]
+        fn opening_a_thread_opens_the_room_panel_on_the_thread_tab() {
+            let (mut app, _rx) = main_app();
+            assert!(!app.pane_layout().room_panel);
+            let _ = app.update(Message::Threads(ThreadsMessage::Open(root("r"))));
+            assert!(app.pane_layout().room_panel);
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Thread);
+        }
+
+        #[test]
+        fn switching_tabs_keeps_the_open_thread() {
+            let (mut app, mut rx) = thread_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Info,
+            )));
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Info);
+            assert!(app.pane_layout().room_panel);
+            assert!(app.threads.panel.is_some());
+            // The Info tab asks for the room's details and members, and
+            // nothing touches the thread.
+            assert!(
+                drain(&mut rx).iter().all(|c| matches!(
+                    c,
+                    Command::OpenRoomDetails { .. } | Command::ListRoomMembers { .. }
+                )),
+                "a tab change sends only the Info tab's own requests"
+            );
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Thread,
+            )));
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Thread);
+            assert!(app.threads.panel.is_some());
+        }
+
+        #[test]
+        fn the_thread_tab_needs_an_open_thread() {
+            let (mut app, _rx) = main_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Members,
+            )));
+            assert!(app.pane_layout().room_panel);
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Thread,
+            )));
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Thread,
+            )));
+            assert_eq!(app.room_panel.tab, RoomPanelTab::Members);
+        }
+
+        #[test]
+        fn closing_the_room_panel_closes_the_thread_too() {
+            let (mut app, mut rx) = thread_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Close));
+            assert!(!app.pane_layout().room_panel);
+            assert!(app.threads.panel.is_none());
+            assert!(matches!(drain(&mut rx).as_slice(), [Command::CloseThread]));
+        }
+
+        #[test]
+        fn closing_the_thread_closes_a_panel_on_its_tab_only() {
+            let (mut app, _rx) = thread_app();
+            let _ = app.update(Message::Threads(ThreadsMessage::Close));
+            assert!(!app.pane_layout().room_panel);
+            let (mut app, _rx) = thread_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Tab(
+                RoomPanelTab::Members,
+            )));
+            let _ = app.update(Message::Threads(ThreadsMessage::Close));
+            assert!(app.pane_layout().room_panel, "Members stays open");
+        }
+
+        #[test]
+        fn the_room_panel_cannot_be_open_without_a_room() {
+            let (mut app, _rx) = main_app();
+            app.deselect();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Members,
+            )));
+            assert!(!app.pane_layout().room_panel);
+            let (mut app, _rx) = main_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Members,
+            )));
+            assert!(app.pane_layout().room_panel);
+            app.deselect();
+            assert!(!app.pane_layout().room_panel);
+            assert!(!app.room_panel.open);
+        }
+
+        #[test]
+        fn esc_closes_the_room_panel_on_any_tab() {
+            let (mut app, _rx) = main_app();
+            let _ = app.update(Message::RoomPanel(RoomPanelMessage::Open(
+                RoomPanelTab::Info,
+            )));
+            let _ = app.update(Message::Shortcut {
+                shortcut: crate::keys::Shortcut::Escape,
+                captured: false,
+            });
+            assert!(!app.pane_layout().room_panel);
+        }
+
         // ---- spaces ----
 
         #[test]
         fn selecting_a_space_filters_the_list_and_keeps_tab_and_search() {
             let (mut app, mut rx) = spaces_app();
-            let _ = app.update(Message::TabSelected(RoomListTab::People));
+            let _ = app.update(Message::ChipClicked(RoomListTab::People));
             let _ = app.update(Message::SearchChanged("  lo ".into()));
             let _ = drain(&mut rx);
             let _ = app.update(Message::Spaces(SpacesMessage::Select(Some(RoomId::from(
@@ -10391,7 +12940,7 @@ mod tests {
         #[test]
         fn a_space_that_vanishes_resets_the_filter_to_home() {
             let (mut app, mut rx) = spaces_app();
-            let _ = app.update(Message::TabSelected(RoomListTab::Rooms));
+            let _ = app.update(Message::ChipClicked(RoomListTab::Rooms));
             let _ = app.update(Message::Spaces(SpacesMessage::Select(Some(RoomId::from(
                 "!s2:x",
             )))));
@@ -10407,6 +12956,93 @@ mod tests {
             };
             assert_eq!((q.space.clone(), q.tab), (None, RoomListTab::Rooms));
             assert_eq!(app.query.space, None);
+        }
+
+        #[test]
+        fn space_unread_updates_the_badges_and_home_shows_what_is_outside() {
+            use crate::screens::spaces_sidebar::home_counts;
+            use twicecat_core::api::{SpaceUnreadView, UnreadCountsView};
+            let (mut app, _rx) = spaces_app();
+            let c = |n, h| UnreadCountsView {
+                notifications: n,
+                highlights: h,
+                unread: n > 0,
+            };
+            let _ = app.update(core(CoreEvent::SpaceUnread {
+                spaces: vec![SpaceUnreadView {
+                    space: RoomId::from("!s1:x"),
+                    counts: c(4, 2),
+                }],
+                outside: c(7, 0),
+            }));
+            assert_eq!(app.spaces.unread_for(&RoomId::from("!s1:x")), c(4, 2));
+            assert_eq!(app.spaces.unread_for(&RoomId::from("!s2:x")), c(0, 0));
+            assert_eq!(app.spaces.outside(), c(7, 0));
+            assert_eq!(home_counts(&app), c(7, 0), "Home shows the rooms outside");
+            // The next event replaces the last one.
+            let _ = app.update(core(CoreEvent::SpaceUnread {
+                spaces: Vec::new(),
+                outside: c(0, 0),
+            }));
+            assert_eq!(app.spaces.unread_for(&RoomId::from("!s1:x")), c(0, 0));
+            assert_eq!(home_counts(&app), c(0, 0));
+        }
+
+        #[test]
+        fn a_click_is_a_press_and_a_release_on_one_item_with_no_leaving() {
+            use crate::spaces::RailKey;
+            let (mut app, mut rx) = spaces_app();
+            let s1 = RailKey::Space(RoomId::from("!s1:x"));
+            let s2 = RailKey::Space(RoomId::from("!s2:x"));
+            let msg = |m: SpacesMessage| Message::Spaces(m);
+            // A release with no press selects nothing.
+            let _ = app.update(msg(SpacesMessage::Release(s1.clone())));
+            assert!(drain(&mut rx).is_empty());
+            // Pressed on one item, released over another: no click.
+            let _ = app.update(msg(SpacesMessage::RailPressed(s1.clone())));
+            let _ = app.update(msg(SpacesMessage::Release(s2.clone())));
+            assert!(drain(&mut rx).is_empty());
+            // Pressed, left the item, came back: the movement ends the click.
+            let _ = app.update(msg(SpacesMessage::RailPressed(s1.clone())));
+            let _ = app.update(msg(SpacesMessage::Exit(s1.clone())));
+            let _ = app.update(msg(SpacesMessage::Enter(s1.clone())));
+            let _ = app.update(msg(SpacesMessage::Release(s1.clone())));
+            assert!(drain(&mut rx).is_empty());
+            // A click selects, as `Select` did.
+            let _ = app.update(msg(SpacesMessage::RailPressed(s1.clone())));
+            let _ = app.update(msg(SpacesMessage::Release(s1)));
+            let sent = drain(&mut rx);
+            let [q] = queries(&sent)[..] else {
+                panic!("one query expected: {sent:?}")
+            };
+            assert_eq!(q.space, Some(RoomId::from("!s1:x")));
+            // And a click on Home goes back.
+            let _ = app.update(msg(SpacesMessage::RailPressed(RailKey::Home)));
+            let _ = app.update(msg(SpacesMessage::Release(RailKey::Home)));
+            let sent = drain(&mut rx);
+            let [q] = queries(&sent)[..] else {
+                panic!("one query expected: {sent:?}")
+            };
+            assert_eq!(q.space, None);
+        }
+
+        #[test]
+        fn hover_follows_enter_and_exit_and_a_vanished_space_is_forgotten() {
+            use crate::spaces::RailKey;
+            let (mut app, _rx) = spaces_app();
+            let s1 = RailKey::Space(RoomId::from("!s1:x"));
+            let s2 = RailKey::Space(RoomId::from("!s2:x"));
+            let _ = app.update(Message::Spaces(SpacesMessage::Enter(s1.clone())));
+            assert_eq!(app.rail_hover, Some(s1.clone()));
+            let _ = app.update(Message::Spaces(SpacesMessage::Enter(s2.clone())));
+            // A late exit of the item left earlier does not clear the new one.
+            let _ = app.update(Message::Spaces(SpacesMessage::Exit(s1)));
+            assert_eq!(app.rail_hover, Some(s2.clone()));
+            let _ = app.update(Message::Spaces(SpacesMessage::Exit(s2.clone())));
+            assert_eq!(app.rail_hover, None);
+            let _ = app.update(Message::Spaces(SpacesMessage::Enter(s2)));
+            let _ = app.update(core(CoreEvent::Spaces(vec![space("!s1:x", 0)])));
+            assert_eq!(app.rail_hover, None, "its space is gone");
         }
 
         #[test]
@@ -10864,6 +13500,9 @@ mod tests {
         #[test]
         fn the_panes_fill_the_window_with_and_without_a_thread() {
             let (mut app, _rx) = spaces_app();
+            // The wide rail gives way when a panel opens (its own tests);
+            // this one is about the panel and the room pane.
+            app.ui_settings.spaces_rail = twicecat_core::api::SpacesRailChoice::Collapsed;
             let (row, slots) = pane_widths(&app);
             assert_eq!(row, 1000.0, "the row fills the window: {slots:?}");
             let room_alone = slots[2];
@@ -10885,6 +13524,7 @@ mod tests {
         fn the_participants_panel_takes_its_width_from_the_room_pane() {
             use twicecat_core::api::{CallState, CleaningStatus, ListDiff, Participant};
             let (mut app, _rx) = spaces_app();
+            app.ui_settings.spaces_rail = twicecat_core::api::SpacesRailChoice::Collapsed;
             let room = app.selected.clone().expect("a room is open");
             let (_, alone) = pane_widths(&app);
             let _ = app.update(core(CoreEvent::CallState(CallState::Connected {
@@ -10941,7 +13581,7 @@ mod tests {
 
         use twicecat_core::api::{
             AvatarId, EventId, MediaBytes, NotificationKind, NotificationSettingsView,
-            OwnProfileView, RoomNotificationModeView as Mode, ThemeChoice,
+            OwnProfileView, RoomNotificationModeView as Mode, ThemeChoice, ThemeName,
         };
 
         use super::*;
@@ -11075,16 +13715,16 @@ mod tests {
         }
 
         #[test]
-        fn voice_controls_open_settings_when_simple_and_the_card_when_advanced() {
-            use crate::audio_settings::AudioMessage as A;
+        fn voice_controls_open_settings_basics_when_simple_and_the_asked_sub_page_when_advanced() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
             use crate::settings::SettingsPage;
             let mut rig = rig();
             drain(&mut rig.rx);
-            // Simple: the dock's controls open the Voice & audio page.
+            // Simple: the dock's controls open the Voice & audio basics, for
+            // `Open` and for `OpenAt` alike.
             let _ = rig.app.update(Message::Audio(A::Open));
             assert!(rig.app.settings_ui.open);
             assert_eq!(rig.app.settings_ui.page, SettingsPage::VoiceAudio);
-            assert!(!rig.app.audio_ui.open, "no card");
             assert!(rig.app.audio_ui.live(), "the page's controls work");
             let sent = drain(&mut rig.rx);
             assert!(
@@ -11101,12 +13741,117 @@ mod tests {
             // Leaving the page ends it: the controls stop answering.
             st(&mut rig, S::Page(SettingsPage::About));
             assert!(!rig.app.audio_ui.live());
-            // Advanced: the card, as before.
+            let _ = rig
+                .app
+                .update(Message::Audio(A::OpenAt(AudioPage::Talking)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::VoiceAudio);
             st(&mut rig, S::Close);
+            // Advanced: Settings on the asked sub-page.
             st(&mut rig, S::Advanced(true));
             let _ = rig.app.update(Message::Audio(A::Open));
-            assert!(rig.app.audio_ui.open);
-            assert!(!rig.app.settings_ui.open);
+            assert!(rig.app.settings_ui.open);
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+            assert_eq!(rig.app.audio_ui.page, AudioPage::Devices);
+            assert!(rig.app.audio_ui.live());
+            assert!(rig.app.any_overlay_open(), "Settings covers the room");
+            let _ = rig
+                .app
+                .update(Message::Audio(A::OpenAt(AudioPage::Talking)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+            assert_eq!(rig.app.audio_ui.page, AudioPage::Talking);
+            // From another Settings page too.
+            st(&mut rig, S::Page(SettingsPage::About));
+            let _ = rig.app.update(Message::Audio(A::OpenAt(AudioPage::Levels)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+            assert_eq!(rig.app.audio_ui.page, AudioPage::Levels);
+            // Esc and Close leave Settings and the controls.
+            st(&mut rig, S::Close);
+            assert!(!rig.app.settings_ui.open && !rig.app.audio_ui.live());
+            assert!(!rig.app.any_overlay_open());
+        }
+
+        #[test]
+        fn switching_between_audio_sub_pages_keeps_the_mic_test_and_leaving_stops_it() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
+            use crate::settings::SettingsPage;
+            let mut rig = rig();
+            st(&mut rig, S::Advanced(true));
+            let _ = rig.app.update(Message::Audio(A::Open));
+            drain(&mut rig.rx);
+            let _ = rig.app.update(Message::Audio(A::MicTest));
+            assert!(rig.app.audio_ui.mic_test.is_some());
+            drain(&mut rig.rx);
+            for page in AudioPage::ALL {
+                let _ = rig.app.update(Message::Audio(A::Page(page)));
+                assert_eq!(rig.app.audio_ui.page, page);
+                assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+                assert!(rig.app.audio_ui.mic_test.is_some(), "{page:?}");
+            }
+            // The basics are the same group: the test goes on there too.
+            st(&mut rig, S::Page(SettingsPage::VoiceAudio));
+            assert!(rig.app.audio_ui.mic_test.is_some());
+            assert!(
+                drain(&mut rig.rx).is_empty(),
+                "nothing restarted or stopped"
+            );
+            st(&mut rig, S::Page(SettingsPage::Keyboard));
+            assert!(rig.app.audio_ui.mic_test.is_none());
+            assert!(
+                drain(&mut rig.rx)
+                    .iter()
+                    .any(|c| matches!(c, Command::StopMicTest))
+            );
+        }
+
+        #[test]
+        fn a_key_capture_stops_when_the_sub_page_changes_and_when_settings_close() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
+            let mut rig = rig();
+            st(&mut rig, S::Advanced(true));
+            let _ = rig
+                .app
+                .update(Message::Audio(A::OpenAt(AudioPage::Talking)));
+            let _ = rig.app.update(Message::Audio(A::CaptureKey));
+            assert!(rig.app.audio_ui.capturing);
+            let _ = rig.app.update(Message::Audio(A::Page(AudioPage::Levels)));
+            assert!(!rig.app.audio_ui.capturing);
+            let _ = rig.app.update(Message::Audio(A::Page(AudioPage::Talking)));
+            let _ = rig.app.update(Message::Audio(A::CaptureKey));
+            st(&mut rig, S::Close);
+            assert!(!rig.app.audio_ui.capturing);
+            // The switch going off drops the audio page: the capture ends too.
+            st(&mut rig, S::Advanced(true));
+            let _ = rig
+                .app
+                .update(Message::Audio(A::OpenAt(AudioPage::Talking)));
+            let _ = rig.app.update(Message::Audio(A::CaptureKey));
+            assert!(rig.app.audio_ui.capturing);
+            st(&mut rig, S::Advanced(false));
+            assert!(!rig.app.audio_ui.capturing);
+        }
+
+        #[test]
+        fn an_audio_sub_page_is_not_chosen_with_the_advanced_switch_off() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
+            use crate::settings::SettingsPage;
+            let mut rig = rig();
+            let _ = rig.app.update(Message::Audio(A::Open));
+            assert!(!rig.app.ui_settings.advanced_settings);
+            let _ = rig.app.update(Message::Audio(A::Page(AudioPage::Levels)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::VoiceAudio);
+        }
+
+        #[test]
+        fn switching_the_advanced_switch_off_on_a_sub_page_falls_back_to_the_basics() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
+            use crate::settings::SettingsPage;
+            let mut rig = rig();
+            st(&mut rig, S::Advanced(true));
+            let _ = rig.app.update(Message::Audio(A::OpenAt(AudioPage::Levels)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+            st(&mut rig, S::Advanced(false));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::VoiceAudio);
+            assert!(rig.app.audio_ui.live(), "still on a Voice & audio page");
         }
 
         #[test]
@@ -11617,53 +14362,310 @@ mod tests {
             assert_eq!(*rig.tray.badges.lock().expect("mutex"), [true, false, true]);
         }
 
-        #[test]
-        fn the_theme_choice_overrides_the_system_mode_live() {
+        // ---- custom themes (Task 4) ----
+
+        const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/themes");
+
+        fn themed() -> Rig {
             let mut rig = rig();
-            let _ = rig.app.update(Message::ThemeMode(theme::Mode::Dark));
-            let dark = |app: &App| app.theme().expect("a theme").extended_palette().is_dark;
-            assert!(dark(&rig.app));
-            st(&mut rig, S::Theme(ThemeChoice::Light));
-            assert!(!dark(&rig.app));
-            st(&mut rig, S::Theme(ThemeChoice::System));
-            assert!(dark(&rig.app));
+            rig.app
+                .set_themes(crate::themes::load_dir(std::path::Path::new(FIXTURES)));
+            rig
         }
 
+        fn pick(rig: &mut Rig, name: Option<&str>) {
+            let name = name.map(|n| ThemeName::try_from(n).expect("a valid name"));
+            st(rig, S::ThemePicked(name));
+        }
+
+        fn background(rig: &Rig) -> iced::Color {
+            rig.app.current_theme().palette().background
+        }
+
+        fn look_of(name: &str, dark: bool) -> iced::Color {
+            crate::themes::load_dir(std::path::Path::new(FIXTURES))
+                .themes
+                .iter()
+                .find(|t| t.name == name && t.dark == dark)
+                .expect("a fixture look")
+                .palette
+                .background
+        }
+
+        const CHOICES: [ThemeChoice; 3] =
+            [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];
+        const MODES: [theme::Mode; 3] = [theme::Mode::Light, theme::Mode::Dark, theme::Mode::None];
+
         #[test]
-        fn the_colour_set_applies_at_once_is_saved_and_can_go_back_to_the_default() {
-            use twicecat_core::api::PaletteChoice;
-            let mut rig = rig();
-            let name = |app: &App| app.theme().expect("a theme").to_string();
-            let default_name = name(&rig.app);
-            st(&mut rig, S::Palette(Some(PaletteChoice::Frost)));
-            st(&mut rig, S::Palette(Some(PaletteChoice::Frost)));
-            assert!(name(&rig.app).starts_with("Frost"), "{}", name(&rig.app));
+        fn picking_a_theme_applies_it_at_once_and_saves_it_once() {
+            let mut rig = themed();
+            pick(&mut rig, Some("Daylight"));
+            assert_eq!(background(&rig), iced::Color::WHITE);
+            let name = ThemeName::try_from("Daylight").expect("valid");
+            assert_eq!(rig.app.ui_settings.theme_name, Some(name));
+            assert_eq!(writes(&rig).len(), 1);
+            assert_eq!(writes(&rig)[0].theme_name, Some(name));
+            pick(&mut rig, Some("Daylight"));
             assert_eq!(writes(&rig).len(), 1, "an unchanged pick writes nothing");
-            assert_eq!(rig.app.ui_settings.palette, Some(PaletteChoice::Frost));
-            st(&mut rig, S::Palette(None));
-            assert_eq!(name(&rig.app), default_name);
-            let saved = writes(&rig);
-            assert_eq!(saved.len(), 2);
-            assert_eq!(saved[1].palette, None);
         }
 
         #[test]
-        fn the_appearance_section_builds_for_every_set_and_mode() {
-            use twicecat_core::api::PaletteChoice;
+        fn picking_the_default_saves_none() {
+            let mut rig = themed();
+            pick(&mut rig, Some("Daylight"));
+            pick(&mut rig, None);
+            assert_eq!(rig.app.ui_settings.theme_name, None);
+            assert_eq!(writes(&rig).last().map(|s| s.theme_name), Some(None));
+            assert_eq!(
+                background(&rig),
+                crate::theme::built_in().palette().background
+            );
+        }
+
+        #[test]
+        fn single_look_themes_ignore_the_choice_and_the_system_mode() {
+            for (name, want) in [
+                (None, crate::theme::built_in().palette().background),
+                (Some("Daylight"), look_of("Daylight", false)),
+                (Some("Faint"), look_of("Faint", true)),
+            ] {
+                let mut rig = themed();
+                pick(&mut rig, name);
+                for choice in CHOICES {
+                    st(&mut rig, S::Theme(choice));
+                    for mode in MODES {
+                        let _ = rig.app.update(Message::ThemeMode(mode));
+                        assert_eq!(background(&rig), want, "{name:?} {choice:?} {mode:?}");
+                        assert!(!rig.app.selected_is_paired(), "{name:?}");
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn a_paired_theme_follows_the_choice_and_the_system_mode() {
+            let mut rig = themed();
+            pick(&mut rig, Some("Duo"));
+            assert!(rig.app.selected_is_paired());
+            let (light, dark) = (look_of("Duo", false), look_of("Duo", true));
+            assert_ne!(light, dark);
+            for mode in MODES {
+                let _ = rig.app.update(Message::ThemeMode(mode));
+                st(&mut rig, S::Theme(ThemeChoice::Light));
+                assert_eq!(background(&rig), light, "Light {mode:?}");
+                st(&mut rig, S::Theme(ThemeChoice::Dark));
+                assert_eq!(background(&rig), dark, "Dark {mode:?}");
+            }
+            st(&mut rig, S::Theme(ThemeChoice::System));
+            let _ = rig.app.update(Message::ThemeMode(theme::Mode::Dark));
+            assert_eq!(background(&rig), dark);
+            let _ = rig.app.update(Message::ThemeMode(theme::Mode::Light));
+            assert_eq!(background(&rig), light);
+            let _ = rig.app.update(Message::ThemeMode(theme::Mode::None));
+            assert_eq!(background(&rig), light);
+            let _ = rig.app.update(Message::ThemeMode(theme::Mode::Dark));
+            assert_eq!(background(&rig), dark, "a change switches the look at once");
+            st(&mut rig, S::Theme(ThemeChoice::Light));
+            let _ = rig.app.update(Message::ThemeMode(theme::Mode::Dark));
+            let _ = rig.app.update(Message::ThemeMode(theme::Mode::Light));
+            assert_eq!(background(&rig), light, "a forced look ignores the mode");
+        }
+
+        #[test]
+        fn a_radio_saves_the_choice_once_and_leaves_the_name_alone() {
+            let mut rig = themed();
+            pick(&mut rig, Some("Duo"));
+            let before = writes(&rig).len();
+            st(&mut rig, S::Theme(ThemeChoice::Dark));
+            st(&mut rig, S::Theme(ThemeChoice::Dark));
+            let all = writes(&rig);
+            assert_eq!(all.len(), before + 1);
+            let last = all.last().expect("a write");
+            assert_eq!(last.theme, ThemeChoice::Dark);
+            assert_eq!(last.theme_name, ThemeName::try_from("Duo").ok());
+        }
+
+        #[test]
+        fn the_stored_name_is_found_whatever_its_capitals_are() {
+            let mut rig = themed();
+            rig.app.ui_settings.theme_name = ThemeName::try_from("daylight").ok();
+            assert_eq!(background(&rig), iced::Color::WHITE);
+            assert_eq!(rig.app.theme_fallback(), None);
+            rig.app.ui_settings.theme_name = ThemeName::try_from("duo").ok();
+            assert!(rig.app.selected_is_paired());
+        }
+
+        #[test]
+        fn a_missing_or_refused_theme_shows_twicecat_and_says_why() {
+            let tmp = std::env::temp_dir().join(format!("twicecat-state-themes-{}", line!()));
+            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::create_dir_all(&tmp).expect("temp dir");
+            let bad = std::fs::read(format!("{FIXTURES}/hostile/light_void_dark_surfaces.json"))
+                .expect("fixture");
+            std::fs::write(tmp.join("Mixed.json"), bad).expect("write");
+            let good = std::fs::read(format!("{FIXTURES}/Daylight.light.json")).expect("fixture");
+            // Another theme that loads, so that a refused one cannot be
+            // mistaken for it.
+            std::fs::write(tmp.join("Other.light.json"), &good).expect("write");
+            let mut rig = rig();
+            rig.app.ui_settings.theme_name = ThemeName::try_from("Mixed").ok();
+            rig.app.set_themes(crate::themes::load_dir(&tmp));
+            let twicecat = crate::theme::built_in().palette();
+            assert_eq!(rig.app.current_theme().palette(), twicecat);
+            assert_eq!(
+                rig.app.theme_fallback().as_deref(),
+                Some(
+                    "Theme \"Mixed\" could not be used: backgrounds mix light and dark. \
+                     Showing Twicecat."
+                )
+            );
+            assert!(!rig.app.selected_is_paired());
+            assert_eq!(
+                rig.app.ui_settings.theme_name,
+                ThemeName::try_from("Mixed").ok(),
+                "the stored name is kept"
+            );
+            rig.app.ui_settings.theme_name = ThemeName::try_from("Gone").ok();
+            assert_eq!(
+                rig.app.theme_fallback().as_deref(),
+                Some(
+                    "Theme \"Gone\" could not be used: it is not in the themes folder. \
+                     Showing Twicecat."
+                )
+            );
+            // The file is fixed and the folder read again: the theme applies.
+            std::fs::write(tmp.join("Mixed.json"), good).expect("write");
+            rig.app.ui_settings.theme_name = ThemeName::try_from("Mixed").ok();
+            let _ = rig.app.update(Message::Settings(S::ThemesLoaded(Some(
+                crate::themes::load_dir(&tmp),
+            ))));
+            assert_eq!(rig.app.theme_fallback(), None);
+            assert_eq!(background(&rig), iced::Color::WHITE);
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
+
+        #[test]
+        fn before_the_first_load_a_stored_theme_shows_twicecat_without_a_note() {
+            let mut rig = rig();
+            rig.app.ui_settings.theme_name = ThemeName::try_from("Daylight").ok();
+            assert!(rig.app.themes.is_none());
+            assert_eq!(
+                background(&rig),
+                crate::theme::built_in().palette().background
+            );
+            assert_eq!(rig.app.theme_fallback(), None);
+            assert!(!rig.app.selected_is_paired());
+        }
+
+        #[test]
+        fn reloading_runs_in_a_task_and_only_one_at_a_time() {
+            let mut rig = rig();
+            assert!(!rig.app.themes_loading);
+            let first = rig.app.update(Message::Settings(S::ReloadThemes));
+            assert!(first.units() > 0, "the load runs in a task");
+            assert!(rig.app.themes_loading);
+            let second = rig.app.update(Message::Settings(S::ReloadThemes));
+            assert_eq!(second.units(), 0, "a load is in flight");
+        }
+
+        #[test]
+        fn a_finished_load_clears_the_flag_and_replaces_the_list() {
+            let mut rig = themed();
+            pick(&mut rig, Some("Daylight"));
+            let _ = rig.app.update(Message::Settings(S::ReloadThemes));
+            assert_eq!(
+                background(&rig),
+                iced::Color::WHITE,
+                "unchanged while loading"
+            );
+            let _ = rig
+                .app
+                .update(Message::Settings(S::ThemesLoaded(Some(Loaded::default()))));
+            assert!(!rig.app.themes_loading);
+            assert!(rig.app.themes.as_ref().is_some_and(|l| l.themes.is_empty()));
+            assert!(rig.app.theme_fallback().is_some());
+            // A load that failed keeps the list.
+            let _ = rig.app.update(Message::Settings(S::ReloadThemes));
+            let _ = rig.app.update(Message::Settings(S::ThemesLoaded(None)));
+            assert!(!rig.app.themes_loading);
+            assert!(rig.app.themes.is_some());
+        }
+
+        #[test]
+        fn the_theme_code_loads_only_off_the_ui_thread() {
+            for (file, source) in [
+                ("state.rs", include_str!("state.rs")),
+                ("settings.rs", include_str!("settings.rs")),
+                ("screens/settings.rs", include_str!("screens/settings.rs")),
+            ] {
+                let production = source
+                    .split("#[cfg(test)]")
+                    .next()
+                    .expect("production code");
+                let masked = crate::source_scan::mask(production);
+                assert!(!masked.contains("load_dir("), "{file} calls load_dir");
+                assert!(
+                    masked.contains("load_off_thread") || file != "settings.rs",
+                    "{file}"
+                );
+            }
+            // CRLF checkouts (Windows autocrlf) would hide the "\n    }\n" end.
+            let masked =
+                crate::source_scan::mask(&include_str!("settings.rs").replace("\r\n", "\n"));
+            let reload = masked
+                .split("fn reload_themes")
+                .nth(1)
+                .and_then(|rest| rest.split("\n    }\n").next())
+                .expect("the reload handler");
+            assert!(reload.contains("load_off_thread"));
+            assert!(!reload.contains("blocking::run"));
+        }
+
+        #[test]
+        fn opening_the_folder_runs_in_a_task_and_a_failure_is_said() {
+            let mut rig = rig();
+            let task = rig.app.update(Message::Settings(S::OpenThemesFolder));
+            assert!(task.units() > 0, "the launcher runs in a task");
+            st(&mut rig, S::ThemesFolderOpened(true));
+            assert_eq!(rig.app.settings_ui.error, None);
+            st(&mut rig, S::ThemesFolderOpened(false));
+            assert_eq!(
+                rig.app.settings_ui.error,
+                Some(SettingsError::ThemesFolderFailed)
+            );
+        }
+
+        #[test]
+        fn the_theme_choice_is_kept_but_the_single_look_theme_stays_as_it_is() {
+            let mut rig = rig();
+            let _ = rig.app.update(Message::ThemeMode(theme::Mode::Light));
+            let twicecat = crate::theme::built_in().palette();
+            let unchanged = |app: &App| app.theme().expect("a theme").palette() == twicecat;
+            for choice in [
+                ThemeChoice::Light,
+                ThemeChoice::System,
+                ThemeChoice::Dark,
+                ThemeChoice::Light,
+            ] {
+                st(&mut rig, S::Theme(choice));
+                assert!(unchanged(&rig.app), "{choice:?}");
+                assert_eq!(rig.app.ui_settings.theme, choice, "kept for later");
+            }
+            assert_eq!(
+                writes(&rig).last().map(|s| s.theme),
+                Some(ThemeChoice::Light)
+            );
+        }
+
+        #[test]
+        fn a_stored_colour_set_changes_nothing_and_the_appearance_section_builds() {
             let mut rig = rig();
             open(&mut rig);
-            for choice in [
-                None,
-                Some(PaletteChoice::Twicecat),
-                Some(PaletteChoice::Frost),
-                Some(PaletteChoice::Ember),
-                Some(PaletteChoice::HighContrast),
-            ] {
-                for theme in [ThemeChoice::Light, ThemeChoice::Dark] {
-                    st(&mut rig, S::Palette(choice));
-                    st(&mut rig, S::Theme(theme));
-                    let _ = rig.app.view();
-                }
+            let name = |app: &App| app.theme().expect("a theme").to_string();
+            for theme in [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark] {
+                st(&mut rig, S::Theme(theme));
+                assert_eq!(name(&rig.app), "Twicecat", "{theme:?}");
+                let _ = rig.app.view();
             }
         }
 
@@ -12333,7 +15335,7 @@ mod tests {
                 },
             ),
             (
-                "audio card",
+                "audio pages of settings",
                 app4,
                 |app| {
                     app.ui_settings.advanced_settings = true;
@@ -12865,6 +15867,154 @@ mod tests {
         }
     }
 
+    // ---- UI review fixes Task 10: the wide, collapsible spaces rail ----
+
+    mod spaces_rail {
+        use std::sync::Arc;
+
+        use twicecat_core::api::{RoomListChoice, SpaceView, SpacesRailChoice};
+
+        use super::*;
+        use crate::screens::main_view::room_pane_width;
+        use crate::screens::spaces_sidebar::{RAIL_COLLAPSED_WIDTH, RAIL_EXPANDED_WIDTH};
+        use crate::settings::RecordingSettings;
+        use crate::spaces::SpacesMessage;
+        use crate::threads::ThreadsMessage;
+
+        struct Rig {
+            app: App,
+            rx: mpsc::Receiver<Command>,
+            saved: Arc<std::sync::Mutex<Vec<UiSettings>>>,
+        }
+
+        fn rig() -> Rig {
+            let (mut app, rx) = main_app();
+            let store = RecordingSettings::default();
+            let saved = store.saved.clone();
+            app.set_settings_store(Box::new(store));
+            let top = |id: &str| SpaceView {
+                id: RoomId::from(id),
+                name: id.to_owned(),
+                avatar: None,
+                level: 0,
+                children: 0,
+                rooms: Vec::new(),
+            };
+            let _ = app.update(core(CoreEvent::Spaces(vec![top("!s1:x"), top("!s2:x")])));
+            let _ = app.update(Message::WindowResized(1280.0));
+            Rig { app, rx, saved }
+        }
+
+        fn writes(rig: &Rig) -> Vec<UiSettings> {
+            rig.saved.lock().expect("test mutex").clone()
+        }
+
+        fn toggle(rig: &mut Rig) {
+            let _ = rig.app.update(Message::Spaces(SpacesMessage::ToggleRail));
+        }
+
+        #[test]
+        fn the_rail_starts_expanded() {
+            let rig = rig();
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            assert!(rig.app.rail_expanded());
+        }
+
+        #[test]
+        fn the_toggle_saves_collapsed_then_expanded_and_changes_nothing_else() {
+            let mut rig = rig();
+            let before = rig.app.ui_settings;
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Collapsed);
+            assert_eq!(
+                rig.app.ui_settings,
+                UiSettings {
+                    spaces_rail: SpacesRailChoice::Collapsed,
+                    ..before
+                }
+            );
+            assert!(!rig.app.rail_expanded());
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings, before);
+            assert!(rig.app.rail_expanded());
+            let saved = writes(&rig);
+            assert_eq!(saved.len(), 2, "one save per toggle: {saved:?}");
+            assert_eq!(saved[0].spaces_rail, SpacesRailChoice::Collapsed);
+            assert_eq!(saved[1].spaces_rail, SpacesRailChoice::Expanded);
+            assert!(drain(&mut rig.rx).is_empty(), "the core is not asked");
+        }
+
+        #[test]
+        fn the_toggle_does_nothing_while_a_layer_covers_the_rail() {
+            let mut rig = rig();
+            let _ = rig.app.update(Message::Settings(SettingsMessage::Open));
+            assert!(rig.app.any_overlay_open());
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            assert!(writes(&rig).is_empty(), "nothing was saved");
+            let _ = rig.app.update(Message::Settings(SettingsMessage::Close));
+            assert!(!rig.app.rail_covered());
+            // Another kind of layer: the switcher.
+            rig.app.switcher.open = true;
+            assert!(rig.app.rail_covered());
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            assert!(writes(&rig).is_empty(), "nothing was saved");
+            rig.app.switcher.open = false;
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Collapsed);
+        }
+
+        #[test]
+        fn an_app_started_collapsed_lays_out_the_72_px_rail() {
+            let mut rig = rig();
+            rig.app.set_ui_settings(UiSettings {
+                spaces_rail: SpacesRailChoice::Collapsed,
+                ..UiSettings::default()
+            });
+            assert!(!rig.app.rail_expanded());
+            // 1280 - 73 (rail and rule) - 301 (list and rule) - 16 (padding).
+            assert_eq!(room_pane_width(&rig.app), 890.0);
+        }
+
+        #[test]
+        fn the_room_pane_gives_up_the_width_of_the_rail_shown() {
+            let mut rig = rig();
+            assert_eq!(RAIL_EXPANDED_WIDTH - RAIL_COLLAPSED_WIDTH, 128.0);
+            // 1280 - 201 - 301 - 16.
+            assert_eq!(room_pane_width(&rig.app), 762.0);
+            toggle(&mut rig);
+            assert_eq!(room_pane_width(&rig.app), 890.0);
+        }
+
+        #[test]
+        fn the_width_rule_collapses_the_rail_without_saving_anything() {
+            let mut rig = rig();
+            let _ = drain(&mut rig.rx);
+            let _ = rig.app.update(Message::Threads(ThreadsMessage::Open(
+                twicecat_core::api::EventId::from("$r:x"),
+            )));
+            assert!(rig.app.room_panel_shown());
+            assert!(!rig.app.rail_expanded(), "1280 px with the room panel");
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            // The room pane keeps what the collapsed rail leaves it.
+            assert_eq!(rig.app.ui_settings.room_list, RoomListChoice::Expanded);
+            let _ = rig.app.update(Message::Threads(ThreadsMessage::Close));
+            assert!(rig.app.rail_expanded(), "back when the panel closes");
+            assert!(writes(&rig).is_empty(), "nothing was saved");
+        }
+
+        #[test]
+        fn a_narrow_window_shows_the_collapsed_rail_and_keeps_the_choice() {
+            let mut rig = rig();
+            let _ = rig.app.update(Message::WindowResized(1099.0));
+            assert!(!rig.app.rail_expanded());
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            let _ = rig.app.update(Message::WindowResized(1280.0));
+            assert!(rig.app.rail_expanded());
+        }
+    }
+
     // ---- UI/UX rework Task 8: narrow windows ----
 
     mod narrow_window {
@@ -12945,14 +16095,14 @@ mod tests {
             open_thread(&mut app);
             let _ = resize(&mut app, 1280.0);
             let wide = layout(&app);
-            assert!(wide.thread && wide.sidebar && !wide.panel_fills);
+            assert!(wide.room_panel && wide.sidebar && !wide.panel_fills);
             assert_eq!(wide.list, RoomListChoice::Expanded);
             let _ = resize(&mut app, 1000.0);
-            assert!(layout(&app).thread);
+            assert!(layout(&app).room_panel);
             assert_eq!(layout(&app).list, RoomListChoice::Rail);
             let _ = resize(&mut app, 700.0);
             let narrow = layout(&app);
-            assert!(narrow.thread && !narrow.sidebar && narrow.panel_fills);
+            assert!(narrow.room_panel && !narrow.sidebar && narrow.panel_fills);
             assert_eq!(narrow.list, RoomListChoice::Rail);
         }
 
@@ -12977,21 +16127,21 @@ mod tests {
             open_call_panel(&mut app);
             let _ = resize(&mut app, 1280.0);
             assert!(
-                layout(&app).thread && layout(&app).call,
+                layout(&app).room_panel && layout(&app).call,
                 "both are side panes"
             );
             for width in [1000.0, 700.0] {
                 let _ = resize(&mut app, width);
-                assert!(layout(&app).call && !layout(&app).thread, "{width}");
+                assert!(layout(&app).call && !layout(&app).room_panel, "{width}");
             }
             // The thread is opened again after the panel: it is the newest.
             let _ = app.update(Message::Threads(ThreadsMessage::Close));
             open_thread(&mut app);
             for width in [1000.0, 700.0] {
                 let _ = resize(&mut app, width);
-                assert!(layout(&app).thread && !layout(&app).call, "{width}");
+                assert!(layout(&app).room_panel && !layout(&app).call, "{width}");
             }
-            assert_eq!(app.newest_panel, SidePanel::Thread);
+            assert_eq!(app.newest_panel, SidePanel::Room);
         }
 
         #[test]
@@ -13065,7 +16215,10 @@ mod tests {
             assert!(!app.calls.panel_shown(app.selected.as_ref()));
             assert!(app.threads.panel.is_some(), "the waiting thread stays open");
             let now = layout(&app);
-            assert!(now.thread && now.panel_fills, "the thread takes its turn");
+            assert!(
+                now.room_panel && now.panel_fills,
+                "the thread takes its turn"
+            );
             key(&mut app, Shortcut::Escape);
             assert!(app.threads.panel.is_none());
             assert!(!layout(&app).panel_fills, "the room pane is back");
@@ -13110,7 +16263,7 @@ mod tests {
             let (mut app, mut rx) = main_app();
             reactable_thread(&mut app);
             let _ = resize(&mut app, 700.0);
-            assert!(layout(&app).panel_fills && layout(&app).thread);
+            assert!(layout(&app).panel_fills && layout(&app).room_panel);
             let _ = drain(&mut rx);
             let _ = app.update(Message::PickerOpened(THREAD_ITEM.into()));
             let picker = app.actions.picker.as_ref().expect("shown in the panel");
@@ -13125,7 +16278,7 @@ mod tests {
             reactable_thread(&mut app);
             open_call_panel(&mut app);
             let _ = resize(&mut app, 700.0);
-            assert!(layout(&app).call && !layout(&app).thread);
+            assert!(layout(&app).call && !layout(&app).room_panel);
             let _ = drain(&mut rx);
             let _ = app.update(Message::PickerOpened(THREAD_ITEM.into()));
             let _ = app.update(Message::PickerSubmitted);
@@ -13183,7 +16336,7 @@ mod tests {
             let _ = app.update(Message::PickerOpened(THREAD_ITEM.into()));
             assert!(app.actions.picker.is_some());
             let _ = resize(&mut app, 700.0);
-            assert!(!layout(&app).thread);
+            assert!(!layout(&app).room_panel);
             assert!(app.actions.picker.is_none(), "closed with the resize");
             let _ = drain(&mut rx);
             let _ = app.update(Message::PickerSubmitted);

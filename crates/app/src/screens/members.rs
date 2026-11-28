@@ -1,5 +1,6 @@
-//! The member list panel (plan Q13, Task 12; restyled in UI/UX rework Task
-//! 15): who is in the room, in sections (Admins, Moderators, Members and
+//! The member list, the Members tab of the room panel (plan Q13, Task 12;
+//! restyled in UI/UX rework Task 15; moved from a modal into the room panel
+//! in UI review fixes Task 4): who is in the room, in sections (Admins, Moderators, Members and
 //! Invited), with a search field, a trust tag and an "In the call" tag, plus
 //! **Invite**. Display only; changing power levels is not part of Phase 5.
 //!
@@ -11,7 +12,7 @@
 
 use std::collections::HashSet;
 
-use iced::widget::{Column, column, responsive, row, text_input};
+use iced::widget::{Column, column, row, scrollable, text_input};
 use iced::{Element, Fill};
 use twicecat_core::api::{MessageText, RoomMemberView, UserId};
 
@@ -23,8 +24,7 @@ use crate::screens::room_dialogs::{error_line, msg};
 use crate::state::{App, Message};
 use crate::ui::icons::Icon;
 use crate::ui::kit::{
-    self, avatar, dialog, dialog_header, empty_state, icon_tag, muted, primary_button,
-    secondary_button, tag, words,
+    self, avatar, empty_state, icon_tag, muted, primary_button, secondary_button, tag, words,
 };
 use crate::ui::tokens;
 
@@ -32,8 +32,6 @@ use crate::ui::tokens;
 pub const SEARCH_ID: &str = "members-search";
 /// Widget ID of the invite field.
 pub const INVITE_ID: &str = "members-invite";
-/// Width of the panel.
-const PANEL_WIDTH: f32 = 520.0;
 /// The note under a list that was cut.
 pub const TRUNCATED_NOTE: &str = "Showing the first 5,000 members";
 /// What the "in the call" tag says.
@@ -148,10 +146,21 @@ pub fn trust_tag<'a>(app: &App, user: &UserId) -> Option<Element<'a, Message>> {
     Some(kit::severity_tag(badge.severity(), badge.label()))
 }
 
-/// The panel, when it is open.
-pub fn view(app: &App) -> Option<Element<'_, Message>> {
-    let panel: &MembersPanel = app.rooms_ui.members_panel.as_ref()?;
-    Some(responsive(move |size| card(app, panel, size.height)).into())
+/// The members state of the selected room, only while it is that room's: a
+/// panel left over for another room is never drawn.
+pub fn shown(app: &App) -> Option<&MembersPanel> {
+    app.rooms_ui
+        .members_panel
+        .as_ref()
+        .filter(|panel| app.selected.as_ref() == Some(&panel.room))
+}
+
+/// The Members tab of the room panel.
+pub fn view(app: &App) -> Element<'_, Message> {
+    match shown(app) {
+        Some(panel) => card(app, panel),
+        None => empty_state("Loading members\u{2026}", "Asking the server for the list."),
+    }
 }
 
 /// The people in the call of `room`, as a set.
@@ -167,7 +176,7 @@ fn in_call(app: &App, room: &twicecat_core::api::RoomId) -> HashSet<UserId> {
         .unwrap_or_default()
 }
 
-fn card<'a>(app: &'a App, panel: &'a MembersPanel, window_height: f32) -> Element<'a, Message> {
+fn card<'a>(app: &'a App, panel: &'a MembersPanel) -> Element<'a, Message> {
     let known = app.rooms_ui.known.as_ref().filter(|k| k.room == panel.room);
     let details = app
         .rooms_ui
@@ -177,21 +186,19 @@ fn card<'a>(app: &'a App, panel: &'a MembersPanel, window_height: f32) -> Elemen
     let can_invite = details.is_some_and(|d| d.permissions.can_invite);
 
     let search = text_input("Search by name or user ID", &app.rooms_ui.member_search)
+        .style(crate::ui::kit::text_input_style)
         .id(SEARCH_ID)
         .on_input(|s| msg(RoomsMessage::MemberSearch(MessageText::from(s))))
         .padding(tokens::S);
     let header = column![
-        dialog_header(
-            title_text(
-                known.map(|k| k.members.len()),
-                known.is_some_and(|k| k.truncated)
-            ),
-            msg(RoomsMessage::CloseMembers),
-        ),
+        words(title_text(
+            known.map(|k| k.members.len()),
+            known.is_some_and(|k| k.truncated)
+        ))
+        .size(tokens::HEADLINE),
         search
     ]
-    .spacing(tokens::M)
-    .into();
+    .spacing(tokens::M);
 
     let invite_note: Element<'_, Message> = if details.is_none() {
         words("Checking what you may do\u{2026}")
@@ -208,6 +215,7 @@ fn card<'a>(app: &'a App, panel: &'a MembersPanel, window_height: f32) -> Elemen
     };
     let invite = row![
         text_input("Invite by user ID, @name:server", &panel.invite)
+            .style(crate::ui::kit::text_input_style)
             .id(INVITE_ID)
             .on_input_maybe(
                 can_invite
@@ -222,13 +230,20 @@ fn card<'a>(app: &'a App, panel: &'a MembersPanel, window_height: f32) -> Elemen
     ]
     .spacing(tokens::M)
     .align_y(iced::Center);
-    let footer = column![invite_note, invite].spacing(tokens::S).into();
+    let footer = column![invite_note, invite].spacing(tokens::S);
 
     let body: Element<'_, Message> = match known {
         None => empty_state("Loading members\u{2026}", "Asking the server for the list."),
         Some(known) => list(app, panel, known),
     };
-    dialog(header, body, Some(footer), PANEL_WIDTH, window_height)
+    column![
+        header,
+        scrollable(body).spacing(tokens::S).width(Fill).height(Fill),
+        footer
+    ]
+    .spacing(tokens::M)
+    .height(Fill)
+    .into()
 }
 
 fn list<'a>(

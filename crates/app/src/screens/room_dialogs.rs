@@ -1,7 +1,7 @@
 //! The room dialogs (plan Q13, Q14, Task 12; restyled in UI/UX rework
 //! Task 15): **New room**, **Direct message**, **Join a room**, the user card
-//! of a clicked pill, and the layer that holds them with the room settings and
-//! member panels.
+//! of a clicked pill, and the layer that holds them. The room's members and
+//! settings are tabs of the room panel (`room_panel.rs`), not layers.
 //!
 //! Every dialog is a [`kit::dialog`]: a header with a close button, a body that
 //! scrolls when the window is short, and a footer whose last action is the main
@@ -18,7 +18,7 @@ use twicecat_core::api::MessageText;
 use crate::rooms::{
     CreateDialog, Dialog, InputDialog, JoinBar, MAX_ID_CHARS, RoomsMessage, UserCard,
 };
-use crate::screens::{members, room_settings};
+use crate::screens::members;
 use crate::state::{App, Message};
 use crate::text_safety::{name_or_placeholder, one_line_capped};
 use crate::ui::kit::{
@@ -59,10 +59,6 @@ pub enum Top {
     Dialog,
     /// The user card.
     Card,
-    /// The room settings.
-    Settings,
-    /// The member list.
-    Members,
 }
 
 /// The screen of the room features that is drawn on top, if any.
@@ -71,10 +67,6 @@ pub fn topmost(ui: &crate::rooms::RoomsModel) -> Option<Top> {
         Some(Top::Dialog)
     } else if ui.card.is_some() {
         Some(Top::Card)
-    } else if ui.settings.is_some() {
-        Some(Top::Settings)
-    } else if ui.members_panel.is_some() {
-        Some(Top::Members)
     } else {
         None
     }
@@ -96,8 +88,6 @@ fn top(app: &App) -> Option<Element<'_, Message>> {
         (Top::Card, _, Some(card)) => {
             Some(responsive(move |size| user_card(app, card, size.height)).into())
         }
-        (Top::Settings, ..) => room_settings::view(app),
-        (Top::Members, ..) => members::view(app),
         _ => None,
     }
 }
@@ -134,6 +124,7 @@ fn input<'a>(
     submit: RoomsMessage,
 ) -> iced::widget::TextInput<'a, Message> {
     text_input(placeholder, value)
+        .style(crate::ui::kit::text_input_style)
         .on_input_maybe(editable.then_some(move |s: String| msg(on(MessageText::from(s)))))
         .on_submit_maybe(editable.then(|| msg(submit)))
         .padding(tokens::S)
@@ -187,6 +178,7 @@ fn create_dialog(dialog: &CreateDialog, window_height: f32) -> Element<'_, Messa
         .push(field("Topic (optional)", topic))
         .push(
             checkbox(form.encrypted)
+                .style(crate::ui::kit::checkbox_style)
                 .label("Encrypted")
                 .on_toggle_maybe(editable.then_some(|on| msg(RoomsMessage::CreateEncrypted(on)))),
         )
@@ -203,6 +195,7 @@ fn create_dialog(dialog: &CreateDialog, window_height: f32) -> Element<'_, Messa
         )
         .push(
             checkbox(form.public)
+                .style(crate::ui::kit::checkbox_style)
                 .label("Public (anyone can find and join it)")
                 .on_toggle_maybe(editable.then_some(|on| msg(RoomsMessage::CreatePublic(on)))),
         )
@@ -451,9 +444,9 @@ mod tests {
     }
 
     fn members(n: usize) -> KnownMembers {
-        KnownMembers {
-            room: room(),
-            members: (0..n)
+        KnownMembers::new(
+            room(),
+            (0..n)
                 .map(|i| RoomMemberView {
                     user_id: UserId::from(format!("@u{i}:x")),
                     display_name: (i % 2 == 0).then(|| format!("User {i}")),
@@ -463,8 +456,8 @@ mod tests {
                     membership: MembershipView::Joined,
                 })
                 .collect(),
-            truncated: n > 5,
-        }
+            n > 5,
+        )
     }
 
     type Step = Box<dyn Fn(&mut App)>;
@@ -576,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_closes_what_is_drawn_on_top_and_a_question_before_its_panel() {
+    fn escape_closes_what_is_drawn_on_top_and_the_info_tab_is_no_layer() {
         let mut app = app();
         app.selected = Some(room());
         app.rooms_ui.dialog = Some(Dialog::Dm(InputDialog {
@@ -589,35 +582,20 @@ mod tests {
             busy: false,
             error: None,
         });
-        app.rooms_ui.settings = Some(settings(true, true));
+        // The Info tab is a side panel, not a layer (its own Esc order is
+        // tested with the app, in `state.rs`).
         let mut order = Vec::new();
         while let Some(top) = topmost(&app.rooms_ui) {
-            let asking = app
-                .rooms_ui
-                .settings
-                .as_ref()
-                .is_some_and(|panel| panel.encrypt_ask || panel.leave_ask);
             let _ = app.update(Message::Rooms(RoomsMessage::Escape));
             let now = topmost(&app.rooms_ui);
-            if top == Top::Settings && asking {
-                // The question is cancelled; the panel stays, and nothing was
-                // confirmed.
-                assert_eq!(now, Some(Top::Settings));
-                let panel = app.rooms_ui.settings.as_ref().expect("still open");
-                assert!(!panel.encrypt_ask && !panel.leave_ask);
-                order.push("question");
-            } else {
-                assert_ne!(now, Some(top), "Esc closed {top:?}");
-                order.push(match top {
-                    Top::Dialog => "dialog",
-                    Top::Card => "card",
-                    Top::Settings => "panel",
-                    Top::Members => "members",
-                });
-            }
+            assert_ne!(now, Some(top), "Esc closed {top:?}");
+            order.push(match top {
+                Top::Dialog => "dialog",
+                Top::Card => "card",
+            });
             assert!(order.len() < 10);
         }
-        assert_eq!(order, ["dialog", "card", "question", "panel"]);
+        assert_eq!(order, ["dialog", "card"]);
     }
 
     #[test]

@@ -309,47 +309,35 @@ pub const fn phase_icon(phase: CallPhase) -> Icon {
     }
 }
 
-/// The encryption marker of the call.
+/// The marker of a call that is not encrypted. Only that state is flagged:
+/// an encrypted call is the normal case, and a call that is not connected yet
+/// has no known state, so neither shows a lock (D5b).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DockLock {
-    /// Connected with end-to-end encrypted media.
-    Encrypted,
-    /// Connected without it.
+    /// Connected without end-to-end encrypted media.
     Unencrypted,
 }
 
 impl DockLock {
     /// The severity that colours the marker.
     pub const fn severity(self) -> Severity {
-        match self {
-            Self::Encrypted => Severity::Success,
-            Self::Unencrypted => Severity::Warning,
-        }
+        Severity::Warning
     }
 
     /// The marker's glyph.
     pub const fn icon(self) -> Icon {
-        match self {
-            Self::Encrypted => Icon::Lock,
-            Self::Unencrypted => Icon::LockOpen,
-        }
+        Icon::LockOpen
     }
 
     /// The marker's words, for its tooltip.
     pub const fn words(self) -> &'static str {
-        match self {
-            Self::Encrypted => "Call is end-to-end encrypted",
-            Self::Unencrypted => "Call is not encrypted",
-        }
+        "Call is not encrypted"
     }
 
-    /// The words drawn beside the glyph in the expanded dock: none for the
-    /// lock (the phase line says "encrypted"), a warning in words otherwise.
-    pub const fn visible_words(self) -> Option<&'static str> {
-        match self {
-            Self::Encrypted => None,
-            Self::Unencrypted => Some("Not encrypted"),
-        }
+    /// The words drawn beside the glyph in the expanded dock, so the warning
+    /// is never the glyph or the colour alone.
+    pub const fn visible_words(self) -> &'static str {
+        Icon::LockOpen.label()
     }
 }
 
@@ -364,7 +352,7 @@ pub struct DockCall {
     pub phase_icon: Icon,
     /// The call phase in words.
     pub phase_words: String,
-    /// The encryption marker, once connected.
+    /// The "not encrypted" marker, only for a connected, unencrypted call.
     pub lock: Option<DockLock>,
     /// The microphone's look.
     pub mic: MicLook,
@@ -437,7 +425,6 @@ pub fn dock_call(app: &App) -> Option<DockCall> {
         phase_icon: phase_icon(current.phase),
         phase_words: current.phase.label(),
         lock: match current.phase {
-            CallPhase::Connected { encrypted: true } => Some(DockLock::Encrypted),
             CallPhase::Connected { encrypted: false } => Some(DockLock::Unencrypted),
             _ => None,
         },
@@ -579,7 +566,7 @@ pub fn dock(app: &App) -> Element<'_, Message> {
             phase = phase.push(marker(
                 lock.icon().glyph(),
                 lock.severity(),
-                lock.visible_words(),
+                Some(lock.visible_words()),
                 lock.words().to_owned(),
             ));
         }
@@ -1114,7 +1101,7 @@ mod tests {
 
     /// The fill and glyph of a look's button, on the default theme.
     fn look_signature(look: MicLook) -> (Icon, Option<iced::Background>, iced::Color, u32) {
-        let theme = crate::theme::theme_for_family(crate::theme::Family::Twicecat, true);
+        let theme = crate::theme::built_in();
         let style = (look.button_style())(&theme, Status::Active);
         (
             look.icon(),
@@ -1126,15 +1113,16 @@ mod tests {
 
     #[test]
     fn an_open_microphone_is_outlined_and_not_filled_like_muted() {
-        let theme = crate::theme::theme_for_family(crate::theme::Family::Twicecat, true);
-        let open = (MicLook::Plain.button_style())(&theme, Status::Active);
-        let muted = (MicLook::Muted.button_style())(&theme, Status::Active);
-        assert!(open.border.width >= 1.0, "an outline");
-        assert_ne!(open.border.color, muted.border.color);
-        assert_ne!(open.background, muted.background);
-        // Not the quiet ghost: it must carry weight of its own.
-        let ghost = ghost_style(&theme, Status::Active);
-        assert_ne!(open.border.width, ghost.border.width);
+        for theme in crate::theme::test_themes() {
+            let open = (MicLook::Plain.button_style())(&theme, Status::Active);
+            let muted = (MicLook::Muted.button_style())(&theme, Status::Active);
+            assert!(open.border.width >= 1.0, "an outline");
+            assert_ne!(open.border.color, muted.border.color);
+            assert_ne!(open.background, muted.background);
+            // Not the quiet ghost: it must carry weight of its own.
+            let ghost = ghost_style(&theme, Status::Active);
+            assert_ne!(open.border.width, ghost.border.width);
+        }
     }
 
     #[test]
@@ -1237,26 +1225,23 @@ mod tests {
     }
 
     #[test]
-    fn the_dock_marks_encryption_and_the_lack_of_it_in_words_or_glyphs() {
+    fn the_dock_flags_only_an_unencrypted_call_and_says_so_in_words() {
         let lock = |phase| dock_of(&app_with_call(phase, None, false)).lock;
-        assert_eq!(lock(CONNECTED), Some(DockLock::Encrypted));
+        // Encrypted and not-yet-known calls show no lock at all.
+        assert_eq!(lock(CONNECTED), None);
+        assert_eq!(lock(CallPhase::Joining), None);
         assert_eq!(
             lock(CallPhase::Connected { encrypted: false }),
             Some(DockLock::Unencrypted)
         );
-        assert_eq!(lock(CallPhase::Joining), None);
-        assert_ne!(DockLock::Encrypted.icon(), DockLock::Unencrypted.icon());
         // Not the notice mark's glyph either: the lock is open, not a warning.
         assert_ne!(DockLock::Unencrypted.icon(), Icon::Warning);
         assert_ne!(DockLock::Unencrypted.icon(), Severity::Warning.icon());
         assert_eq!(DockLock::Unencrypted.icon(), Icon::LockOpen);
-        assert_ne!(
-            DockLock::Encrypted.severity(),
-            DockLock::Unencrypted.severity()
-        );
-        assert_ne!(DockLock::Encrypted.words(), DockLock::Unencrypted.words());
+        assert_eq!(DockLock::Unencrypted.severity(), Severity::Warning);
+        assert_eq!(DockLock::Unencrypted.words(), "Call is not encrypted");
         // The warning is in words on the dock, not only in a tooltip.
-        assert_eq!(DockLock::Unencrypted.visible_words(), Some("Not encrypted"));
+        assert_eq!(DockLock::Unencrypted.visible_words(), "Not encrypted");
     }
 
     #[test]

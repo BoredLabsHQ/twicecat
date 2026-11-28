@@ -93,11 +93,15 @@ pub enum Icon {
     Pin,
     /// Video, as a settings page.
     Video,
+    /// A section of the room list, collapsed.
+    SectionClosed,
+    /// A section of the room list, open.
+    SectionOpen,
 }
 
 impl Icon {
     /// Every icon, in declaration order.
-    pub const ALL: [Self; 41] = [
+    pub const ALL: [Self; 43] = [
         Self::Lock,
         Self::LockOpen,
         Self::Call,
@@ -139,6 +143,8 @@ impl Icon {
         Self::Fullscreen,
         Self::Pin,
         Self::Video,
+        Self::SectionClosed,
+        Self::SectionOpen,
     ];
 
     /// The Unicode text that draws the icon today.
@@ -185,6 +191,8 @@ impl Icon {
             Self::Fullscreen => "\u{26F6}",
             Self::Pin => "\u{1F4CC}",
             Self::Video => "\u{1F3A5}",
+            Self::SectionClosed => "\u{25B8}",
+            Self::SectionOpen => "\u{25BE}",
         }
     }
 
@@ -232,13 +240,27 @@ impl Icon {
             Self::Fullscreen => "Full screen",
             Self::Pin => "Pin",
             Self::Video => "Video",
+            Self::SectionClosed => "Collapsed",
+            Self::SectionOpen => "Expanded",
         }
     }
 }
 
+/// The size iced drew icon glyphs at before icons had their own size.
+const PREVIOUS_ICON_SIZE: f32 = 16.0;
+
+/// The size of an icon's glyph: at least running-text size and never smaller
+/// than the 16 px icons were drawn at before, so raising the type scale can
+/// not shrink them; it follows `BODY` upward if `BODY` ever grows past 16.
+pub const ICON_SIZE: f32 = if crate::ui::tokens::BODY > PREVIOUS_ICON_SIZE {
+    crate::ui::tokens::BODY
+} else {
+    PREVIOUS_ICON_SIZE
+};
+
 /// The widget for `icon`: the one place an [`Icon`] becomes something drawn.
 pub fn icon<'a, M: 'a>(icon: Icon) -> Element<'a, M> {
-    text(icon.glyph()).into()
+    text(icon.glyph()).size(ICON_SIZE).into()
 }
 
 /// The symbols of `source` that sit outside comments and test code, with
@@ -298,9 +320,16 @@ mod tests {
             assert!(!icon.label().trim().is_empty(), "{icon:?}");
             assert!(seen.insert(icon.glyph()), "{icon:?} repeats a glyph");
         }
-        assert_eq!(Icon::ALL.len(), 41);
+        assert_eq!(Icon::ALL.len(), 43);
         assert_eq!(Icon::Home.label(), "Home");
         assert_eq!(Icon::Members.label(), "Members");
+    }
+
+    #[test]
+    fn icon_glyphs_are_never_below_body_size_and_never_smaller_than_before() {
+        const { assert!(ICON_SIZE >= crate::ui::tokens::BODY) };
+        const { assert!(ICON_SIZE >= PREVIOUS_ICON_SIZE) };
+        assert_eq!(PREVIOUS_ICON_SIZE, 16.0);
     }
 
     #[test]

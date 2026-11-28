@@ -28,6 +28,7 @@ use twicecat_core::api::{
 };
 
 use crate::actions::{self, ActionButtons, ActionState};
+use crate::avatars::{Avatars, placeholder_color};
 use crate::dates::{day_label, time_label};
 use crate::media::{
     BOX_MAX_W, MediaModel, Thumb, card_name, has_caption, kind_label, media_box, size_label,
@@ -36,12 +37,13 @@ use crate::media::{
 use crate::rich_text::{Ctx, Revealed, blocks_view};
 use crate::state::Message;
 use crate::text_safety::{
-    MAX_BODY_CHARS, MAX_NAME_CHARS, multi_line_capped, name_or_placeholder, one_line_capped,
+    MAX_BODY_CHARS, MAX_NAME_CHARS, has_visible_char, multi_line_capped, name_or_placeholder,
+    one_line_capped,
 };
 use crate::theme;
 use crate::timeline::{
-    CARD_H, DIVIDER_H, INDENT_PX, MARKER_H, OVERSCAN_PX, SIDE_PAD_PX, START_H, THREAD_ROW_H,
-    TIMELINE_ID, TimelineView, is_continuation, spacer_heights, top_pad,
+    AVATAR_PX, CARD_H, DIVIDER_H, INDENT_PX, MARKER_H, OVERSCAN_PX, SIDE_PAD_PX, START_H,
+    THREAD_ROW_H, TIMELINE_ID, TimelineView, is_continuation, spacer_heights, top_pad,
 };
 use crate::ui::icons::Icon;
 use crate::ui::kit;
@@ -71,6 +73,10 @@ pub struct RichEnv<'a> {
     pub rooms: &'a [RoomSummary],
     /// The open room's members, for the names on user pills.
     pub members: &'a [RoomMemberView],
+    /// The same members' pictures by user, for the avatar on a header row.
+    pub member_avatars: &'a crate::rooms::MemberAvatars,
+    /// The pictures of senders, for the avatar on a header row.
+    pub avatars: &'a Avatars,
     /// Thumbnails and saved files, for media messages.
     pub media: &'a MediaModel,
     /// The open room, which keys the media cache.
@@ -165,12 +171,16 @@ pub fn view_pane<'a, Tz: TimeZone>(
     rows.push(space().height(below).into());
     // `from_vec`, because `Column::push` drops zero-size children, and the
     // content is always the two spacers plus the window.
-    let list = scrollable(Column::from_vec(rows).width(Fill))
-        .id(pane.scroll_id)
-        .anchor_bottom()
-        .on_scroll(pane.on_scroll)
-        .width(Fill)
-        .height(Fill);
+    let list = scrollable(
+        Column::from_vec(rows)
+            .width(Fill)
+            .max_width(tokens::TIMELINE_MAX_WIDTH),
+    )
+    .id(pane.scroll_id)
+    .anchor_bottom()
+    .on_scroll(pane.on_scroll)
+    .width(Fill)
+    .height(Fill);
     // Always a stack with the list first: iced keeps a widget's state only
     // while the widget at that place in the tree keeps its type, so returning
     // the bare list when idle would reset the scroll offset to the bottom on
@@ -247,7 +257,13 @@ fn row_content<'a, Tz: TimeZone>(
                     details.sender_name_ambiguous,
                     sender,
                 );
-                content = content.push(header(name, time_label(*timestamp_ms, tz), details.shield));
+                let colour = header_name_colour(sender, env.theme);
+                content = content.push(header(
+                    name,
+                    time_label(*timestamp_ms, tz),
+                    details.shield,
+                    colour,
+                ));
             }
             if let Some(reply) = &details.reply_to {
                 content = content.push(reply_quote(reply));
@@ -314,7 +330,8 @@ fn row_content<'a, Tz: TimeZone>(
                 hovered: bar_visible(env.actions, &items[i].id),
                 flashed: timeline.flash.as_deref() == Some(items[i].id.as_str()),
             };
-            let framed = framed(content.into(), continuation, look, env.density);
+            let avatar = header_avatar(items, i, env);
+            let framed = framed(content.into(), avatar, continuation, look, env.density);
             with_actions(&items[i].id, framed, buttons, thread_root, env.actions)
         }
         TimelineItemKind::Placeholder {
@@ -329,7 +346,8 @@ fn row_content<'a, Tz: TimeZone>(
             let mut content = Column::new().width(Fill);
             if !continuation {
                 let name = sender_label(sender_name.as_deref(), false, sender);
-                content = content.push(header(name, time_label(*timestamp_ms, tz), None));
+                let colour = header_name_colour(sender, env.theme);
+                content = content.push(header(name, time_label(*timestamp_ms, tz), None, colour));
             }
             content = content.push(
                 text(placeholder_line(*what, *utd))
@@ -342,6 +360,7 @@ fn row_content<'a, Tz: TimeZone>(
             }
             framed(
                 content.into(),
+                header_avatar(items, i, env),
                 continuation,
                 RowLook::default(),
                 env.density,
@@ -839,10 +858,19 @@ pub fn state_icon(change: &StateChange) -> Option<Icon> {
     matches!(change, StateChange::CallStarted | StateChange::LegacyCall).then_some(Icon::Call)
 }
 
-/// The sender and time above a message.
-fn header<'a>(name: String, time: String, shield: Option<Shield>) -> Element<'a, Message> {
+/// The sender and time above a message. The name is `BODY_LARGE` SemiBold in
+/// the sender's `colour`; the time stays small and muted after it.
+fn header<'a>(
+    name: String,
+    time: String,
+    shield: Option<Shield>,
+    colour: Color,
+) -> Element<'a, Message> {
     let mut line = row![
-        text(name).font(SEMIBOLD),
+        text(name)
+            .size(tokens::BODY_LARGE)
+            .font(SEMIBOLD)
+            .color(colour),
         text(time).size(tokens::CAPTION).style(muted)
     ]
     .spacing(tokens::S)
@@ -853,6 +881,54 @@ fn header<'a>(name: String, time: String, shield: Option<Shield>) -> Element<'a,
     line.into()
 }
 
+/// The colour of a sender's name in a group header: the colour of their
+/// initials placeholder, made readable on every surface a row can have.
+pub fn header_name_colour(sender: &UserId, theme: &Theme) -> Color {
+    theme::sender_colour(placeholder_color(&RoomId::from(sender.as_str())), theme)
+}
+
+/// The sender's picture for the header row `i`, [`AVATAR_PX`] wide: `None` for
+/// a continuation and for items that are not messages. It reads only what is
+/// already known (the open room's members and the avatars already fetched),
+/// so drawing never asks for anything; the requests are the bounded ones of
+/// `fetch_member_avatars`. It has no tooltip and no press, so it is no Tab
+/// stop.
+pub fn header_avatar<'a>(
+    items: &[TimelineItem],
+    i: usize,
+    env: RichEnv<'_>,
+) -> Option<Element<'a, Message>> {
+    let (sender, name) = match &items.get(i)?.kind {
+        TimelineItemKind::Message {
+            sender, details, ..
+        } => (
+            sender,
+            sender_label(
+                details.sender_name.as_deref(),
+                details.sender_name_ambiguous,
+                sender,
+            ),
+        ),
+        TimelineItemKind::Placeholder {
+            sender,
+            sender_name,
+            ..
+        } => (sender, sender_label(sender_name.as_deref(), false, sender)),
+        _ => return None,
+    };
+    if is_continuation(items, i) {
+        return None;
+    }
+    let picture = env.member_avatars.get(sender);
+    Some(kit::avatar_sized(
+        sender,
+        &name,
+        picture,
+        env.avatars,
+        AVATAR_PX,
+    ))
+}
+
 /// Side of the shield mark, in pixels.
 const SHIELD_SIZE: f32 = 16.0;
 
@@ -861,19 +937,28 @@ const SHIELD_SIZE: f32 = 16.0;
 /// does not depend on the fonts installed.
 fn shield_view<'a>(shield: Shield) -> Element<'a, Message> {
     let (look, label) = shield_text(shield);
-    let mark = container(text("!").size(11).color(Color::WHITE))
-        .width(SHIELD_SIZE)
-        .height(SHIELD_SIZE)
-        .center_x(SHIELD_SIZE)
-        .center_y(SHIELD_SIZE)
-        .style(move |theme: &Theme| container::Style {
-            background: Some(Background::Color(match look {
-                Look::Red => theme.palette().danger,
-                Look::Grey => theme::semantic(theme).badge,
-            })),
-            border: iced::border::rounded(SHIELD_SIZE / 4.0),
-            ..container::Style::default()
-        });
+    // The colours are the theme's (`Semantic::shield_*`): the red one is the
+    // danger colour, the grey one a neutral of its own, both with a glyph
+    // that reaches 4.5:1 on its fill (tests in `theme.rs`).
+    let colours = move |theme: &Theme| {
+        let sem = theme::semantic(theme);
+        match look {
+            Look::Red => (sem.shield_red, sem.shield_red_glyph),
+            Look::Grey => (sem.shield_grey, sem.shield_grey_glyph),
+        }
+    };
+    let mark = container(text("!").size(11).style(move |theme: &Theme| text::Style {
+        color: Some(colours(theme).1),
+    }))
+    .width(SHIELD_SIZE)
+    .height(SHIELD_SIZE)
+    .center_x(SHIELD_SIZE)
+    .center_y(SHIELD_SIZE)
+    .style(move |theme: &Theme| container::Style {
+        background: Some(Background::Color(colours(theme).0)),
+        border: iced::border::rounded(SHIELD_SIZE / 4.0),
+        ..container::Style::default()
+    });
     tooltip(
         mark,
         container(text(label).size(tokens::CAPTION))
@@ -915,12 +1000,18 @@ pub fn reply_quote_text(reply: &ReplyPreview) -> (String, String) {
     match reply.state {
         ReplyState::Ready => {
             let name = sender_label(reply.sender_name.as_deref(), false, &reply.sender);
-            let line = one_line_capped(&reply.body, MAX_QUOTE_CHARS);
-            let line = if line.trim().is_empty() {
-                "(no text)".to_owned()
-            } else {
-                line
-            };
+            // The core sends one line, but an older or other client's body
+            // may still start with blank lines: skip them, so no line break
+            // mark stands for the text.
+            // Choose the line by what is visible after cleaning: a line of
+            // only invisible characters (U+200B, U+FEFF, bidi controls,
+            // fillers) is skipped like a blank one.
+            let line = reply
+                .body
+                .lines()
+                .map(|line| one_line_capped(line, MAX_QUOTE_CHARS))
+                .find(|line| has_visible_char(line))
+                .unwrap_or_else(|| "(no text)".to_owned());
             (name, line)
         }
         ReplyState::Loading => (
@@ -963,19 +1054,42 @@ fn reply_quote<'a>(reply: &ReplyPreview) -> Element<'a, Message> {
 }
 
 /// Pads a message row: indented, with less space above a continuation, on
-/// the [`row_background`].
-fn framed(
-    content: Element<'_, Message>,
+/// the [`row_background`]. A header row puts the sender's `avatar` in the
+/// indent, top-aligned with the name.
+fn framed<'a>(
+    content: Element<'a, Message>,
+    avatar: Option<Element<'a, Message>>,
     continuation: bool,
     look: RowLook,
     density: Density,
-) -> Element<'_, Message> {
-    let padded = container(content).width(Fill).padding(Padding {
-        top: top_pad(continuation, density),
-        right: SIDE_PAD_PX,
-        bottom: 0.0,
-        left: INDENT_PX,
-    });
+) -> Element<'a, Message> {
+    let padded = match avatar {
+        Some(avatar) => container(
+            row![
+                container(avatar)
+                    .padding(Padding {
+                        left: tokens::L,
+                        ..Padding::ZERO
+                    })
+                    .width(INDENT_PX),
+                content
+            ]
+            .align_y(iced::Alignment::Start),
+        )
+        .width(Fill)
+        .padding(Padding {
+            top: top_pad(continuation, density),
+            right: SIDE_PAD_PX,
+            bottom: 0.0,
+            left: 0.0,
+        }),
+        None => container(content).width(Fill).padding(Padding {
+            top: top_pad(continuation, density),
+            right: SIDE_PAD_PX,
+            bottom: 0.0,
+            left: INDENT_PX,
+        }),
+    };
     if look == RowLook::default() {
         return padded.into();
     }
@@ -1733,7 +1847,7 @@ mod tests {
 
     #[test]
     fn a_hovered_row_gets_the_hover_background_and_a_mention_keeps_its_own() {
-        let sem = theme::LIGHT_SEMANTIC;
+        let sem = theme::semantic(&theme::built_in());
         let bg = |highlighted, hovered| {
             row_background(
                 &sem,
@@ -1752,7 +1866,7 @@ mod tests {
 
     #[test]
     fn a_flashed_row_wins_over_the_mention_and_the_hover() {
-        let sem = theme::LIGHT_SEMANTIC;
+        let sem = theme::semantic(&theme::built_in());
         let look = RowLook {
             highlighted: true,
             hovered: true,
@@ -1793,6 +1907,49 @@ mod tests {
         );
         let gone = preview(ReplyState::Unavailable, None, "");
         assert_eq!(reply_quote_text(&gone).1, "Original message unavailable");
+    }
+
+    #[test]
+    fn no_text_is_only_the_last_fallback_of_a_reply_quote() {
+        // A description from the core is shown as is.
+        for word in ["Image", "File", "Poll", "Deleted message"] {
+            let described = preview(ReplyState::Ready, Some("Bob"), word);
+            assert_eq!(reply_quote_text(&described).1, word);
+        }
+        // Blank and whitespace-only bodies have nothing to show.
+        for body in ["", "   ", "\n\t", " \r\n \n"] {
+            let blank = preview(ReplyState::Ready, Some("Bob"), body);
+            assert_eq!(reply_quote_text(&blank).1, "(no text)", "{body:?}");
+        }
+        // A body that starts with blank lines quotes its first real line.
+        let lead = preview(ReplyState::Ready, Some("Bob"), "\n \nsecond\nthird");
+        assert_eq!(reply_quote_text(&lead).1, "second");
+        // Lines of only invisible characters are skipped or fall to the word.
+        let zw = preview(ReplyState::Ready, Some("Bob"), "\u{200B}\nhello");
+        assert_eq!(reply_quote_text(&zw).1, "hello");
+        for body in ["\u{202E}", "\u{3164}", "\u{200B}", "\u{FEFF}\n\u{202E}"] {
+            let invisible = preview(ReplyState::Ready, Some("Bob"), body);
+            assert_eq!(reply_quote_text(&invisible).1, "(no text)", "{body:?}");
+        }
+        // A real line is never replaced, even a short one.
+        let one = preview(ReplyState::Ready, Some("Bob"), ".");
+        assert_eq!(reply_quote_text(&one).1, ".");
+    }
+
+    /// The quote line is drawn in the muted colour on the quote surface; it
+    /// must be readable there in every family (plan Task 15, root cause).
+    #[test]
+    fn the_quote_line_is_readable_on_the_quote_surface_in_every_family() {
+        for theme in theme::test_themes() {
+            let line = muted(&theme).color.expect("a muted colour");
+            let Some(iced::Background::Color(surface)) =
+                kit::quote_surface_style(&theme).background
+            else {
+                panic!("{theme}: the quote surface has no colour");
+            };
+            let ratio = theme::contrast(line, surface);
+            assert!(ratio >= 4.5, "{theme}: {ratio:.2}");
+        }
     }
 
     #[test]
@@ -1890,6 +2047,8 @@ mod tests {
             actions: &actions,
             rooms: &[],
             members: &[],
+            member_avatars: crate::rooms::no_member_avatars(),
+            avatars: &NO_AVATARS,
             media: &NO_MEDIA,
             room: None,
             density: Density::Comfortable,
@@ -1913,6 +2072,8 @@ mod tests {
             actions: &actions,
             rooms: &[],
             members: &[],
+            member_avatars: crate::rooms::no_member_avatars(),
+            avatars: &NO_AVATARS,
             media: &NO_MEDIA,
             room: None,
             density: Density::Comfortable,
@@ -1973,7 +2134,7 @@ mod tests {
     }
 
     fn theme() -> Theme {
-        crate::theme::theme_for(iced::theme::Mode::Light)
+        crate::theme::built_in()
     }
 
     fn env<'a>(theme: &'a Theme, revealed: &'a Revealed) -> RichEnv<'a> {
@@ -1984,11 +2145,16 @@ mod tests {
             actions: &NO_ACTIONS,
             rooms: &[],
             members: &[],
+            member_avatars: crate::rooms::no_member_avatars(),
+            avatars: &NO_AVATARS,
             media: &NO_MEDIA,
             room: None,
             density: Density::Comfortable,
         }
     }
+
+    static NO_AVATARS: std::sync::LazyLock<crate::avatars::Avatars> =
+        std::sync::LazyLock::new(crate::avatars::Avatars::default);
 
     static NO_MEDIA: std::sync::LazyLock<MediaModel> =
         std::sync::LazyLock::new(MediaModel::default);
@@ -2108,10 +2274,8 @@ mod tests {
                 item("c", RichText::default()),
             ],
         }]);
-        for mode in [iced::theme::Mode::Light, iced::theme::Mode::Dark] {
-            let (theme, revealed) = (crate::theme::theme_for(mode), Revealed::new());
-            assert_eq!(built_by_with(&timeline, env(&theme, &revealed)), 3);
-        }
+        let (theme, revealed) = (crate::theme::built_in(), Revealed::new());
+        assert_eq!(built_by_with(&timeline, env(&theme, &revealed)), 3);
     }
 
     #[test]
@@ -2203,6 +2367,100 @@ mod tests {
                 ..env(&theme, &revealed)
             };
             assert_eq!(built_by_with(&timeline, env), 1);
+        }
+    }
+
+    fn said(id: &str, sender: &str, at: u64) -> TimelineItem {
+        TimelineItem::new(
+            id.to_owned(),
+            TimelineItemKind::Message {
+                sender: UserId::from(sender),
+                body: "hi".into(),
+                is_own: false,
+                timestamp_ms: at,
+                sent: SendStatus::Sent,
+                details: Box::default(),
+            },
+        )
+    }
+
+    #[test]
+    fn header_rows_have_a_sender_avatar_and_continuations_have_none() {
+        let items = [
+            said("a", "@a:x", 0),
+            said("b", "@a:x", 1_000),
+            said("c", "@b:x", 2_000),
+        ];
+        let (theme, revealed) = (theme(), Revealed::new());
+        let env = env(&theme, &revealed);
+        assert!(header_avatar(&items, 0, env).is_some());
+        assert!(header_avatar(&items, 1, env).is_none());
+        assert!(header_avatar(&items, 2, env).is_some());
+        let size = laid_out(header_avatar(&items, 0, env).expect("avatar"));
+        assert_eq!(
+            (size.width, size.height),
+            (crate::timeline::AVATAR_PX, crate::timeline::AVATAR_PX)
+        );
+    }
+
+    #[test]
+    fn the_header_avatar_is_a_plain_container_without_tooltip_or_press() {
+        let items = [said("a", "@a:x", 0)];
+        let (theme, revealed) = (theme(), Revealed::new());
+        let element = header_avatar(&items, 0, env(&theme, &revealed)).expect("avatar");
+        // A container passes its content's tree through, and text has no
+        // children; a tooltip (two) or a button (one) would show up here.
+        assert!(element.as_widget().children().is_empty());
+    }
+
+    #[test]
+    fn many_members_and_header_rows_use_the_index_and_give_the_same_pictures() {
+        use crate::rooms::KnownMembers;
+        use twicecat_core::api::{AvatarId, MembershipView, PowerLevelView, Role, RoomMemberView};
+        let members: Vec<RoomMemberView> = (0..5000)
+            .map(|i| RoomMemberView {
+                user_id: UserId::from(format!("@u{i}:x")),
+                display_name: None,
+                avatar: (i % 2 == 0).then(|| AvatarId::from(format!("mxc://x/{i}"))),
+                power: PowerLevelView::Level(0),
+                role: Role::User,
+                membership: MembershipView::Joined,
+            })
+            .collect();
+        let known = KnownMembers::new(RoomId::from("!r:x"), members.clone(), false);
+        // The index holds exactly the members with a picture, and agrees
+        // with a scan of the list.
+        let index: &crate::rooms::MemberAvatars = known.avatars();
+        assert_eq!(index.len(), 2500);
+        for m in &members {
+            assert_eq!(index.get(&m.user_id), m.avatar.as_ref());
+        }
+        let items: Vec<TimelineItem> = (0..120)
+            .map(|n| said(&format!("e{n}"), &format!("@u{}:x", n * 40), n * 600_000))
+            .collect();
+        let (theme, revealed) = (theme(), Revealed::new());
+        let env = RichEnv {
+            members: &known.members,
+            member_avatars: index,
+            ..env(&theme, &revealed)
+        };
+        for i in 0..items.len() {
+            assert!(header_avatar(&items, i, env).is_some());
+        }
+    }
+
+    #[test]
+    fn the_header_name_is_readable_on_every_surface_in_every_theme() {
+        for t in crate::theme::test_themes() {
+            let weak = t.extended_palette().background.weak.color;
+            let surfaces = theme::sender_surfaces(&t.palette(), &theme::semantic(&t), weak);
+            for n in 0..64 {
+                let user = UserId::from(format!("@user{n}:example.org"));
+                let shown = header_name_colour(&user, &t);
+                for bg in surfaces {
+                    assert!(theme::contrast(shown, bg) >= 4.5, "{t}: {user:?} on {bg:?}");
+                }
+            }
         }
     }
 

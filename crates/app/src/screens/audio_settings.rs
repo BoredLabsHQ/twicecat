@@ -1,16 +1,14 @@
-//! The Voice & audio card (plan Task 6, as pages in UI/UX rework Task 12): a
-//! modal above the main view with a list of pages at its left and one page at
-//! its right. Always a stack of two, so opening it keeps the widget state
-//! under it.
+//! The audio pages of Settings (plan Task 6; pages in UI/UX rework Task 12;
+//! inside Settings in UI review fixes Task 12). The advanced switch lists them
+//! under Voice & audio, and each one shows here.
 //!
-//! Two lines stay on screen on every page, outside the page's scroll: what
-//! the microphone sends (the send mode) and whether it is open, in words. A
-//! drop-down is never the only place that says it.
+//! Two lines stay at the top of every page: what the microphone sends (the
+//! send mode) and whether it is open, in words. A drop-down is never the only
+//! place that says it.
 
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    Column, Row, button, checkbox, column, container, pick_list, row, scrollable, slider, space,
-    stack, text,
+    Column, Row, button, checkbox, column, container, pick_list, row, slider, space, text,
 };
 use iced::{Element, Fill, Length};
 use twicecat_core::api::{AudioSettings, InputMode, NoiseSuppression};
@@ -18,29 +16,20 @@ use twicecat_ptt::{KeyboardBackend, Source};
 
 use crate::audio_settings::{
     AUTO_GAIN_MAX_RANGE, AudioMessage, AudioPage, AudioUi, ButtonChoice, CLEANING_LIMIT_RANGE,
-    GpuView, INPUT_GAIN_RANGE, LevelChoice, ModeChoice, MouseChoice, NO_GPU_FOUND, NoiseChoice,
+    GpuView, INPUT_GAIN_RANGE, LevelChoice, ModeChoice, NO_GPU_FOUND, NoiseChoice,
     RELEASE_DELAY_RANGE, SimpleNoise, SkipChoice, Slider, THRESHOLD_RANGE, backend_label,
-    bitrate_menu, device_menu, diagnostic_rows, diagnostics, dropout_words, gpu_name, gpu_status,
-    gpu_used, gpu_view, key_label, meter, meter_zone, mic_status, unloaded_mic_words, zone_words,
+    binding_words, bitrate_menu, device_menu, diagnostic_rows, diagnostics, dropout_words,
+    gpu_name, gpu_status, gpu_used, gpu_view, meter, meter_zone, mic_status, unloaded_mic_words,
+    zone_words,
 };
 use crate::ptt::{BadBinding, SourceState};
 use crate::state::{App, Message};
 use crate::text_safety::one_line_capped;
 use crate::ui::fonts;
 use crate::ui::icons::{Icon, icon};
-use crate::ui::kit::{self, Severity, banner, modal, muted};
+use crate::ui::kit::{self, Severity, banner, muted};
 use crate::ui::tokens;
 
-/// Width of the card.
-const CARD_WIDTH: f32 = 760.0;
-/// Height of the card, with its padding.
-const CARD_HEIGHT: f32 = 640.0;
-/// The least height of the card's content, in a small window.
-const MIN_CARD_HEIGHT: f32 = 240.0;
-/// The padding `kit::modal` puts around the card's content.
-const CARD_PADDING: f32 = 20.0;
-/// Width of the list of pages.
-pub const NAV_WIDTH: f32 = 168.0;
 /// Width of a control's label.
 const LABEL_WIDTH: f32 = 150.0;
 /// Width of a slider's value.
@@ -76,67 +65,22 @@ fn caption<'a>(label: impl text::IntoFragment<'a>) -> Element<'a, Message> {
     words(label).size(tokens::CAPTION).style(muted).into()
 }
 
-/// The base with the card on top when it is open.
-pub fn layer<'a>(base: Element<'a, Message>, app: &'a App) -> Element<'a, Message> {
-    let top = if app.audio_ui.open {
-        view(app)
-    } else {
-        space().into()
-    };
-    stack([base, top]).into()
-}
-
-/// The list of pages, the page, and above them the lines that stay.
-fn view(app: &App) -> Element<'_, Message> {
-    // The card is 640 high, or as high as the window leaves room for.
-    iced::widget::responsive(move |size| card(app, size.height)).into()
-}
-
-/// The modal, `window_height` high at most.
-fn card(app: &App, window_height: f32) -> Element<'_, Message> {
-    let header = row![
-        words("Voice & audio").size(tokens::HEADLINE).width(Fill),
-        kit::secondary_button("Close", Some(msg(AudioMessage::Close))),
-    ]
-    .spacing(tokens::M)
-    .align_y(iced::Center);
-    // What is sent and whether the microphone is open: on every page.
+/// An audio page of Settings (Devices, Talking, ...): the lines that say what
+/// the microphone sends and whether it is open, then the page. The call bar's
+/// line (a refused mic test, a device that failed) shows here too, as it is
+/// under Settings.
+pub fn detail(app: &App) -> Element<'_, Message> {
     let status: Element<'_, Message> = match mic_status(app) {
         Some(status) => banner(status.severity, status.words),
         None => banner(Severity::Info, unloaded_mic_words(app)),
     };
-    // The call bar's line (a refused mic test, a device that failed) is under
-    // this card: it shows here too, on every page. The slot is always there.
     let notice: Element<'_, Message> = match &app.calls.notice {
-        Some(notice) => container(banner(
-            Severity::Danger,
-            one_line_capped(notice, MAX_NOTICE_CHARS),
-        ))
-        .padding(iced::Padding::ZERO.top(tokens::S))
-        .into(),
+        Some(notice) => banner(Severity::Danger, one_line_capped(notice, MAX_NOTICE_CHARS)),
         None => space().into(),
     };
-    let labels = AudioPage::ALL.map(AudioPage::label);
-    let nav = kit::page_nav(&labels, app.audio_ui.page.index(), |index| {
-        msg(AudioMessage::Page(
-            AudioPage::ALL.get(index).copied().unwrap_or_default(),
-        ))
-    });
-    // The scrollbar takes room of its own (it does not float over the page),
-    // so a button or a label at the page's right edge is never under it.
-    let page = scrollable(page_view(app)).spacing(tokens::S).width(Fill);
-    let body = row![
-        container(nav).width(Length::Fixed(NAV_WIDTH)),
-        kit::vertical_divider(),
-        page,
-    ]
-    .spacing(tokens::L)
-    .height(Fill);
-    let content =
-        column![column![header, status, notice].spacing(tokens::S), body].spacing(tokens::L);
-    let height = (window_height - 2.0 * CARD_PADDING - 2.0 * tokens::L)
-        .clamp(MIN_CARD_HEIGHT, CARD_HEIGHT - 2.0 * CARD_PADDING);
-    modal(container(content).height(Length::Fixed(height)), CARD_WIDTH)
+    column![status, notice, page_view(app)]
+        .spacing(tokens::S)
+        .into()
 }
 
 fn page_view(app: &App) -> Element<'_, Message> {
@@ -154,7 +98,7 @@ fn page_view(app: &App) -> Element<'_, Message> {
         AudioPage::Microphone => microphone_page(app, settings),
         AudioPage::Levels => levels_page(app, settings),
         AudioPage::MicTest => mic_test_page(app),
-        AudioPage::Ringtone => ringtone_page(settings),
+        AudioPage::Ringtone => ringtone_page(app, settings),
         AudioPage::OtherVoices => others_page(app, settings),
         AudioPage::Announce => announce_page(settings),
         AudioPage::Diagnostics => diagnostics_page(app),
@@ -177,6 +121,7 @@ fn a_checkbox<'a>(
     toggle: Option<fn(bool) -> Message>,
 ) -> Element<'a, Message> {
     checkbox(on)
+        .style(kit::checkbox_style)
         .label(label)
         .text_wrapping(WRAP)
         .on_toggle_maybe(toggle)
@@ -245,10 +190,9 @@ fn device_rows<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Mes
 /// The Voice & audio page of Settings: what a person needs to be heard and
 /// to hear, in few words. The microphone and speakers, the volume, how you
 /// talk (and the key), noise reduction in three steps, and a test with its
-/// level. Everything else is in the card (**More audio options**), which
-/// Settings offers once the advanced switch is on: `more` is what it puts
-/// under the heading for that.
-pub fn basics<'a>(app: &'a App, more: Option<Element<'a, Message>>) -> Element<'a, Message> {
+/// level. Everything else is on the audio pages Settings lists under it once
+/// the advanced switch is on.
+pub fn basics(app: &App) -> Element<'_, Message> {
     let Some(settings) = &app.calls.settings else {
         return column![
             heading("Voice & audio"),
@@ -312,12 +256,8 @@ pub fn basics<'a>(app: &'a App, more: Option<Element<'a, Message>>) -> Element<'
     if in_call {
         test = test.push(note("The test is not available during a call."));
     }
-    let mut head = column![heading("Voice & audio")].spacing(tokens::S);
-    if let Some(more) = more {
-        head = head.push(more);
-    }
     column![
-        head,
+        heading("Voice & audio"),
         status,
         device_rows(app, settings),
         a_slider(
@@ -351,7 +291,7 @@ pub fn basics<'a>(app: &'a App, more: Option<Element<'a, Message>>) -> Element<'
 fn value_text(slider: Slider, value: f32) -> String {
     match slider {
         Slider::InputGain => format!("{value:+.1} dB"),
-        Slider::MasterVolume => format!("{value:.0}\u{a0}%"),
+        Slider::MasterVolume | Slider::CallSoundsVolume => format!("{value:.0}\u{a0}%"),
         Slider::MicCleaningLimit | Slider::OthersCleaningLimit | Slider::AutoGainMax => {
             format!("{value:.0} dB")
         }
@@ -492,8 +432,6 @@ fn talking_page<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Me
         InputMode::PushToTalk { .. } => {
             page = page
                 .push(key_row(app, settings))
-                .push(labelled("Mouse button", mouse_menu(settings)))
-                .push(note(mouse_note(app.ptt.keyboard())))
                 .push(labelled("Gamepad button", button_menu(settings)))
                 .push(a_slider(
                     &app.audio_ui,
@@ -552,12 +490,13 @@ pub const CAPTURING_HINT: &str = "Press the key together with the modifiers you 
 /// where it is when the capture starts or ends.
 fn key_row<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Message> {
     let ui = &app.audio_ui;
-    let bound = settings.push_to_talk.key.as_deref();
+    let bindings = &settings.push_to_talk;
+    let bound = bindings.key.as_deref().or(bindings.mouse_button.as_deref());
     let shown = if ui.capturing {
         words(CAPTURING_WORDS).size(tokens::BODY_LARGE)
     } else {
         words(one_line_capped(
-            &bound.map_or_else(|| "None".to_owned(), key_label),
+            &binding_words(bindings.key.as_deref(), bindings.mouse_button.as_deref()),
             MAX_IDENTIFIER_CHARS,
         ))
         .font(fonts::MONO)
@@ -582,18 +521,11 @@ fn key_row<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Message
     } else {
         space().into()
     };
-    column![labelled("Key", control.into()), hint]
-        .spacing(tokens::XS)
-        .into()
-}
-
-fn mouse_menu(settings: &AudioSettings) -> Element<'_, Message> {
-    let (menu, chosen) = MouseChoice::menu(settings.push_to_talk.mouse_button.as_deref());
-    kit::menu(
-        pick_list(menu, Some(chosen), |c| msg(AudioMessage::Mouse(c)))
-            .style(kit::menu_style)
-            .width(Fill),
-    )
+    let mut rows = column![labelled("Push-to-talk key", control.into()), hint].spacing(tokens::XS);
+    if bindings.mouse_button.is_some() {
+        rows = rows.push(note(mouse_note(app.ptt.keyboard())));
+    }
+    rows.into()
 }
 
 fn button_menu(settings: &AudioSettings) -> Element<'_, Message> {
@@ -610,8 +542,22 @@ fn a_slider<'a>(
     settings: &AudioSettings,
     which: Slider,
     label: &'a str,
+    range: (f32, f32),
+    step: f32,
+) -> Element<'a, Message> {
+    a_slider_when(ui, settings, which, label, range, step, true)
+}
+
+/// [`a_slider`] that can be switched off: no press handler on − and +, and
+/// a bar with no input in place of the slider.
+fn a_slider_when<'a>(
+    ui: &AudioUi,
+    settings: &AudioSettings,
+    which: Slider,
+    label: &'a str,
     (lo, hi): (f32, f32),
     step: f32,
+    live: bool,
 ) -> Element<'a, Message> {
     let value = ui.shown(which, settings);
     // The slider takes no keyboard focus in iced 0.14: − and + do.
@@ -619,22 +565,28 @@ fn a_slider<'a>(
         button(icon(glyph))
             .padding([tokens::XS, tokens::M])
             .style(kit::secondary_style)
-            .on_press(msg(AudioMessage::Step(which, up)))
+            .on_press_maybe(live.then(|| msg(AudioMessage::Step(which, up))))
     };
+    let control: Element<'a, Message> = if live {
+        // Ctrl + wheel is the zoom gesture, which iced's slider takes as
+        // a step: the - and + buttons are the way to nudge it.
+        crate::ui::guard::no_wheel(
+            slider(lo..=hi, value, move |v| msg(AudioMessage::Slide(which, v)))
+                .step(step)
+                .on_release(msg(AudioMessage::SlideReleased))
+                .width(Fill),
+        )
+    } else {
+        kit::disabled_bar((value - lo) / (hi - lo))
+    };
+    let shown = words(value_text(which, value)).width(Length::Fixed(VALUE_WIDTH));
     labelled(
         label,
         row![
             nudge(Icon::Minus, false),
-            // Ctrl + wheel is the zoom gesture, which iced's slider takes as
-            // a step: the - and + buttons are the way to nudge it.
-            crate::ui::guard::no_wheel(
-                slider(lo..=hi, value, move |v| msg(AudioMessage::Slide(which, v)))
-                    .step(step)
-                    .on_release(msg(AudioMessage::SlideReleased))
-                    .width(Fill)
-            ),
+            control,
             nudge(Icon::Plus, true),
-            words(value_text(which, value)).width(Length::Fixed(VALUE_WIDTH)),
+            if live { shown } else { shown.style(muted) },
         ]
         .spacing(tokens::S)
         .align_y(iced::Center)
@@ -944,7 +896,13 @@ fn mic_test_page(app: &App) -> Element<'_, Message> {
     page.push(level_meter(app)).into()
 }
 
-fn ringtone_page(settings: &AudioSettings) -> Element<'_, Message> {
+fn ringtone_page<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Message> {
+    let sounds = &settings.call_sounds;
+    // The extras and the volume stay on the page, and are switched off with
+    // the master: the page does not change shape as it is toggled.
+    let extra = |label: &'a str, on: bool, toggle: fn(bool) -> Message| {
+        a_checkbox(label, on, sounds.enabled.then_some(toggle))
+    };
     column![
         heading(AudioPage::Ringtone.label()),
         a_checkbox(
@@ -953,6 +911,33 @@ fn ringtone_page(settings: &AudioSettings) -> Element<'_, Message> {
             Some(|on| msg(AudioMessage::Ringtone(on))),
         ),
         note("It plays on the speakers above, at the volume above, and never during a call."),
+        words("Call sounds").size(tokens::BODY_LARGE),
+        a_checkbox(
+            "Play a sound when you join a call",
+            sounds.enabled,
+            Some(|on| msg(AudioMessage::CallSounds(on))),
+        ),
+        extra(
+            "Also when someone else joins the call",
+            sounds.others_joining,
+            |on| msg(AudioMessage::OthersJoining(on)),
+        ),
+        extra("Also when you leave the call", sounds.leaving, |on| msg(
+            AudioMessage::LeavingSound(on)
+        )),
+        a_slider_when(
+            &app.audio_ui,
+            settings,
+            Slider::CallSoundsVolume,
+            "Sounds volume",
+            (0.0, 100.0),
+            5.0,
+            sounds.enabled,
+        ),
+        note(
+            "Short, quiet sounds in the call, heard even when you are muted or deafened. They \
+             follow the volume under Levels."
+        ),
     ]
     .spacing(tokens::S)
     .into()
@@ -996,6 +981,7 @@ fn others_page<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Mes
         if let Some(backend) = gpu_used(app.calls.gpu.as_ref()) {
             page = page.push(
                 checkbox(cleaning.gpu)
+                    .style(kit::checkbox_style)
                     .label(format!("Clean on the GPU ({})", gpu_name(backend)))
                     .text_wrapping(WRAP)
                     .on_toggle(|on| msg(AudioMessage::CleanOthersGpu(on))),

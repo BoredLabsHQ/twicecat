@@ -13,11 +13,11 @@ use iced::Task;
 use twicecat_core::api::{RoomId, RoomListChoice, RoomSummary};
 
 use crate::calls::CallMessage;
+use crate::room_panel::RoomPanelMessage;
 use crate::sessions::SessionsMessage;
 use crate::settings::{SettingsMessage, Zoom};
 use crate::state::{App, Message, Screen};
 use crate::switcher::SwitcherMessage;
-use crate::threads::ThreadsMessage;
 use crate::verification::VerificationMessage;
 use crate::video::VideoMessage;
 
@@ -531,7 +531,6 @@ impl App {
     pub fn any_overlay_open(&self) -> bool {
         self.switcher.open
             || self.calls.card().is_some()
-            || self.audio_ui.open
             || self.uploads.dialog.is_some()
             || self.media.viewer.is_some()
             || self.settings_ui.open
@@ -550,7 +549,7 @@ impl App {
             suggestions_open: self.composer.suggestions.is_open(),
         };
         let spent = std::mem::take(&mut self.escape_spent);
-        // The Voice & audio card is waiting for the push-to-talk key.
+        // The Voice & audio page is waiting for the push-to-talk key.
         if self.audio_ui.capturing {
             return Task::none();
         }
@@ -631,7 +630,12 @@ impl App {
         if self.screen != Screen::Main || self.any_overlay_open() {
             return Task::none();
         }
-        match room_after(&self.rooms, self.selected.as_ref(), forward, only_unread) {
+        match room_after(
+            &self.rooms_as_drawn(),
+            self.selected.as_ref(),
+            forward,
+            only_unread,
+        ) {
             Some(id) if self.selected.as_ref() != Some(&id) => self.update(Message::SelectRoom(id)),
             _ => Task::none(),
         }
@@ -639,8 +643,9 @@ impl App {
 
     /// Esc closes the topmost thing, one per press: the incoming-call card
     /// (hidden, still ringing), the switcher, the upload
-    /// confirmation, the viewer, the Voice & audio card, Settings, a room
-    /// dialog or panel, the
+    /// confirmation, the viewer, Settings (with its audio pages), a room
+    /// dialog or card, a question in the room panel's Info tab (turn
+    /// encryption on, leave), the
     /// composer's suggestions, reply or edit, then the thread panel, then the
     /// participants panel (the one on screen first when the window is too
     /// narrow for both).
@@ -673,11 +678,7 @@ impl App {
         if self.media.viewer.is_some() {
             return self.update(Message::ViewerClosed);
         }
-        // In the order of the layers: the card is drawn under the switcher,
-        // the upload confirmation and the viewer, over Settings.
-        if self.audio_ui.open {
-            return self.update(Message::Audio(crate::audio_settings::AudioMessage::Close));
-        }
+        // The audio pages are part of Settings: Esc closes it.
         if self.settings_ui.open {
             return self.update(Message::Settings(SettingsMessage::Close));
         }
@@ -685,6 +686,11 @@ impl App {
         // main view's own layers (`App::view`), so they take the key before
         // the Sessions card under them.
         if self.rooms_ui.overlay_open() {
+            return self.update(Message::Rooms(crate::rooms::RoomsMessage::Escape));
+        }
+        // A question in the Info tab (turn encryption on, leave) is cancelled
+        // before the panel closes.
+        if self.rooms_ui.question_open() {
             return self.update(Message::Rooms(crate::rooms::RoomsMessage::Escape));
         }
         // The share picker and the full-screen view are drawn over the main
@@ -713,8 +719,8 @@ impl App {
         // The panel on screen first. In a window too narrow for both, the
         // one that waits is not on screen and keeps its turn.
         let layout = self.pane_layout();
-        if layout.thread {
-            return self.update(Message::Threads(ThreadsMessage::Close));
+        if layout.room_panel {
+            return self.update(Message::RoomPanel(RoomPanelMessage::Close));
         }
         if layout.call {
             return self.update(Message::Call(CallMessage::TogglePanel));

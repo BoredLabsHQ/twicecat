@@ -1,7 +1,7 @@
 //! Push-to-talk in the app (plan docs/plans/phase6-push-to-talk.md, #15).
 //!
 //! The service (`twicecat-ptt`) runs while the input mode is push-to-talk
-//! or toggle-to-talk and a call, the mic test or the Voice & audio card
+//! or toggle-to-talk and a call, the mic test or an audio page of Settings
 //! needs it (plan Q1), so the key is not watched (or, on macOS, grabbed) the
 //! rest of the time. On X11 and Windows other apps still receive the key
 //! (#49). It is started, restarted and dropped from `update`, which Iced runs

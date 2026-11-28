@@ -148,6 +148,16 @@ pub enum RoomListTab {
     Rooms,
     /// Spaces.
     Spaces,
+    /// Rooms with unread messages, or marked unread.
+    Unreads,
+    /// Rooms with unread mentions, or marked unread.
+    Mentions,
+    /// Rooms tagged as favourites.
+    Favourites,
+    /// Rooms tagged as low priority.
+    LowPriority,
+    /// Invitations.
+    Invites,
 }
 
 /// A room list query: a tab plus a name search.
@@ -297,6 +307,26 @@ pub enum SyncState {
     Terminated,
 }
 
+/// Whether a room is end-to-end encrypted, as far as the core knows.
+///
+/// `Unknown` means the sync has not yet provided what is needed to decide; it
+/// must not be shown as "not encrypted".
+///
+/// ```
+/// use twicecat_core::api::RoomEncryption;
+/// assert_eq!(RoomEncryption::default(), RoomEncryption::Unknown);
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RoomEncryption {
+    /// The room is encrypted.
+    Encrypted,
+    /// The room is known not to be encrypted.
+    NotEncrypted,
+    /// The encryption state is not known yet.
+    #[default]
+    Unknown,
+}
+
 /// One row of the room list.
 ///
 /// `Debug` hides the preview body (see [`MessagePreview`]).
@@ -331,6 +361,9 @@ pub struct RoomSummary {
     pub last_message: Option<MessagePreview>,
     /// The room is end-to-end encrypted.
     pub is_encrypted: bool,
+    /// Whether the room is encrypted, not encrypted, or not known yet.
+    /// `is_encrypted` equals `encryption == RoomEncryption::Encrypted`.
+    pub encryption: RoomEncryption,
     /// The one other user of a direct message, as the core sees it (the user
     /// whose trust it reports); `None` for other rooms and for DMs with no or
     /// several other users.
@@ -338,6 +371,10 @@ pub struct RoomSummary {
     /// The user's own notification mode for this room; `None` when the room
     /// follows the account default.
     pub notification_mode: Option<RoomNotificationModeView>,
+    /// The room has the `m.favourite` tag.
+    pub is_favourite: bool,
+    /// The room has the `m.lowpriority` tag.
+    pub is_low_priority: bool,
 }
 
 impl RoomSummary {
@@ -365,8 +402,11 @@ impl RoomSummary {
             marked_unread: false,
             last_message: None,
             is_encrypted: false,
+            encryption: RoomEncryption::Unknown,
             dm_peer: None,
             notification_mode: None,
+            is_favourite: false,
+            is_low_priority: false,
         }
     }
 }
@@ -993,6 +1033,17 @@ pub enum ActionKind {
     Profile,
     /// Open or page a thread.
     Thread,
+    /// Set or remove a room's favourite or low priority tag.
+    RoomTag,
+}
+
+/// A room's favourite or low priority tag. A room has at most one of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoomTagView {
+    /// `m.favourite`.
+    Favourite,
+    /// `m.lowpriority`.
+    LowPriority,
 }
 
 /// What a timeline item is.

@@ -11,6 +11,12 @@
 use std::fs;
 use std::path::Path;
 
+/// A path with forward slashes, so the suffix checks below hold on Windows,
+/// where `Path::display` writes backslashes.
+fn slashed(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 fn sources(dir: &Path, out: &mut Vec<(String, String)>) {
     for entry in fs::read_dir(dir).expect("a readable source dir") {
         let path = entry.expect("a dir entry").path();
@@ -18,7 +24,7 @@ fn sources(dir: &Path, out: &mut Vec<(String, String)>) {
             sources(&path, out);
         } else if path.extension().is_some_and(|e| e == "rs") {
             let text = fs::read_to_string(&path).expect("a readable source file");
-            out.push((path.display().to_string(), text));
+            out.push((slashed(&path.display().to_string()), text));
         }
     }
 }
@@ -117,6 +123,60 @@ fn every_pick_list_is_wrapped_by_the_wheel_guard() {
 }
 
 #[test]
+fn the_sidebar_cards_lists_are_pick_lists_behind_the_wheel_guard() {
+    let own: Vec<(String, String)> = app_sources()
+        .into_iter()
+        .filter(|(name, _)| name.ends_with("screens/sidebar_menu.rs"))
+        .collect();
+    let (seen, bare) = unwrapped(&own, "pick_list");
+    assert_eq!(
+        seen, 2,
+        "the Move to folder and the Move to section lists are in the scan"
+    );
+    assert!(bare.is_empty(), "unwrapped: {bare:?}");
+    // And the second one is the section list, wrapped on its own: a card that
+    // moved a room into a section on Ctrl + wheel would rearrange the sidebar.
+    let code = code_of(&own[0].1);
+    let at = code.find("\"Move to section\"").expect("the section list");
+    let wrapped = code[at..]
+        .find("kit::menu(")
+        .zip(code[at..].find("pick_list("))
+        .is_some_and(|(menu, list)| menu < list);
+    assert!(wrapped, "the Move to section list is not inside kit::menu");
+}
+
+#[test]
+fn the_sort_card_list_is_a_pick_list_behind_the_wheel_guard() {
+    let own: Vec<(String, String)> = app_sources()
+        .into_iter()
+        .filter(|(name, _)| name.ends_with("screens/room_list_pane.rs"))
+        .collect();
+    let (seen, bare) = unwrapped(&own, "pick_list");
+    assert_eq!(
+        seen, 2,
+        "the Sort card's order list and the header's filter list are in the scan"
+    );
+    assert!(bare.is_empty(), "unwrapped: {bare:?}");
+    // And it is the Sort card's: a sort that changed on Ctrl + wheel would
+    // reorder the whole room list while the user only zooms.
+    let code = code_of(&own[0].1);
+    let card = code.find("fn sort_card(").expect("the Sort card");
+    let wrapped = code[card..]
+        .find("kit::menu(")
+        .zip(code[card..].find("pick_list("))
+        .is_some_and(|(menu, list)| menu < list);
+    assert!(wrapped, "the Sort card's list is not inside kit::menu");
+    // The header's filter list: a filter that changed on Ctrl + wheel would
+    // swap the rooms shown while the user only zooms.
+    let filter = code.find("fn filter_menu").expect("the filter drop-down");
+    let wrapped = code[filter..]
+        .find("kit::menu(")
+        .zip(code[filter..].find("pick_list("))
+        .is_some_and(|(menu, list)| menu < list);
+    assert!(wrapped, "the filter list is not inside kit::menu");
+}
+
+#[test]
 fn every_slider_is_wrapped_by_the_wheel_guard() {
     let files = app_sources();
     for widget in ["slider", "vertical_slider"] {
@@ -163,4 +223,11 @@ fn the_scan_tells_a_wrapped_widget_from_a_bare_one() {
     assert_eq!(bare("a_slider(ui, settings)", "slider"), 0);
     assert_eq!(bare("fn limit_slider(ui: u8)", "slider"), 0);
     assert_eq!(bare("// slider(0..=1, v, f)", "slider"), 0);
+}
+
+#[test]
+fn a_windows_path_is_matched_by_its_forward_slash_suffix() {
+    let name = slashed(r"C:\work\crates\app\src\screens\room_list_pane.rs");
+    assert!(name.ends_with("screens/room_list_pane.rs"), "{name}");
+    assert_eq!(slashed("src/a.rs"), "src/a.rs");
 }

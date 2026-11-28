@@ -1,0 +1,587 @@
+//! Grep tests for the documents about the customizable sidebar (plan
+//! sidebar-customization, Task 13): `docs/sidebar.md` and the sidebar section
+//! of `docs/accessibility.md` must say what the acceptance criteria say, and
+//! must not promise what does not exist (a sync of the layout, or a file that
+//! is removed at logout).
+
+use twicecat_app::room_list::SortOption;
+use twicecat_app::sidebar_menu::{
+    Entry, Target, entries, room_entries, section_entries, tag_entries, tree_entry,
+};
+use twicecat_core::api::sidebar::limits;
+use twicecat_core::api::{RoomId, SectionKey, SidebarLabel};
+
+fn doc(name: &str) -> String {
+    let path = format!("{}/../../docs/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path} is readable: {e}"))
+}
+
+/// The text with line breaks and runs of blanks folded to single spaces and
+/// letters lowercased, so a phrase wrapped over two lines is still found.
+fn flat(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The sidebar section of `accessibility.md`.
+fn accessibility_sidebar_section() -> String {
+    let text = doc("accessibility.md");
+    let start = text
+        .find("## The sidebar")
+        .expect("accessibility.md has a sidebar section");
+    let rest = &text[start + 3..];
+    let end = rest.find("\n## ").map_or(rest.len(), |at| at + 1);
+    rest[..end].to_owned()
+}
+
+const ENTRIES: [Entry; 18] = [
+    Entry::MoveUp,
+    Entry::MoveDown,
+    Entry::RemoveFromFolder,
+    Entry::ShowSubSpaces,
+    Entry::HideSubSpaces,
+    Entry::Rename,
+    Entry::Ungroup,
+    Entry::Star,
+    Entry::Unstar,
+    Entry::AddFavourite,
+    Entry::RemoveFavourite,
+    Entry::MarkLowPriority,
+    Entry::RemoveLowPriority,
+    Entry::BackToDefault,
+    Entry::Collapse,
+    Entry::Expand,
+    Entry::Delete,
+    Entry::NewSection,
+];
+
+#[test]
+fn accessibility_names_the_options_menus_and_says_they_need_a_pointer() {
+    let section = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "options menus",
+        "right-click",
+        "\u{22EF}",
+        "alternative to dragging",
+        "need a pointer",
+        "iced 0.14",
+        "buttons take no keyboard focus",
+        "keyboard-only users",
+        "keep the arrangement but cannot change it",
+        "no keyboard chord",
+        "pointer-only",
+        "auto-scroll",
+    ] {
+        assert!(
+            section.contains(wanted),
+            "the sidebar section of accessibility.md does not say {wanted:?}"
+        );
+    }
+    // Every move, folder move, section move and star is an entry of the menu.
+    for entry in ENTRIES.iter().filter(|e| **e != Entry::NewSection) {
+        let label = entry.label().trim_end_matches('\u{2026}').to_lowercase();
+        assert!(section.contains(&label), "{label:?} is not named");
+    }
+    for wanted in ["move to folder", "move to section"] {
+        assert!(section.contains(wanted), "{wanted:?} is not named");
+    }
+}
+
+#[test]
+fn the_keyboard_map_of_accessibility_gets_no_sidebar_row() {
+    // The table is the one `SHORTCUTS` drives (a test in `keys.rs` compares
+    // them). The sidebar adds no chord, so no table row mentions it.
+    let text = doc("accessibility.md");
+    let table: Vec<&str> = text
+        .lines()
+        .skip_while(|l| !l.starts_with("## Keyboard map"))
+        .skip(1)
+        .take_while(|l| !l.starts_with("Rules the code follows"))
+        .filter(|l| l.starts_with('|'))
+        .collect();
+    assert!(table.len() > 10, "the table was found");
+    for row in table {
+        let row = row.to_lowercase();
+        for word in ["sidebar", "folder", "section", "starred"] {
+            assert!(!row.contains(word), "a table row mentions {word}: {row}");
+        }
+    }
+}
+
+#[test]
+fn sidebar_md_says_where_the_layout_is_and_for_whom() {
+    let text = doc("sidebar.md");
+    let flat = flat(&text);
+    for wanted in [
+        "sidebar-<digest>.json",
+        "settings.json",
+        "this device only",
+        "one file per account",
+        // Kept at logout and read again at the next login.
+        "the file is kept when you log out",
+        "read again the next time the same account logs in",
+        "another account on the same device never reads or changes your file",
+        // How to remove it.
+        "reset sidebar layout",
+        "settings, appearance",
+        "delete the file",
+        // The two protected states.
+        "made by a newer twicecat",
+        "belongs to another account",
+        "left exactly as they are",
+        "is off",
+        // The ways to arrange.
+        "options menus",
+        "right-click",
+        "\u{22EF}",
+        "drag",
+    ] {
+        assert!(flat.contains(wanted), "sidebar.md does not say {wanted:?}");
+    }
+}
+
+#[test]
+fn sidebar_md_claims_no_sync_and_no_removal_at_logout() {
+    let flat = flat(&doc("sidebar.md"));
+    // No claim of a sync, in any form: the layout never leaves the device.
+    for word in [
+        "sync",
+        "synchron",
+        "cloud",
+        "account data",
+        "account-data",
+        "encrypt",
+        "end-to-end",
+    ] {
+        assert!(!flat.contains(word), "sidebar.md mentions {word:?}");
+    }
+    for phrase in [
+        "removed at logout",
+        "removed at log out",
+        "removed when you log out",
+        "removed on logout",
+        "removed on log out",
+        "removed when you sign out",
+        "removed at sign out",
+        "deleted at logout",
+        "deleted at log out",
+        "deleted when you log out",
+        "deleted when you sign out",
+        "deleted on logout",
+        "erased at logout",
+        "erased when you log out",
+        "cleared at logout",
+        "cleared when you log out",
+        "wiped at logout",
+        "wiped when you log out",
+        "forgotten at logout",
+        "is lost when you log out",
+        "removes the file when you log out",
+        "deletes the file when you log out",
+    ] {
+        assert!(!flat.contains(phrase), "sidebar.md says {phrase:?}");
+    }
+    // It says the opposite, so the absence above is not an accident.
+    assert!(flat.contains("the file stays on disk"));
+}
+
+#[test]
+fn sidebar_md_says_favourites_and_low_priority_are_kept_on_the_homeserver() {
+    let flat = flat(&doc("sidebar.md"));
+    for wanted in [
+        "favourites",
+        "low priority",
+        "matrix room tags",
+        "kept on the homeserver",
+        "other matrix apps such as element show them too",
+        // The local arrangement stays on this device.
+        "where the two sections stand",
+        "kept on this device only",
+    ] {
+        assert!(flat.contains(wanted), "sidebar.md does not say {wanted:?}");
+    }
+    // The tags are the exception to "the server is not told".
+    assert!(flat.contains("the one exception is the favourites and low priority tags"));
+}
+
+#[test]
+fn the_docs_say_the_flat_list_has_a_tag_card_and_the_narrow_rail_has_none() {
+    let flat_sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "tags can be changed from the flat list too",
+        "right-click a room in home, in the list under a chip other than all, or in a search result",
+        "the same two tag entries, with the same words, and nothing else",
+        "the narrow rail (a room list collapsed to icons) has no card",
+    ] {
+        assert!(
+            flat_sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let section = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "the card of a row in the flat list is pointer-only too",
+        "a keyboard-only user cannot tag from there",
+        "the narrow rail's rows have no card at all",
+    ] {
+        assert!(
+            section.contains(wanted),
+            "the sidebar section of accessibility.md does not say {wanted:?}"
+        );
+    }
+}
+
+#[test]
+fn sidebar_md_says_an_older_twicecat_drops_the_two_section_keys_it_does_not_know() {
+    let flat = flat(&doc("sidebar.md"));
+    for wanted in [
+        "an older twicecat does not know the section keys for favourites and low priority",
+        "it drops the favourites and lowpriority keys it does not know",
+        "loses only where you had placed or collapsed those two sections",
+    ] {
+        assert!(flat.contains(wanted), "sidebar.md does not say {wanted:?}");
+    }
+}
+
+#[test]
+fn accessibility_says_the_tag_entries_need_a_pointer_and_add_no_shortcut() {
+    let section = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "favourites and low priority are menu entries on a room's card",
+        "need a pointer",
+        "kept on the homeserver",
+        "wording follows the room's tags, not a colour or an icon",
+    ] {
+        assert!(
+            section.contains(wanted),
+            "the sidebar section of accessibility.md does not say {wanted:?}"
+        );
+    }
+}
+
+#[test]
+fn sidebar_md_names_the_menu_entries_the_app_has() {
+    let flat = flat(&doc("sidebar.md"));
+    for entry in ENTRIES {
+        let label = entry.label().trim_end_matches('\u{2026}').to_lowercase();
+        assert!(flat.contains(&label), "{label:?} is not in sidebar.md");
+    }
+}
+
+/// Every words-on-a-button of every options card, taken from the builders that
+/// draw the cards (not a hand list): the rail cards, the section header cards
+/// for every section key and both states, the room cards for every section,
+/// the flat-list room card for every tag state, the Sort card, and the pick
+/// lists with their last choice.
+fn every_card_label() -> Vec<String> {
+    let id = RoomId::from("!x:example.org");
+    let mut found: Vec<Entry> = Vec::new();
+    for in_folder in [false, true] {
+        for target in [Target::Space(id.clone()), Target::Folder(1)] {
+            found.extend(entries(&target, in_folder));
+        }
+    }
+    for (has, open) in [(true, false), (true, true), (false, false)] {
+        found.extend(tree_entry(has, open));
+    }
+    let keys = [
+        SectionKey::Favourites,
+        SectionKey::LowPriority,
+        SectionKey::Starred,
+        SectionKey::Channels,
+        SectionKey::Direct,
+        SectionKey::SubSpace(id.clone()),
+        SectionKey::Custom(1),
+    ];
+    for key in &keys {
+        for collapsed in [false, true] {
+            found.extend(section_entries(key, collapsed));
+        }
+        found.extend(room_entries(key));
+    }
+    for fav in [false, true] {
+        for low in [false, true] {
+            found.extend(tag_entries(fav, low));
+        }
+    }
+    let mut out: Vec<String> = found
+        .into_iter()
+        .map(|entry| entry.label().trim_end_matches('\u{2026}').to_lowercase())
+        .collect();
+    out.extend(
+        SortOption::ALL
+            .iter()
+            .map(|option| option.to_string().to_lowercase()),
+    );
+    // The words the card screens draw outside the builders: the Sort card's
+    // switch and the headings of the two pick lists.
+    out.extend(["unreads first", "move to folder", "move to section"].map(str::to_owned));
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn every_entry_of_every_options_card_is_in_sidebar_md() {
+    let flat = flat(&doc("sidebar.md"));
+    let labels = every_card_label();
+    assert!(labels.len() >= 23, "the builders gave {labels:?}");
+    for label in labels {
+        assert!(flat.contains(&label), "{label:?} is not in sidebar.md");
+    }
+}
+
+#[test]
+fn the_docs_say_what_a_tag_does_next_to_the_layout() {
+    let flat = flat(&doc("sidebar.md"));
+    for wanted in [
+        // Where each thing is kept.
+        "the tags are kept on the homeserver",
+        "the layout and the sort are kept on this device",
+        "which spaces are shown open on the rail is not saved at all",
+        // The tag wins over the layout.
+        "a favourite that you moved into a section of your own stays under favourites",
+        "a room that is the only one in its own section leaves that header hidden",
+        "so there is nothing to drop on",
+        "a starred room dropped on favourites gets the tag and stays under starred",
+        "a favourite that is also saved in a section of your own, dropped on channels",
+        "removes the tag and the room reappears in that section",
+        // Pointer only.
+        "tagging is done with a pointer only",
+        "an open folder and a space whose sub-spaces are shown are not dragged",
+        "a finger on a touch screen does not reorder the rail either",
+    ] {
+        assert!(flat.contains(wanted), "sidebar.md does not say {wanted:?}");
+    }
+    let access = flat_accessibility();
+    for wanted in [
+        "a favourite that you moved into a section of your own stays under favourites",
+        "an open folder and a space whose sub-spaces are shown are not dragged",
+    ] {
+        assert!(
+            access.contains(wanted),
+            "the sidebar section of accessibility.md does not say {wanted:?}"
+        );
+    }
+}
+
+fn flat_accessibility() -> String {
+    flat(&accessibility_sidebar_section())
+}
+
+#[test]
+fn sidebar_md_states_the_caps_the_core_enforces() {
+    let flat = flat(&doc("sidebar.md"));
+    let grouped = |n: usize| {
+        if n >= 1000 {
+            format!("{},{:03}", n / 1000, n % 1000)
+        } else {
+            n.to_string()
+        }
+    };
+    for (what, n) in [
+        ("entries on the rail", limits::MAX_RAIL_ENTRIES),
+        ("of them folders", limits::MAX_FOLDERS),
+        ("sections of your own", limits::MAX_CUSTOM_SECTIONS),
+        ("rooms in its starred", limits::MAX_PLACED_ROOMS),
+        ("room and space references", limits::MAX_ROOM_REFS),
+    ] {
+        let wanted = format!("{} {what}", grouped(n));
+        let wanted_up_to = format!("up to {wanted}");
+        let wanted_at_most = format!("at most {wanted}");
+        // "Up to 200 entries on the rail", "at most 50 of them folders".
+        assert!(
+            flat.contains(&wanted_up_to) || flat.contains(&wanted_at_most),
+            "sidebar.md does not give the cap {wanted:?}"
+        );
+    }
+    let bytes = usize::try_from(limits::MAX_SIDEBAR_BYTES).expect("small");
+    assert!(flat.contains(&format!("{} kib", bytes / 1024)));
+    assert!(flat.contains(&format!("1 to {} characters", SidebarLabel::MAX_CHARS)));
+}
+
+#[test]
+fn the_docs_do_not_promise_what_the_sidebar_does_not_do() {
+    let flat = flat(&doc("sidebar.md"));
+    // Not built: a sync, a menu at the pointer, a keyboard way, auto-scroll.
+    for promise in [
+        "keyboard shortcut for",
+        "shortcut to arrange",
+        "scrolls automatically",
+        "auto-scrolls",
+        "at the pointer",
+    ] {
+        assert!(!flat.contains(promise), "sidebar.md promises {promise:?}");
+    }
+    // What it says instead.
+    assert!(flat.contains("no keyboard shortcut was added"));
+    assert!(flat.contains("does not scroll the list"));
+}
+
+#[test]
+fn the_docs_say_a_room_can_be_dragged_onto_favourites_or_low_priority_like_the_menu_entries() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "dropping a room onto the favourites or low priority header gets that tag",
+        "dropping a room onto its own section",
+        "removes the tag it carries",
+        "a room already in favourites dropped on favourites does nothing",
+        "a starred room is not allowed on low priority",
+        "a favourite stays under favourites",
+        "dropping a room on a row of a built-in section works like dropping it on that section's header",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    assert!(
+        !sidebar.contains("dragging a room onto these two headers is not built yet"),
+        "sidebar.md still says the drag is not built"
+    );
+    let access = flat(&accessibility_sidebar_section());
+    assert!(
+        access.contains("dragging a room onto favourites or low priority is the same entry"),
+        "accessibility.md does not tie the tag drops to the entries"
+    );
+}
+
+#[test]
+fn the_docs_describe_the_discord_category_look_and_its_words() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "a header is the section's name in capitals",
+        "the room's picture before its name, or its first letter",
+        "a small speaker at the bottom right corner of the picture on a voice room",
+        "no message preview and no time",
+        "as tall as before in both densities",
+        "a room set to mute has its name dimmed even when it has unread messages",
+        "still counts a muted room with unread messages as unread",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "a channel row says what it is by shape and words, not by colour or weight alone",
+        "the speaker icon is the only mark of an empty voice room",
+        "never brighter than an unread one",
+        "at least 4.5:1 against the row in every theme",
+        "a read name and a header are muted (at least 3:1)",
+        "row heights are unchanged",
+    ] {
+        assert!(
+            access.contains(wanted),
+            "accessibility.md does not say {wanted:?}"
+        );
+    }
+}
+
+#[test]
+fn the_docs_say_voice_follows_text_and_a_collapsed_category_keeps_the_open_room_and_the_call() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "text rooms come first and voice rooms after them",
+        "keep exactly the order you gave them, a voice room first if you put it there",
+        "the room that is open stays drawn under the header",
+        "the voice room of the call this device is in, with the people listed under it",
+        "an unread one too",
+        "still counts all the rooms of the section",
+        "a section with neither room in it shows its header alone",
+        "alt+up and alt+down walk the rooms that are drawn",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "voice after text, and a collapsed category, change no key",
+        "alt+up / alt+down walk the drawn rooms, so they skip the hidden ones and stop at a kept one",
+        "stop at the open room and at the room of this device's call",
+    ] {
+        assert!(
+            access.contains(wanted),
+            "accessibility.md does not say {wanted:?}"
+        );
+    }
+}
+
+#[test]
+fn the_docs_describe_the_ghost_tile_as_a_visual_aid() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "a ghost tile (a see-through copy of the row, or of the header's name) follows the pointer",
+        "so a click never shows it",
+        "the rail shows no ghost tile",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    for wanted in [
+        "the ghost tile of a drag is a visual aid only",
+        "it takes no pointer event and no focus",
+    ] {
+        assert!(
+            access.contains(wanted),
+            "accessibility.md does not say {wanted:?}"
+        );
+    }
+}
+
+#[test]
+fn the_docs_say_the_empty_space_of_a_space_list_offers_new_section_and_is_pointer_only() {
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "empty space** under the last line of a space's list",
+        "a small card with **new section** alone",
+        "not in home, under a chip other than all, in a search result or in the narrow rail",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    assert!(
+        access.contains(
+            "a right-click on the empty space of a space's list is a pointer-only convenience"
+        ),
+        "accessibility.md does not say it"
+    );
+}
+
+#[test]
+fn the_docs_say_the_selected_space_is_remembered_on_this_device_per_account_and_dropped_at_logout()
+{
+    let sidebar = flat(&doc("sidebar.md"));
+    for wanted in [
+        "reopens on **the space you had selected**",
+        "the room you had open, the filter chip and the scroll position are not kept",
+        "on this device only**, per account",
+        "`view-<digest>.json`",
+        "never sent to your homeserver",
+        "opens on home without saying anything",
+        "logging out of the account **discards** it",
+        "a session that only expired keeps it",
+        "another account on the same device never reads it",
+    ] {
+        assert!(
+            sidebar.contains(wanted),
+            "sidebar.md does not say {wanted:?}"
+        );
+    }
+    let access = flat(&accessibility_sidebar_section());
+    assert!(
+        access.contains("reopening on the selected space needs no input"),
+        "accessibility.md does not say it"
+    );
+}

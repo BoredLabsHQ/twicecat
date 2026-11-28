@@ -6,8 +6,10 @@ use matrix_sdk::ruma::{OwnedMxcUri, OwnedRoomId};
 use matrix_sdk::{Room, RoomState};
 use matrix_sdk_ui::eyeball_im::VectorDiff;
 use matrix_sdk_ui::room_list_service::filters::{
-    BoxedFilterFn, RoomCategory, new_filter_all, new_filter_category, new_filter_identifiers,
-    new_filter_non_left, new_filter_normalized_match_room_name, new_filter_not, new_filter_space,
+    BoxedFilterFn, ReadReceiptsCategory, RoomCategory, new_filter_all, new_filter_category,
+    new_filter_favourite, new_filter_identifiers, new_filter_invite, new_filter_low_priority,
+    new_filter_non_left, new_filter_normalized_match_room_name, new_filter_not,
+    new_filter_read_receipts, new_filter_space,
 };
 use matrix_sdk_ui::room_list_service::{RoomListItem, RoomListLoadingState};
 use matrix_sdk_ui::timeline::{LatestEventValue, RoomExt, TimelineDetails};
@@ -17,8 +19,8 @@ use crate::security;
 use crate::spaces::SpaceChildren;
 
 use crate::api::{
-    AvatarId, CoreEvent, ListDiff, MessagePreview, RoomId, RoomListQuery, RoomListTab, RoomSummary,
-    UserId,
+    AvatarId, CoreEvent, ListDiff, MessagePreview, RoomEncryption, RoomId, RoomListQuery,
+    RoomListTab, RoomSummary, UserId,
 };
 
 /// Maps one SDK diff, converting each carried item with `f`.
@@ -62,6 +64,18 @@ pub(crate) enum FilterPart {
     Space,
     /// Anything but spaces.
     NotSpace,
+    /// Rooms with unread messages or marked unread
+    /// (`ReadReceiptsCategory::Messages`).
+    Unread,
+    /// Rooms with unread mentions or marked unread
+    /// (`ReadReceiptsCategory::Mentions`).
+    Mention,
+    /// Rooms tagged `m.favourite`.
+    Favourite,
+    /// Rooms tagged `m.lowpriority`.
+    LowPriority,
+    /// Invitations.
+    Invite,
     /// Only these rooms (the descendants of the selected space).
     Identifiers(Vec<OwnedRoomId>),
     /// Case- and diacritic-insensitive substring of the room name. Holds the
@@ -84,6 +98,11 @@ pub(crate) fn filter_spec(
         RoomListTab::People => parts.extend([FilterPart::People, FilterPart::NotSpace]),
         RoomListTab::Rooms => parts.extend([FilterPart::Group, FilterPart::NotSpace]),
         RoomListTab::Spaces => parts.push(FilterPart::Space),
+        RoomListTab::Unreads => parts.push(FilterPart::Unread),
+        RoomListTab::Mentions => parts.push(FilterPart::Mention),
+        RoomListTab::Favourites => parts.push(FilterPart::Favourite),
+        RoomListTab::LowPriority => parts.push(FilterPart::LowPriority),
+        RoomListTab::Invites => parts.push(FilterPart::Invite),
     }
     if query.space.is_some() {
         parts.push(FilterPart::Identifiers(
@@ -112,6 +131,15 @@ pub(crate) fn build_filter(
                 FilterPart::Group => Box::new(new_filter_category(RoomCategory::Group)),
                 FilterPart::Space => Box::new(new_filter_space()),
                 FilterPart::NotSpace => Box::new(new_filter_not(Box::new(new_filter_space()))),
+                FilterPart::Unread => {
+                    Box::new(new_filter_read_receipts(ReadReceiptsCategory::Messages))
+                }
+                FilterPart::Mention => {
+                    Box::new(new_filter_read_receipts(ReadReceiptsCategory::Mentions))
+                }
+                FilterPart::Favourite => Box::new(new_filter_favourite()),
+                FilterPart::LowPriority => Box::new(new_filter_low_priority()),
+                FilterPart::Invite => Box::new(new_filter_invite()),
                 FilterPart::Identifiers(ids) => Box::new(new_filter_identifiers(ids)),
                 FilterPart::NameMatch(text) => {
                     Box::new(new_filter_normalized_match_room_name(&text))
@@ -234,6 +262,22 @@ pub(crate) fn items_mut<T>(diff: &mut ListDiff<T>) -> &mut [T] {
     }
 }
 
+/// Folds the SDK's encryption state into the core's. Uses the SDK's own
+/// predicates so the feature-gated `StateEncrypted` counts as encrypted. Only
+/// the SDK's own `NotEncrypted` state gives `NotEncrypted`; anything else,
+/// including a variant added later, is `Unknown`, so the UI never claims a
+/// room is unencrypted without proof. Re-check this mapping on every SDK
+/// version bump.
+fn encryption_of(state: &matrix_sdk::EncryptionState) -> RoomEncryption {
+    if state.is_encrypted() {
+        RoomEncryption::Encrypted
+    } else if matches!(state, matrix_sdk::EncryptionState::NotEncrypted) {
+        RoomEncryption::NotEncrypted
+    } else {
+        RoomEncryption::Unknown
+    }
+}
+
 /// Builds the summary of a room, without the last-message preview (that needs
 /// an async lookup, see [`map_batch`]).
 ///
@@ -250,6 +294,7 @@ pub(crate) fn summarize(item: &RoomListItem) -> RoomSummary {
         .map(|h| h.avatar_url.as_deref().map(|u| u.as_str()))
         .collect();
     let mentions = item.num_unread_mentions();
+    let encryption = encryption_of(&item.encryption_state());
     RoomSummary {
         unread_messages: item.num_unread_messages(),
         unread_mentions: mentions,
@@ -260,12 +305,15 @@ pub(crate) fn summarize(item: &RoomListItem) -> RoomSummary {
             &hero_avatars,
         ),
         is_dm,
-        is_encrypted: item.encryption_state().is_encrypted(),
+        is_encrypted: encryption == RoomEncryption::Encrypted,
+        encryption,
         is_space: item.is_space(),
         is_call_room: item.is_call(),
         is_invite: item.state() == RoomState::Invited,
         highlights: highlights_of(mentions, item.unread_notification_counts().highlight_count),
         marked_unread: item.is_marked_unread(),
+        is_favourite: item.is_favourite(),
+        is_low_priority: item.is_low_priority(),
         notification_mode: item
             .cached_user_defined_notification_mode()
             .map(crate::notifications::mode_view),
@@ -364,7 +412,21 @@ mod tests {
 
     use super::*;
 
-    use crate::api::{RoomListQuery, RoomListTab};
+    use crate::api::{RoomEncryption, RoomListQuery, RoomListTab};
+
+    #[test]
+    fn each_sdk_encryption_state_maps_to_one_room_encryption() {
+        use matrix_sdk::EncryptionState as S;
+        assert_eq!(encryption_of(&S::Encrypted), RoomEncryption::Encrypted);
+        assert_eq!(
+            encryption_of(&S::NotEncrypted),
+            RoomEncryption::NotEncrypted
+        );
+        assert_eq!(encryption_of(&S::Unknown), RoomEncryption::Unknown);
+        let fresh = RoomSummary::new(RoomId::from("!r:x"), String::new());
+        assert_eq!(fresh.encryption, RoomEncryption::Unknown);
+        assert!(!fresh.is_encrypted);
+    }
 
     #[test]
     fn the_dm_peer_field_carries_the_core_peer() {
@@ -401,6 +463,32 @@ mod tests {
             filter_spec(&q(RoomListTab::Spaces, ""), None),
             vec![NonLeft, Space]
         );
+    }
+
+    #[test]
+    fn filter_spec_puts_each_new_tab_part_after_non_left_and_before_space_and_search() {
+        use FilterPart::*;
+        let kids = ids(&["!a:x"]);
+        for (tab, part) in [
+            (RoomListTab::Unreads, Unread),
+            (RoomListTab::Mentions, Mention),
+            (RoomListTab::Favourites, Favourite),
+            (RoomListTab::LowPriority, LowPriority),
+            (RoomListTab::Invites, Invite),
+        ] {
+            assert_eq!(filter_spec(&q(tab, ""), None), vec![NonLeft, part.clone()]);
+            let mut query = q(tab, " cafe ");
+            query.space = Some(RoomId::from("!s:x"));
+            assert_eq!(
+                filter_spec(&query, Some(&kids)),
+                vec![
+                    NonLeft,
+                    part,
+                    Identifiers(kids.clone()),
+                    NameMatch("cafe".to_owned())
+                ]
+            );
+        }
     }
 
     #[test]

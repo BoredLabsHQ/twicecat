@@ -451,15 +451,31 @@ pub fn layers<'a>(base: Element<'a, Message>, app: &'a App) -> Element<'a, Messa
     stack([base, fullscreen, picker]).into()
 }
 
-/// The bar that says you are sharing, over everything: a stack of two.
+/// The sharing bar again, over every dialog, card and the full-screen view,
+/// at the place it has in the top bar: always a stack of two, so the widgets
+/// under it keep their place. With nothing over the main view the top bar
+/// shows the bar itself, and this layer is empty.
 pub fn sharing_layer<'a>(base: Element<'a, Message>, app: &'a App) -> Element<'a, Message> {
-    let bar = sharing_bar(app).unwrap_or_else(|| space().into());
-    stack([base, bar]).into()
+    let covered = app.any_overlay_open()
+        || app.sidebar_menu_open()
+        || app.calls.video.fullscreen.is_some()
+        || app.calls.video.picker.is_some();
+    let over = covered.then(|| sharing_bar(app)).flatten().map_or_else(
+        || space().into(),
+        |pill| {
+            container(pill)
+                .center_x(Fill)
+                .center_y(crate::screens::main_view::TOP_BAR_HEIGHT)
+                .width(Fill)
+                .into()
+        },
+    );
+    stack([base, over]).into()
 }
 
-/// "Sharing your screen" with **Stop sharing**: always on top while a share
-/// goes out, so it is never forgotten.
-fn sharing_bar(app: &App) -> Option<Element<'_, Message>> {
+/// "Sharing your screen" with **Stop sharing**: in the middle of the top bar
+/// while a share goes out, so it is never forgotten.
+pub fn sharing_bar(app: &App) -> Option<Element<'_, Message>> {
     let video = &app.calls.video;
     if !video.sharing() {
         return None;
@@ -473,9 +489,12 @@ fn sharing_bar(app: &App) -> Option<Element<'_, Message>> {
         row![
             icon::<Message>(Icon::ScreenShare),
             text(words).size(tokens::BODY),
-            kit::danger_button(
-                "Stop sharing",
-                (!video.share_busy).then(|| msg(VideoMessage::StopShare)),
+            kit::tip(
+                kit::danger_button(
+                    "Stop sharing",
+                    (!video.share_busy).then(|| msg(VideoMessage::StopShare)),
+                ),
+                "Stop sharing (Ctrl+Shift+E)",
             ),
         ]
         .spacing(tokens::S)
@@ -495,17 +514,7 @@ fn sharing_bar(app: &App) -> Option<Element<'_, Message>> {
             ..container::Style::default()
         }
     });
-    Some(
-        // At the bottom, in the status bar's empty middle: the room's name
-        // and buttons at the top are never covered.
-        container(pill)
-            .center_x(Fill)
-            .align_y(iced::Bottom)
-            .padding(tokens::XS)
-            .width(Fill)
-            .height(Fill)
-            .into(),
-    )
+    Some(pill.into())
 }
 
 /// The full-screen view of one track.
@@ -614,6 +623,7 @@ fn picker(app: &App) -> Option<Element<'_, Message>> {
         .spacing(tokens::S)
         .align_y(iced::Center),
         checkbox(picker.audio)
+            .style(kit::checkbox_style)
             .label("Share the sound of the screen too")
             .text_wrapping(Wrapping::WordOrGlyph)
             .on_toggle(|on| msg(VideoMessage::ShareAudio(on))),

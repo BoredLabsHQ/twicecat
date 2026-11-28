@@ -6,7 +6,7 @@
 //! here, with explicit limits on dimensions and memory, into plain pixels;
 //! anything that fails shows the placeholder.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Cursor;
 
 use iced::Color;
@@ -27,6 +27,12 @@ pub const MAX_DECODE_ALLOC: u64 = 8 * 1024 * 1024;
 /// The most avatar IDs sent in one `FetchAvatars`. Rows beyond it stay
 /// unrequested and are sent by a later list change or scroll.
 pub const MAX_REQUEST_BATCH: usize = 128;
+
+/// The most decoded avatars kept. The cap limits decoded images only: every
+/// ID is still requested once per session (`requested` is a set of IDs, not
+/// images), and the core never answers an ID twice. An evicted avatar falls
+/// back to its initials until logout or [`Avatars::clear`].
+pub const MAX_CACHED: usize = 512;
 
 /// What the placeholder shows for an empty or letterless name.
 pub const NEUTRAL_INITIALS: &str = "?";
@@ -71,6 +77,8 @@ impl std::fmt::Debug for AvatarState {
 pub struct Avatars {
     requested: HashSet<AvatarId>,
     states: HashMap<AvatarId, AvatarState>,
+    /// The IDs of `states`, oldest answer first.
+    order: VecDeque<AvatarId>,
 }
 
 // Manual impl: counts only, no IDs (they are MXC URIs of other users).
@@ -110,7 +118,16 @@ impl Avatars {
             Some(handle) => AvatarState::Ready(handle),
             None => AvatarState::Unavailable,
         };
-        self.states.insert(id.clone(), state);
+        if self.states.insert(id.clone(), state).is_none() {
+            self.order.push_back(id.clone());
+        }
+        while self.states.len() > MAX_CACHED {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            // Stays in `requested`: asking again would storm the core.
+            self.states.remove(&oldest);
+        }
     }
 
     /// What is known about `id`, if it was answered.
@@ -127,6 +144,7 @@ impl Avatars {
     pub fn clear(&mut self) {
         self.requested.clear();
         self.states.clear();
+        self.order.clear();
     }
 }
 
@@ -149,9 +167,17 @@ pub fn decode_avatar(bytes: &[u8]) -> Option<Handle> {
     limits.max_image_height = Some(MAX_AVATAR_SIDE);
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
     reader.limits(limits);
-    let rgba = reader.decode().ok()?.into_rgba8();
+    let mut rgba = reader.decode().ok()?.into_rgba8();
+    // A centered square, so the round clip of the picture covers the circle
+    // and not only the smaller rectangle a wide or tall picture would fill.
     let (width, height) = rgba.dimensions();
-    Some(Handle::from_rgba(width, height, rgba.into_raw()))
+    let side = width.min(height);
+    if width != height {
+        rgba =
+            image::imageops::crop_imm(&rgba, (width - side) / 2, (height - side) / 2, side, side)
+                .to_image();
+    }
+    Some(Handle::from_rgba(side, side, rgba.into_raw()))
 }
 
 /// Up to two uppercase initials for the placeholder, from the first two words
@@ -257,7 +283,8 @@ mod tests {
     #[test]
     fn a_tiny_valid_png_decodes() {
         let handle = decode_avatar(&encode(2, 3, ImageFormat::Png)).expect("valid png");
-        assert_eq!(dims(&handle), (2, 3));
+        // Cropped to a centered square (the shorter side).
+        assert_eq!(dims(&handle), (2, 2));
     }
 
     #[test]
@@ -470,5 +497,47 @@ mod tests {
             })
             .collect();
         assert!(distinct.len() > 1, "all rooms got one colour");
+    }
+
+    /// Requests and answers `n` ids, `0..n`.
+    fn fill(a: &mut Avatars, n: usize) -> Vec<AvatarId> {
+        let all: Vec<AvatarId> = (0..n).map(|n| id(&n.to_string())).collect();
+        for chunk in all.chunks(MAX_REQUEST_BATCH) {
+            a.take_unrequested(chunk.iter().cloned());
+        }
+        for i in &all {
+            a.answer(i, None);
+        }
+        all
+    }
+
+    #[test]
+    fn the_cache_cap_holds() {
+        let mut a = Avatars::default();
+        let all = fill(&mut a, MAX_CACHED + 3);
+        assert_eq!(a.states.len(), MAX_CACHED);
+        assert_eq!(a.order.len(), MAX_CACHED);
+        assert!(a.state(&all[0]).is_none(), "the oldest is gone");
+        assert!(a.state(&all[MAX_CACHED + 2]).is_some());
+    }
+
+    #[test]
+    fn an_evicted_id_is_not_requested_again() {
+        let mut a = Avatars::default();
+        let all = fill(&mut a, MAX_CACHED + 3);
+        assert!(a.state(&all[0]).is_none());
+        // One request per id per session: no refetch, no request storm.
+        assert!(a.take_unrequested(all.iter().cloned()).is_empty());
+        assert_eq!(a.requested_len(), MAX_CACHED + 3);
+    }
+
+    #[test]
+    fn clear_lets_every_id_be_requested_again() {
+        let mut a = Avatars::default();
+        let all = fill(&mut a, MAX_CACHED + 3);
+        a.clear();
+        assert_eq!(a.requested_len(), 0);
+        assert!(a.state(&all[0]).is_none());
+        assert_eq!(a.take_unrequested([all[0].clone()]), [all[0].clone()]);
     }
 }

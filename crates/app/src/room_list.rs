@@ -6,8 +6,12 @@
 
 use std::ops::Range;
 
-use twicecat_core::api::{ListDiff, RoomId, RoomListChoice, RoomListTab, RoomSummary};
+use twicecat_core::api::{
+    ListDiff, RoomId, RoomListChoice, RoomListTab, RoomNotificationModeView, RoomSortChoice,
+    RoomSummary,
+};
 
+use crate::state::App;
 use crate::text_safety::{MAX_NAME_CHARS, name_or_placeholder, one_line_capped};
 use crate::ui::tokens::Density;
 
@@ -59,6 +63,27 @@ pub fn contains(rooms: &[RoomSummary], id: &RoomId) -> bool {
     rooms.iter().any(|room| room.id == *id)
 }
 
+/// A scroll offset and a viewport height made safe for the windowing
+/// arithmetic of a list `total_h` tall: NaN and negative inputs count as zero,
+/// an infinite viewport as zero, and a stale offset (the list shrank under it)
+/// is clamped to the last page. Shared by the flat list ([`visible_range`])
+/// and the sectioned one (`sections::visible_lines`). Returns
+/// `(offset, viewport)`.
+pub(crate) fn clamp_window(offset_y: f32, viewport_h: f32, total_h: f32) -> (f32, f32) {
+    let viewport = if viewport_h.is_finite() {
+        viewport_h.max(0.0)
+    } else {
+        0.0
+    };
+    let max_offset = (total_h - viewport).max(0.0);
+    let offset = if offset_y.is_nan() {
+        0.0
+    } else {
+        offset_y.clamp(0.0, max_offset)
+    };
+    (offset, viewport)
+}
+
 /// The rows to build for a scrollable showing `viewport_h` pixels at
 /// `offset_y`, with `overscan` extra rows on each side, clamped to `len`.
 ///
@@ -81,17 +106,7 @@ pub fn visible_range(
     if len == 0 || row_h.is_nan() || row_h <= 0.0 {
         return 0..0;
     }
-    let viewport = if viewport_h.is_finite() {
-        viewport_h.max(0.0)
-    } else {
-        0.0
-    };
-    let max_offset = (len as f32 * row_h - viewport).max(0.0);
-    let offset = if offset_y.is_nan() {
-        0.0
-    } else {
-        offset_y.clamp(0.0, max_offset)
-    };
+    let (offset, viewport) = clamp_window(offset_y, viewport_h, len as f32 * row_h);
     // Float to usize casts saturate, so the arithmetic below cannot wrap.
     let first = (offset / row_h).floor() as usize;
     let last = ((offset + viewport) / row_h).ceil() as usize;
@@ -134,6 +149,184 @@ pub fn badge_for(room: &RoomSummary) -> Badge {
     }
 }
 
+/// Whether a channel row draws the small speaker at the corner of its
+/// avatar: a voice (call) room does. Every row has the room's avatar (or its
+/// first letter), a direct message included, and no other mark.
+pub fn voice_badge(room: &RoomSummary) -> bool {
+    room.is_call_room
+}
+
+/// How a channel row's name is drawn (plan C2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Emphasis {
+    /// Unread: semibold, in the text colour, with the pill at the edge.
+    Unread,
+    /// Read: in the muted colour.
+    Read,
+    /// In Mute mode: dimmed, as Discord does, even when unread.
+    Muted,
+}
+
+/// The emphasis of `room`'s name, given the notification `mode` the app knows.
+///
+/// A room in Mute mode is [`Emphasis::Muted`] whatever is unread (Discord dims
+/// a muted channel). Otherwise unread messages, notifications, highlights or
+/// a mark make it [`Emphasis::Unread`]. This is not the sort's class: the sort
+/// follows [`badge_for`], where a muted room with unread messages is unread.
+///
+/// ```
+/// use twicecat_app::room_list::{Emphasis, channel_emphasis};
+/// use twicecat_core::api::{RoomId, RoomNotificationModeView, RoomSummary};
+/// let mut room = RoomSummary::new(RoomId::from("!r:x"), "r".into());
+/// assert_eq!(channel_emphasis(&room, None), Emphasis::Read);
+/// room.unread_messages = 1;
+/// assert_eq!(channel_emphasis(&room, None), Emphasis::Unread);
+/// let mute = Some(RoomNotificationModeView::Mute);
+/// assert_eq!(channel_emphasis(&room, mute), Emphasis::Muted);
+/// ```
+pub fn channel_emphasis(room: &RoomSummary, mode: Option<RoomNotificationModeView>) -> Emphasis {
+    if mode == Some(RoomNotificationModeView::Mute) {
+        Emphasis::Muted
+    } else if room.unread_messages > 0
+        || room.unread_notifications > 0
+        || room.highlights > 0
+        || room.marked_unread
+    {
+        Emphasis::Unread
+    } else {
+        Emphasis::Read
+    }
+}
+
+/// How the rooms are ordered where the user has not ordered them: the
+/// settings' sort and "Unreads first" (plan L2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Sorting {
+    /// Activity (the SDK's order) or A to Z.
+    pub by: RoomSortChoice,
+    /// Highlights, notifications and unread rooms before the rest.
+    pub unread_first: bool,
+}
+
+impl Sorting {
+    /// Whether this leaves the SDK's order as it is.
+    pub fn is_default(self) -> bool {
+        self == Self::default()
+    }
+}
+
+/// The order to show `rooms` in, as indices into `rooms` (plan L2, L3).
+///
+/// A stable sort on, in turn: with `low_last`, whether the room is tagged low
+/// priority; with `unread_first`, its [`badge_for`] class (highlight,
+/// notification, unread or marked, none); and with [`RoomSortChoice::Name`],
+/// its cleaned name ([`row_name`]) in lower case, then its ID. Everything else
+/// keeps the order it came in, so [`RoomSortChoice::Activity`] with no flag is
+/// the identity.
+///
+/// ```
+/// use twicecat_app::room_list::order;
+/// use twicecat_core::api::{RoomId, RoomSortChoice, RoomSummary};
+/// let rooms = [
+///     RoomSummary::new(RoomId::from("!2:x"), "b".into()),
+///     RoomSummary::new(RoomId::from("!1:x"), "A".into()),
+/// ];
+/// assert_eq!(order(&rooms, RoomSortChoice::Name, false, false), [1, 0]);
+/// assert_eq!(order(&rooms, RoomSortChoice::Activity, false, false), [0, 1]);
+/// ```
+pub fn order<R: std::borrow::Borrow<RoomSummary>>(
+    rooms: &[R],
+    sort: RoomSortChoice,
+    unread_first: bool,
+    low_last: bool,
+) -> Vec<usize> {
+    use std::cmp::Ordering;
+
+    let mut out: Vec<usize> = (0..rooms.len()).collect();
+    if sort == RoomSortChoice::Activity && !unread_first && !low_last {
+        return out;
+    }
+    // The lower-cased names are built once, not on every comparison.
+    let names: Vec<String> = if sort == RoomSortChoice::Name {
+        rooms
+            .iter()
+            .map(|r| row_name(&r.borrow().name).to_lowercase())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let class = |room: &RoomSummary| match badge_for(room) {
+        Badge::Highlight(_) => 0u8,
+        Badge::Count(_) => 1,
+        Badge::Dot => 2,
+        Badge::None => 3,
+    };
+    // `sort_by` is stable: rooms that tie keep the order they came in.
+    out.sort_by(|&a, &b| {
+        let (ra, rb) = (rooms[a].borrow(), rooms[b].borrow());
+        let mut cmp = Ordering::Equal;
+        if low_last {
+            cmp = ra.is_low_priority.cmp(&rb.is_low_priority);
+        }
+        if unread_first {
+            cmp = cmp.then_with(|| class(ra).cmp(&class(rb)));
+        }
+        if sort == RoomSortChoice::Name {
+            cmp = cmp
+                .then_with(|| names[a].cmp(&names[b]))
+                .then_with(|| ra.id.cmp(&rb.id));
+        }
+        cmp
+    });
+    out
+}
+
+/// A sort as an entry of the Sort card's list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortOption(pub RoomSortChoice);
+
+impl SortOption {
+    /// Both sorts, in menu order.
+    pub const ALL: [Self; 2] = [Self(RoomSortChoice::Activity), Self(RoomSortChoice::Name)];
+}
+
+impl std::fmt::Display for SortOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self.0 {
+            RoomSortChoice::Activity => "Activity",
+            RoomSortChoice::Name => "A to Z",
+        })
+    }
+}
+
+impl App {
+    /// The order the flat list is shown in, as indices into `self.rooms`:
+    /// the settings' sort, "Unreads first", and with the All chip the rooms
+    /// tagged low priority last (plan L2, L3). `None` while that is the
+    /// list's own order.
+    pub fn flat_order(&self) -> Option<Vec<usize>> {
+        let sorting = self.sorting();
+        let low_last = self.query.tab == RoomListTab::All;
+        let has_low = low_last && self.rooms.iter().any(|room| room.is_low_priority);
+        if sorting.is_default() && !has_low {
+            return None;
+        }
+        Some(order(
+            &self.rooms,
+            sorting.by,
+            sorting.unread_first,
+            low_last,
+        ))
+    }
+
+    /// Whether the flat list needs every room loaded to be in order: with a
+    /// sort other than the default, a room on a later page could belong at
+    /// the top.
+    pub(crate) fn flat_loads_all(&self) -> bool {
+        !self.sorting().is_default()
+    }
+}
+
 /// Whether the next page of rooms should be requested: the last built row is
 /// within [`LOAD_MORE_MARGIN`] rows of the end and the server has more rooms
 /// than are loaded (plan Q8).
@@ -173,11 +366,167 @@ pub fn empty_label(tab: RoomListTab, search: &str) -> &'static str {
         RoomListTab::All | RoomListTab::Rooms => "No rooms",
         RoomListTab::People => "No direct messages",
         RoomListTab::Spaces => "No spaces",
+        RoomListTab::Unreads => "No unread rooms",
+        RoomListTab::Mentions => "No mentions",
+        RoomListTab::Favourites => "No favourites",
+        RoomListTab::LowPriority => "No low priority rooms",
+        RoomListTab::Invites => "No invitations",
     }
 }
 
 #[cfg(test)]
 mod tests {
+    mod order {
+        use super::super::{Sorting, order};
+        use twicecat_core::api::{RoomId, RoomSortChoice, RoomSummary};
+
+        fn named(id: &str, name: &str) -> RoomSummary {
+            RoomSummary::new(RoomId::from(id), name.to_owned())
+        }
+
+        fn picked<'a>(rooms: &'a [RoomSummary], order: &[usize]) -> Vec<&'a str> {
+            order.iter().map(|&i| rooms[i].name.as_str()).collect()
+        }
+
+        #[test]
+        fn activity_with_no_flag_is_the_identity() {
+            let rooms = [named("!3:x", "c"), named("!1:x", "a"), named("!2:x", "b")];
+            assert_eq!(
+                order(&rooms, RoomSortChoice::Activity, false, false),
+                vec![0, 1, 2]
+            );
+            assert!(Sorting::default().is_default());
+        }
+
+        #[test]
+        fn name_ignores_case_and_then_goes_by_the_id() {
+            let rooms = [
+                named("!9:x", "banana"),
+                named("!2:x", "a"),
+                named("!1:x", "A"),
+                named("!5:x", "Apple"),
+                named("!4:x", "cherry"),
+            ];
+            let out = order(&rooms, RoomSortChoice::Name, false, false);
+            // "a" and "A" tie on the name, so the lower ID comes first.
+            assert_eq!(
+                picked(&rooms, &out),
+                ["A", "a", "Apple", "banana", "cherry"]
+            );
+        }
+
+        #[test]
+        fn name_sorts_by_the_cleaned_name() {
+            // A control character and surrounding blanks are not part of the
+            // name that is shown; a blank name shows as a placeholder.
+            let rooms = [
+                named("!1:x", "  zed"),
+                named("!2:x", "a\u{7}b"),
+                named("!3:x", "Alpha"),
+            ];
+            let out = order(&rooms, RoomSortChoice::Name, false, false);
+            let cleaned: Vec<String> = out
+                .iter()
+                .map(|&i| crate::room_list::row_name(&rooms[i].name).to_lowercase())
+                .collect();
+            let mut sorted = cleaned.clone();
+            sorted.sort();
+            assert_eq!(cleaned, sorted);
+        }
+
+        fn flagged() -> Vec<RoomSummary> {
+            let mut quiet1 = named("!01:x", "quiet1");
+            let mut dot = named("!02:x", "dot");
+            dot.unread_messages = 3;
+            let mut mark = named("!03:x", "marked");
+            mark.marked_unread = true;
+            let mut count = named("!04:x", "count");
+            count.unread_notifications = 2;
+            count.unread_messages = 2;
+            let mut hl = named("!05:x", "highlight");
+            hl.highlights = 1;
+            hl.unread_notifications = 1;
+            let quiet2 = named("!06:x", "quiet2");
+            let mut hl2 = named("!07:x", "highlight2");
+            hl2.highlights = 4;
+            quiet1.is_dm = false;
+            vec![quiet1, dot, mark, count, hl, quiet2, hl2]
+        }
+
+        #[test]
+        fn unread_first_ranks_highlight_notification_unread_then_the_rest() {
+            let rooms = flagged();
+            let out = order(&rooms, RoomSortChoice::Activity, true, false);
+            assert_eq!(
+                picked(&rooms, &out),
+                [
+                    "highlight",
+                    "highlight2",
+                    "count",
+                    "dot",
+                    "marked",
+                    "quiet1",
+                    "quiet2"
+                ]
+            );
+        }
+
+        #[test]
+        fn unread_first_keeps_the_order_within_each_group() {
+            // 200 rooms in 4 groups: a sort that is not stable moves rooms of
+            // one group among themselves.
+            let rooms: Vec<RoomSummary> = (0..200)
+                .map(|n| {
+                    let mut r = named(&format!("!{n:03}:x"), &format!("r{n}"));
+                    match n % 4 {
+                        0 => r.highlights = 1,
+                        1 => r.unread_notifications = 1,
+                        2 => r.unread_messages = 1,
+                        _ => {}
+                    }
+                    r
+                })
+                .collect();
+            let out = order(&rooms, RoomSortChoice::Activity, true, false);
+            let mut want: Vec<usize> = Vec::new();
+            for group in 0..4 {
+                want.extend((0..200).filter(|n| n % 4 == group));
+            }
+            assert_eq!(out, want);
+        }
+
+        #[test]
+        fn low_last_puts_low_priority_rooms_at_the_end_keeping_their_order() {
+            let mut rooms = vec![
+                named("!1:x", "a"),
+                named("!2:x", "b"),
+                named("!3:x", "c"),
+                named("!4:x", "d"),
+            ];
+            rooms[0].is_low_priority = true;
+            rooms[2].is_low_priority = true;
+            let out = order(&rooms, RoomSortChoice::Activity, false, true);
+            assert_eq!(picked(&rooms, &out), ["b", "d", "a", "c"]);
+            // Off: nothing moves.
+            assert_eq!(
+                order(&rooms, RoomSortChoice::Activity, false, false),
+                vec![0, 1, 2, 3]
+            );
+            // In the chosen sort, and after the unread rooms.
+            rooms[3].unread_messages = 1;
+            rooms[0].unread_messages = 1;
+            let out = order(&rooms, RoomSortChoice::Name, true, true);
+            assert_eq!(picked(&rooms, &out), ["d", "b", "a", "c"]);
+        }
+
+        #[test]
+        fn it_works_over_references_too() {
+            let rooms = [named("!2:x", "b"), named("!1:x", "a")];
+            let refs: Vec<&RoomSummary> = rooms.iter().collect();
+            assert_eq!(order(&refs, RoomSortChoice::Name, false, false), [1, 0]);
+        }
+    }
+
     use std::time::{Duration, Instant};
 
     use tokio::sync::mpsc;
@@ -528,7 +877,7 @@ mod tests {
     fn selecting_a_tab_sends_one_query_and_keeps_it() {
         let (mut app, mut rx) = app();
         drain(&mut rx);
-        let _ = app.update(Message::TabSelected(RoomListTab::People));
+        let _ = app.update(Message::ChipClicked(RoomListTab::People));
         let sent = drain(&mut rx);
         assert_eq!(sent.len(), 1, "exactly one command");
         assert!(matches!(
@@ -542,21 +891,73 @@ mod tests {
     fn an_identical_query_is_not_sent_again() {
         let (mut app, mut rx) = app();
         drain(&mut rx);
-        let _ = app.update(Message::TabSelected(RoomListTab::All));
+        let _ = app.update(Message::ChipClicked(RoomListTab::All));
         assert!(
             drain(&mut rx).is_empty(),
             "the default query is already set"
         );
-        let _ = app.update(Message::TabSelected(RoomListTab::Spaces));
-        let _ = app.update(Message::TabSelected(RoomListTab::Spaces));
+        let _ = app.update(Message::ChipClicked(RoomListTab::Spaces));
+        let _ = app.update(Message::SearchChanged(String::new()));
         assert_eq!(queries(&drain(&mut rx)).len(), 1);
+    }
+
+    #[test]
+    fn every_chip_sends_exactly_one_query_with_its_tab() {
+        for tab in crate::screens::room_list_pane::TABS {
+            if tab == RoomListTab::All {
+                continue;
+            }
+            let (mut app, mut rx) = app();
+            drain(&mut rx);
+            let _ = app.update(Message::ChipClicked(tab));
+            let sent = drain(&mut rx);
+            assert_eq!(sent.len(), 1, "{tab:?}: exactly one command");
+            assert!(
+                matches!(&sent[0], Command::SetRoomListQuery(q) if q.tab == tab),
+                "{tab:?}"
+            );
+            assert_eq!(app.query.tab, tab);
+        }
+    }
+
+    #[test]
+    fn clicking_the_active_chip_sends_all_and_keeps_search_and_space() {
+        for tab in crate::screens::room_list_pane::TABS {
+            if tab == RoomListTab::All {
+                continue;
+            }
+            let (mut app, mut rx) = app();
+            let _ = app.update(Message::SearchChanged("li".to_owned()));
+            let _ = app.update(Message::ChipClicked(tab));
+            drain(&mut rx);
+            let _ = app.update(Message::ChipClicked(tab));
+            let sent = drain(&mut rx);
+            assert_eq!(sent.len(), 1, "{tab:?}: exactly one command");
+            assert!(
+                matches!(
+                    &sent[0],
+                    Command::SetRoomListQuery(q) if q.tab == RoomListTab::All && q.search == "li"
+                ),
+                "{tab:?}"
+            );
+            assert_eq!(app.query.tab, RoomListTab::All);
+        }
+    }
+
+    #[test]
+    fn clicking_all_while_all_is_active_sends_nothing() {
+        let (mut app, mut rx) = app();
+        drain(&mut rx);
+        let _ = app.update(Message::ChipClicked(RoomListTab::All));
+        assert!(drain(&mut rx).is_empty());
+        assert_eq!(app.query.tab, RoomListTab::All);
     }
 
     #[test]
     fn typing_in_search_sends_one_query_per_change_with_the_current_tab() {
         let (mut app, mut rx) = app();
         drain(&mut rx);
-        let _ = app.update(Message::TabSelected(RoomListTab::Rooms));
+        let _ = app.update(Message::ChipClicked(RoomListTab::Rooms));
         let _ = app.update(Message::SearchChanged("li".to_owned()));
         let sent = drain(&mut rx);
         let qs = queries(&sent);
@@ -662,7 +1063,7 @@ mod tests {
         drain(&mut rx);
         many_rooms(&mut app, 0, 40, 2_000);
         assert_eq!(load_mores(&drain(&mut rx)), 1);
-        let _ = app.update(Message::TabSelected(RoomListTab::People));
+        let _ = app.update(Message::ChipClicked(RoomListTab::People));
         let _ = app.update(rooms_event(vec![ListDiff::Reset {
             values: synthetic_range(0, 40),
         }]));
@@ -1184,6 +1585,48 @@ mod pure_tests {
         RoomSummary::new(RoomId::from("!r:x"), "r".into())
     }
 
+    // ---- channel rows (sidebar rework, Task 11) ----
+
+    #[test]
+    fn only_a_call_room_has_the_speaker_badge_on_its_avatar() {
+        let mut r = summary();
+        assert!(!voice_badge(&r));
+        r.is_call_room = true;
+        assert!(voice_badge(&r));
+        r.is_call_room = false;
+        // A DM, an invite, a space, an encrypted room: no badge.
+        r.is_dm = true;
+        r.is_invite = true;
+        r.is_space = true;
+        r.is_encrypted = true;
+        assert!(!voice_badge(&r));
+    }
+
+    #[test]
+    fn a_channels_emphasis_follows_unread_state_and_mute_mode() {
+        use RoomNotificationModeView::{AllMessages, MentionsAndKeywords, Mute};
+        let with = |edit: fn(&mut RoomSummary)| {
+            let mut r = summary();
+            edit(&mut r);
+            r
+        };
+        let read = summary();
+        let messages = with(|r| r.unread_messages = 2);
+        let notified = with(|r| r.unread_notifications = 1);
+        let mention = with(|r| r.highlights = 1);
+        let marked = with(|r| r.marked_unread = true);
+        for mode in [None, Some(AllMessages), Some(MentionsAndKeywords)] {
+            assert_eq!(channel_emphasis(&read, mode), Emphasis::Read, "{mode:?}");
+            for room in [&messages, &notified, &mention, &marked] {
+                assert_eq!(channel_emphasis(room, mode), Emphasis::Unread, "{mode:?}");
+            }
+        }
+        // Mute wins, whatever is unread: Discord dims a muted channel.
+        for room in [&read, &messages, &notified, &mention, &marked] {
+            assert_eq!(channel_emphasis(room, Some(Mute)), Emphasis::Muted);
+        }
+    }
+
     #[test]
     fn badge_none_without_unread() {
         assert_eq!(badge_for(&summary()), Badge::None);
@@ -1312,6 +1755,26 @@ mod pure_tests {
             assert_eq!(empty_label(tab, "x"), "No match");
         }
         assert_eq!(empty_label(RoomListTab::All, "   "), "No rooms");
+    }
+
+    #[test]
+    fn every_chip_has_a_label_a_title_and_a_hint() {
+        use crate::screens::room_list_pane::{TABS, empty_hint, tab_label};
+        assert_eq!(TABS.len(), 9, "the nine chips of Q11");
+        for tab in TABS {
+            assert!(!tab_label(tab).is_empty(), "{tab:?} label");
+            assert!(!empty_label(tab, "").is_empty(), "{tab:?} title");
+            assert!(
+                !empty_hint(tab, empty_label(tab, "")).is_empty(),
+                "{tab:?} hint"
+            );
+            assert_eq!(empty_label(tab, "x"), "No match", "{tab:?} with a search");
+        }
+        assert_eq!(empty_label(RoomListTab::Unreads, ""), "No unread rooms");
+        // The SDK lists a room marked unread under Mentions too, so the hint
+        // must not claim the opposite.
+        let mentions = empty_hint(RoomListTab::Mentions, "No mentions");
+        assert!(!mentions.to_lowercase().contains("excl"), "{mentions}");
     }
 
     #[test]

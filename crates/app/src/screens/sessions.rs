@@ -151,7 +151,7 @@ fn page(app: &App, window_height: f32) -> Element<'_, Message> {
     if model.other_devices().is_some_and(|n| n > 0) {
         footer = footer.push(sign_out_all(model));
     }
-    let content = column![header, bars, list, footer].spacing(tokens::L);
+    let content = column![header, bars, list, footer].spacing(tokens::M);
     let height = (window_height - 2.0 * CARD_PADDING - 2.0 * tokens::L)
         .clamp(MIN_CARD_HEIGHT, CARD_HEIGHT - 2.0 * CARD_PADDING);
     modal(container(content).height(Length::Fixed(height)), CARD_WIDTH)
@@ -264,6 +264,7 @@ fn device_row<'a>(
         body = body.push(
             row![
                 text_input("Session name", &edit.input)
+                    .style(crate::ui::kit::text_input_style)
                     .id(RENAME_INPUT_ID)
                     .on_input(|s| msg(SessionsMessage::RenameInput(s)))
                     .on_submit(msg(SessionsMessage::RenameSubmitted))
@@ -328,6 +329,7 @@ fn reauth_card(model: &SessionsModel) -> Element<'_, Message> {
         banner(Severity::Warning, REAUTH_TEXT),
         failed,
         text_input("Password", prompt.password.expose())
+            .style(crate::ui::kit::text_input_style)
             .id(REAUTH_INPUT_ID)
             .secure(true)
             .on_input_maybe(

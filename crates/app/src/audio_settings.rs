@@ -1,10 +1,11 @@
-//! The Voice & audio card (Phase 6 call UI plan, Task 6, Q5): devices,
+//! The Voice & audio pages of Settings (Phase 6 call UI plan, Task 6, Q5; no
+//! separate card since UI review fixes Task 12): devices,
 //! when the microphone sends (voice activity, push-to-talk, toggle-to-talk;
 //! the push-to-talk plan's Task 4, #15), microphone processing, levels, the
 //! mic test, the ringtone, cleaning other voices and what others learn
 //! about ours.
 //!
-//! The card shows the audio settings as the core last echoed them
+//! The pages show the audio settings as the core last echoed them
 //! ([`crate::calls::CallModel::settings`]). Every change copies that value,
 //! changes one field and sends it whole with `UpdateAudioSettings`; the
 //! core validates, saves and echoes it back, so a clamped value snaps back
@@ -51,7 +52,7 @@ pub const UNBINDABLE_KEY: &str = "This key cannot be used for push-to-talk. Try 
 pub const UNBINDABLE_MOUSE: &str =
     "This mouse button cannot be used for push-to-talk. Try another, or Esc.";
 
-/// A slider of the card.
+/// A slider of the audio pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slider {
     /// Gain after processing, dB.
@@ -68,16 +69,19 @@ pub enum Slider {
     Threshold,
     /// How long push-to-talk keeps sending after a release, ms.
     ReleaseDelay,
+    /// The volume of the call sounds, percent (0 to 100: a cue plays at 100 at most).
+    CallSoundsVolume,
 }
 
 impl Slider {
-    /// The page of the card that shows this slider.
+    /// The audio page that shows this slider.
     pub const fn page(self) -> AudioPage {
         match self {
             Self::InputGain | Self::MasterVolume => AudioPage::Levels,
             Self::MicCleaningLimit | Self::AutoGainMax | Self::Threshold => AudioPage::Microphone,
             Self::OthersCleaningLimit => AudioPage::OtherVoices,
             Self::ReleaseDelay => AudioPage::Talking,
+            Self::CallSoundsVolume => AudioPage::Ringtone,
         }
     }
 
@@ -105,6 +109,7 @@ impl Slider {
                 } => release_delay_ms as f32,
                 InputMode::VoiceActivity { .. } => DEFAULT_RELEASE_MS as f32,
             },
+            Self::CallSoundsVolume => f32::from(settings.call_sounds.volume_percent),
         }
     }
 
@@ -113,6 +118,7 @@ impl Slider {
         match self {
             Self::InputGain => limits::INPUT_GAIN_DB,
             Self::MasterVolume => (0.0, f32::from(limits::VOLUME_PERCENT)),
+            Self::CallSoundsVolume => (0.0, f32::from(limits::CALL_SOUNDS_VOLUME_PERCENT)),
             Self::MicCleaningLimit | Self::OthersCleaningLimit => limits::DF_ATTENUATION_DB,
             Self::AutoGainMax => limits::AUTO_GAIN_MAX_DB,
             Self::Threshold => limits::VAD_THRESHOLD_DB,
@@ -125,6 +131,7 @@ impl Slider {
         match self {
             Self::InputGain => 1.0,
             Self::MasterVolume => 10.0,
+            Self::CallSoundsVolume => 5.0,
             Self::MicCleaningLimit | Self::OthersCleaningLimit | Self::AutoGainMax => 5.0,
             Self::Threshold => 1.0,
             Self::ReleaseDelay => 50.0,
@@ -161,6 +168,12 @@ impl Slider {
                 {
                     *release_delay_ms = value.round().max(0.0) as u32;
                 }
+            }
+            Self::CallSoundsVolume => {
+                settings.call_sounds.volume_percent = value
+                    .round()
+                    .clamp(0.0, f32::from(limits::CALL_SOUNDS_VOLUME_PERCENT))
+                    as u16;
             }
         }
     }
@@ -296,59 +309,30 @@ impl fmt::Display for ButtonChoice {
     }
 }
 
-/// An entry of the mouse button menu.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MouseChoice {
-    /// No button.
-    None,
-    /// A button.
-    Button(MouseButton),
-    /// The saved button is not one this system has (shown, not offered).
-    Unknown,
-}
-
-impl MouseChoice {
-    /// The menu: none, the middle button and the two side buttons; plus the
-    /// saved one when it is another (set with **Set key…**) or unknown.
-    pub fn menu(saved: Option<&str>) -> (Vec<Self>, Self) {
-        let mut menu = vec![
-            Self::None,
-            Self::Button(MouseButton::MIDDLE),
-            Self::Button(MouseButton::BACK),
-            Self::Button(MouseButton::FORWARD),
-        ];
-        let chosen = match saved.map(str::parse::<MouseButton>) {
-            None => Self::None,
-            Some(Ok(button)) => Self::Button(button),
-            Some(Err(_)) => Self::Unknown,
-        };
-        if !menu.contains(&chosen) {
-            menu.push(chosen);
-        }
-        (menu, chosen)
-    }
-}
-
-impl fmt::Display for MouseChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::None => f.write_str("None"),
-            Self::Unknown => f.write_str("Saved button (not recognised)"),
-            Self::Button(button) => f.write_str(&mouse_label(*button)),
-        }
-    }
-}
-
-/// A mouse button as the menu names it.
+/// A mouse button as the key row and the status words name it.
 pub fn mouse_label(button: MouseButton) -> String {
     if let Some(number) = button.number() {
-        format!("Button {number}")
+        format!("Mouse button {number}")
     } else if button == MouseButton::MIDDLE {
         "Middle button (wheel click)".to_owned()
     } else if button == MouseButton::BACK {
         "Back side button (mouse 4)".to_owned()
     } else {
         "Forward side button (mouse 5)".to_owned()
+    }
+}
+
+/// The push-to-talk binding as the key row shows it: the key, the mouse
+/// button, both joined by "or" (an older file), else "None".
+pub fn binding_words(key: Option<&str>, mouse: Option<&str>) -> String {
+    let mouse = mouse.map(|m| {
+        m.parse::<MouseButton>()
+            .map_or_else(|_| "Mouse button".to_owned(), mouse_label)
+    });
+    match (key.map(key_label), mouse) {
+        (Some(key), Some(mouse)) => format!("{key} or {mouse}"),
+        (Some(one), None) | (None, Some(one)) => one,
+        (None, None) => "None".to_owned(),
     }
 }
 
@@ -401,7 +385,7 @@ pub fn key_label(binding: &str) -> String {
     out
 }
 
-/// A key pressed while the card waits for the push-to-talk key.
+/// A key pressed while the audio pages wait for the push-to-talk key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CapturedKey {
     /// The physical key.
@@ -626,7 +610,7 @@ pub fn gpu_used(gpu: Option<&GpuEnhancement>) -> Option<GpuBackend> {
     gpu.and_then(|gpu| gpu.available.first().copied())
 }
 
-/// The card's GPU line: what the probe found, or why there is no GPU.
+/// The GPU line of the audio pages: what the probe found, or why there is no GPU.
 pub fn gpu_status(gpu: Option<&GpuEnhancement>) -> String {
     let Some(found) = gpu else {
         return "GPU: looking for one\u{2026}".to_owned();
@@ -946,7 +930,7 @@ pub struct MicStatus {
 }
 
 /// Most characters of the key's name in the status words: a stranger-made
-/// binding must not fill the card's top lines.
+/// binding must not fill the top lines.
 const MAX_STATUS_KEY_CHARS: usize = 40;
 
 /// The key or button push-to-talk uses, in words, capped: the key, else the
@@ -1100,8 +1084,9 @@ pub fn diagnostics(stats: &AudioStats) -> Vec<String> {
     lines
 }
 
-/// A page of the Voice & audio card. Each section of the old single column
-/// is one page; nothing else about the settings changed.
+/// An audio page of Settings, listed under Voice & audio by the advanced
+/// switch. Each section of the old single column is one page; nothing else
+/// about the settings changed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum AudioPage {
     /// Microphone and speakers.
@@ -1126,7 +1111,7 @@ pub enum AudioPage {
 }
 
 impl AudioPage {
-    /// Every page, in the order of the list at the left of the card.
+    /// Every page, in the order of the list at the left of Settings.
     pub const ALL: [Self; 9] = [
         Self::Devices,
         Self::Talking,
@@ -1174,7 +1159,6 @@ impl AudioPage {
                 "Captured",
                 "CapturedMouse",
                 "ClearKey",
-                "Mouse",
                 "Button",
                 "Slide",
                 "SlideReleased",
@@ -1196,7 +1180,16 @@ impl AudioPage {
             ],
             Self::Levels => &["Bitrate", "Slide", "SlideReleased", "Step", "SlideDue"],
             Self::MicTest => &["MicTest", "Loopback"],
-            Self::Ringtone => &["Ringtone"],
+            Self::Ringtone => &[
+                "Ringtone",
+                "CallSounds",
+                "OthersJoining",
+                "LeavingSound",
+                "Slide",
+                "SlideReleased",
+                "Step",
+                "SlideDue",
+            ],
             Self::OtherVoices => &[
                 "CleanOthers",
                 "Skip",
@@ -1212,19 +1205,17 @@ impl AudioPage {
     }
 }
 
-/// The card's own state; the settings, devices and meters are the call
-/// model's.
+/// The audio controls' own state; the settings, devices and meters are the
+/// call model's.
 #[derive(Debug, Default)]
 pub struct AudioUi {
-    /// The card is open.
-    pub open: bool,
-    /// The Voice & audio page of Settings is on screen: its controls work
-    /// (and the microphone test they start stops when it goes), without the
-    /// card.
+    /// Voice & audio, or one of its audio pages, is on screen in Settings:
+    /// the controls work, and the microphone test they start stops when the
+    /// page goes (not when one audio page gives way to another).
     pub inline: bool,
-    /// The page shown.
+    /// The audio page shown when Settings is on `SettingsPage::AudioDetail`.
     pub page: AudioPage,
-    /// The mic test this card started: `Some(loopback)` while it runs.
+    /// The mic test these pages started: `Some(loopback)` while it runs.
     pub mic_test: Option<bool>,
     /// "Hear myself" for the mic test.
     pub loopback: bool,
@@ -1245,10 +1236,10 @@ pub struct AudioUi {
 }
 
 impl AudioUi {
-    /// The audio controls on screen can be used: the card is open, or the
-    /// Settings page that holds the basics is.
+    /// The audio controls on screen can be used: a Voice & audio page of
+    /// Settings is on show.
     pub fn live(&self) -> bool {
-        self.open || self.inline
+        self.inline
     }
 
     /// The value a slider shows: the one being moved, else the setting.
@@ -1267,17 +1258,18 @@ impl AudioUi {
     }
 }
 
-/// A control of the Voice & audio card.
+/// A control of the Voice & audio pages of Settings.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AudioMessage {
-    /// Open the card on Devices (Settings, the call bar).
+    /// Show the audio controls in Settings (the account menu, the call
+    /// bar): the basics, or Devices with the advanced switch on.
     Open,
-    /// Open the card on a page (the call bar's push-to-talk line opens
-    /// Talking).
+    /// Show an audio page (the call bar's push-to-talk line opens Talking);
+    /// the basics while the advanced switch is off.
     OpenAt(AudioPage),
-    /// A page of the list at the left of the card.
+    /// An audio entry of the list at the left of Settings.
     Page(AudioPage),
-    /// **Close**, Esc.
+    /// Leave the audio controls: closes Settings when it shows them.
     Close,
     /// The microphone menu.
     InputDevice(DeviceChoice),
@@ -1311,6 +1303,12 @@ pub enum AudioMessage {
     Loopback(bool),
     /// The ringtone.
     Ringtone(bool),
+    /// The call sounds, as a whole.
+    CallSounds(bool),
+    /// A soft cue when someone else joins the call.
+    OthersJoining(bool),
+    /// A cue when we leave the call.
+    LeavingSound(bool),
     /// Clean other voices.
     CleanOthers(bool),
     /// Which voices cleaning leaves alone.
@@ -1337,14 +1335,12 @@ pub enum AudioMessage {
     CapturedMouse(iced::mouse::Button),
     /// **Clear** beside the key.
     ClearKey,
-    /// The mouse button menu.
-    Mouse(MouseChoice),
     /// The gamepad button menu.
     Button(ButtonChoice),
 }
 
 impl AudioMessage {
-    /// The messages that belong to the card and no page.
+    /// The messages that belong to no audio page.
     pub const CARD_WIDE: [&'static str; 4] = ["Open", "OpenAt", "Page", "Close"];
 
     /// The variant's name. The match is exhaustive on purpose: a new message
@@ -1371,6 +1367,9 @@ impl AudioMessage {
             Self::MicTest => "MicTest",
             Self::Loopback(_) => "Loopback",
             Self::Ringtone(_) => "Ringtone",
+            Self::CallSounds(_) => "CallSounds",
+            Self::OthersJoining(_) => "OthersJoining",
+            Self::LeavingSound(_) => "LeavingSound",
             Self::CleanOthers(_) => "CleanOthers",
             Self::Skip(_) => "Skip",
             Self::CleanOthersGpu(_) => "CleanOthersGpu",
@@ -1384,7 +1383,6 @@ impl AudioMessage {
             Self::Captured(_) => "Captured",
             Self::CapturedMouse(_) => "CapturedMouse",
             Self::ClearKey => "ClearKey",
-            Self::Mouse(_) => "Mouse",
             Self::Button(_) => "Button",
         }
     }
@@ -1405,7 +1403,7 @@ impl AudioMessage {
 }
 
 impl App {
-    /// A control of the Voice & audio card.
+    /// A control of the Voice & audio pages of Settings.
     pub(crate) fn on_audio(&mut self, message: AudioMessage) -> Task<Message> {
         use AudioMessage as M;
         if !self.audio_ui.live() && !matches!(message, M::Open | M::OpenAt(_)) {
@@ -1415,13 +1413,27 @@ impl App {
             M::Open => self.open_audio_controls(AudioPage::Devices),
             M::OpenAt(page) => self.open_audio_controls(page),
             M::Page(page) => {
+                // The audio pages are chosen only with the switch on.
+                if !self.audio_pages_listed() {
+                    return Task::none();
+                }
                 // A key pressed on another page would become the binding
                 // unseen.
                 self.stop_capture();
                 self.audio_ui.page = page;
+                // The list shows the audio pages only with the switch on.
+                if self.settings_ui.open && self.settings_ui.page.is_audio() {
+                    self.settings_ui.page = crate::settings::SettingsPage::AudioDetail;
+                }
                 Task::none()
             }
-            M::Close => self.close_audio_card(),
+            M::Close => {
+                if self.settings_ui.open && self.settings_ui.page.is_audio() {
+                    self.update(Message::Settings(crate::settings::SettingsMessage::Close))
+                } else {
+                    Task::none()
+                }
+            }
             M::InputDevice(choice) => self.edit_audio(|s| s.input_device = choice.id),
             M::OutputDevice(choice) => self.edit_audio(|s| s.output_device = choice.id),
             M::Noise(choice) => self.edit_audio(|s| {
@@ -1485,6 +1497,19 @@ impl App {
                 }
             }
             M::Ringtone(on) => self.edit_audio(|s| s.ringtone = on),
+            M::CallSounds(on) => self.edit_audio(|s| s.call_sounds.enabled = on),
+            // The two extras only add to the master switch: off, they stay
+            // as they are.
+            M::OthersJoining(on) => self.edit_audio(|s| {
+                if s.call_sounds.enabled {
+                    s.call_sounds.others_joining = on;
+                }
+            }),
+            M::LeavingSound(on) => self.edit_audio(|s| {
+                if s.call_sounds.enabled {
+                    s.call_sounds.leaving = on;
+                }
+            }),
             M::CleanOthers(on) => self.edit_audio(|s| s.remote_cleaning.enabled = on),
             M::Skip(SkipChoice(skip)) => self.edit_audio(|s| s.remote_cleaning.skip_cleaned = skip),
             M::CleanOthersGpu(on) => self.edit_audio(|s| s.remote_cleaning.gpu = on),
@@ -1529,28 +1554,29 @@ impl App {
                 }
                 Capture::Bound(binding) => {
                     self.stop_capture();
-                    self.edit_audio(|s| s.push_to_talk.key = Some(binding))
+                    self.edit_audio(|s| {
+                        s.push_to_talk.key = Some(binding);
+                        s.push_to_talk.mouse_button = None;
+                    })
                 }
             },
             M::CapturedMouse(_) if !self.audio_ui.capturing => Task::none(),
             M::CapturedMouse(button) => match crate::ptt::mouse_binding(button) {
                 Some(binding) => {
                     self.stop_capture();
-                    self.edit_audio(|s| s.push_to_talk.mouse_button = Some(binding.to_string()))
+                    self.edit_audio(|s| {
+                        s.push_to_talk.mouse_button = Some(binding.to_string());
+                        s.push_to_talk.key = None;
+                    })
                 }
                 None => {
                     self.audio_ui.capture_note = Some(UNBINDABLE_MOUSE);
                     Task::none()
                 }
             },
-            M::ClearKey => self.edit_audio(|s| s.push_to_talk.key = None),
-            M::Mouse(choice) => self.edit_audio(|s| {
-                s.push_to_talk.mouse_button = match choice {
-                    MouseChoice::None => None,
-                    MouseChoice::Button(button) => Some(button.to_string()),
-                    // Not offered; picking it again keeps what is saved.
-                    MouseChoice::Unknown => s.push_to_talk.mouse_button.take(),
-                };
+            M::ClearKey => self.edit_audio(|s| {
+                s.push_to_talk.key = None;
+                s.push_to_talk.mouse_button = None;
             }),
             M::Button(choice) => self.edit_audio(|s| {
                 s.push_to_talk.gamepad_button = match choice {
@@ -1563,19 +1589,29 @@ impl App {
         }
     }
 
-    /// Opens what the person asked for: the card where every option is shown,
-    /// or, while Settings are simple, the Voice & audio page of Settings,
-    /// which has the few options that matter.
+    /// Opens what the person asked for in Settings: the basics, or, with the
+    /// advanced switch on, the audio page asked for. The one place besides
+    /// Settings' own pages that reads the switch.
     fn open_audio_controls(&mut self, page: AudioPage) -> Task<Message> {
-        if self.ui_settings.advanced_settings {
-            return self.open_audio_card(page);
+        use crate::settings::SettingsPage;
+        if !self.ui_settings.advanced_settings {
+            return self.show_settings_page(SettingsPage::VoiceAudio);
         }
-        self.show_settings_page(crate::settings::SettingsPage::VoiceAudio)
+        let before = self.audio_ui.page;
+        self.audio_ui.page = page;
+        let shown = self.show_settings_page(SettingsPage::AudioDetail);
+        if self.settings_ui.page != SettingsPage::AudioDetail {
+            // Another card is in the way: nothing was shown.
+            self.audio_ui.page = before;
+        } else {
+            self.stop_capture();
+        }
+        shown
     }
 
-    /// The Voice & audio page of Settings comes on screen or goes: the
-    /// controls it holds start or stop being live, and a mic test it started
-    /// stops with it.
+    /// A Voice & audio page of Settings comes on screen or goes: the controls
+    /// start or stop being live, and a mic test they started stops with
+    /// them. Going from one audio page to another changes nothing.
     pub(crate) fn audio_inline(&mut self, shown: bool) -> Task<Message> {
         if self.audio_ui.inline == shown {
             return Task::none();
@@ -1589,9 +1625,6 @@ impl App {
                 self.send(Command::ProbeGpuEnhancement),
             ]);
         }
-        if self.audio_ui.open {
-            return Task::none();
-        }
         let slider = self.send_slider();
         let stop = if self.audio_ui.mic_test.take().is_some() {
             self.send(Command::StopMicTest)
@@ -1602,16 +1635,10 @@ impl App {
         Task::batch([slider, stop])
     }
 
-    /// Opens the card on `page` and asks the core for what it shows.
-    fn open_audio_card(&mut self, page: AudioPage) -> Task<Message> {
-        self.stop_capture();
-        self.audio_ui.open = true;
-        self.audio_ui.page = page;
-        Task::batch([
-            self.send(Command::GetAudioSettings),
-            self.send(Command::ListAudioDevices),
-            self.send(Command::ProbeGpuEnhancement),
-        ])
+    /// An audio page (not the basics) of Settings is on screen: the push-to-
+    /// talk sources are shown there.
+    pub(crate) fn audio_pages_shown(&self) -> bool {
+        self.settings_ui.open && self.settings_ui.page == crate::settings::SettingsPage::AudioDetail
     }
 
     /// Stops waiting for the push-to-talk key.
@@ -1662,20 +1689,6 @@ impl App {
         self.send(Command::StartMicTest { loopback })
     }
 
-    /// Closes the card: a moved slider is sent, and the mic test stops.
-    pub(crate) fn close_audio_card(&mut self) -> Task<Message> {
-        let slider = self.send_slider();
-        // The Settings page under the card goes on using the microphone test.
-        let stop = if !self.audio_ui.inline && self.audio_ui.mic_test.take().is_some() {
-            self.send(Command::StopMicTest)
-        } else {
-            Task::none()
-        };
-        self.audio_ui.open = false;
-        self.stop_capture();
-        Task::batch([slider, stop])
-    }
-
     /// A refused call or audio command: a mic test the core could not start
     /// (no device, a busy one) is not running.
     pub(crate) fn audio_card_error(&mut self, error: &twicecat_core::api::CoreError) {
@@ -1684,7 +1697,7 @@ impl App {
         }
     }
 
-    /// What the card follows in the core's events: device names, and a call
+    /// What the audio pages follow in the core's events: device names, and a call
     /// that replaced the mic test.
     pub(crate) fn audio_card_saw(&mut self, event: &twicecat_core::api::CoreEvent) {
         use twicecat_core::api::{CallState, CoreEvent};
@@ -1710,7 +1723,7 @@ pub const RELEASE_DELAY_RANGE: (f32, f32) = (0.0, limits::PTT_RELEASE_DELAY_MS a
 
 #[cfg(test)]
 mod tests {
-    //! The Voice & audio card through `App::update` (plan Task 6).
+    //! The Voice & audio pages through `App::update` (plan Task 6).
 
     use tokio::sync::mpsc;
     use twicecat_core::api::{
@@ -1831,7 +1844,7 @@ mod tests {
             ),
             "{sent:?}"
         );
-        assert!(app.audio_ui.open);
+        assert!(app.audio_ui.live());
         let _ = app.view();
     }
 
@@ -1900,6 +1913,24 @@ mod tests {
                 s.voice_bitrate_kbps == 32
             }),
             (AudioMessage::Ringtone(false), |s| !s.ringtone),
+            (AudioMessage::CallSounds(false), |s| {
+                !s.call_sounds.enabled
+                    && s.call_sounds.others_joining
+                    && s.call_sounds.leaving
+                    && s.call_sounds.volume_percent == 60
+            }),
+            (AudioMessage::OthersJoining(false), |s| {
+                s.call_sounds.enabled
+                    && !s.call_sounds.others_joining
+                    && s.call_sounds.leaving
+                    && s.call_sounds.volume_percent == 60
+            }),
+            (AudioMessage::LeavingSound(false), |s| {
+                s.call_sounds.enabled
+                    && s.call_sounds.others_joining
+                    && !s.call_sounds.leaving
+                    && s.call_sounds.volume_percent == 60
+            }),
             (AudioMessage::CleanOthers(true), |s| {
                 s.remote_cleaning.enabled
             }),
@@ -2028,6 +2059,46 @@ mod tests {
     }
 
     #[test]
+    fn the_call_sounds_volume_follows_its_slider_and_steps_by_five() {
+        let (mut app, mut rx) = card();
+        assert_eq!(Slider::CallSoundsVolume.page(), AudioPage::Ringtone);
+        assert_eq!(Slider::CallSoundsVolume.range(), (0.0, 100.0));
+        assert_eq!(Slider::CallSoundsVolume.step(), 5.0);
+        let _ = app.update(audio(AudioMessage::Slide(Slider::CallSoundsVolume, 35.0)));
+        assert!(drain(&mut rx).is_empty(), "nothing while it moves");
+        let _ = app.update(audio(AudioMessage::SlideReleased));
+        let sent = sent_settings(&mut rx);
+        assert_eq!(sent.call_sounds.volume_percent, 35);
+        let mut rest = sent.clone();
+        rest.call_sounds.volume_percent = stored().call_sounds.volume_percent;
+        assert_eq!(rest, stored(), "only the volume changed");
+        let _ = app.update(core(CoreEvent::AudioSettings(sent)));
+        let _ = app.update(audio(AudioMessage::Step(Slider::CallSoundsVolume, true)));
+        assert_eq!(sent_settings(&mut rx).call_sounds.volume_percent, 40);
+        let mut edge = stored();
+        edge.call_sounds.volume_percent = 3;
+        let _ = app.update(core(CoreEvent::AudioSettings(edge)));
+        let _ = app.update(audio(AudioMessage::Step(Slider::CallSoundsVolume, false)));
+        assert_eq!(sent_settings(&mut rx).call_sounds.volume_percent, 0);
+        let mut top = stored();
+        top.call_sounds.volume_percent = 98;
+        let _ = app.update(core(CoreEvent::AudioSettings(top)));
+        let _ = app.update(audio(AudioMessage::Step(Slider::CallSoundsVolume, true)));
+        assert_eq!(sent_settings(&mut rx).call_sounds.volume_percent, 100);
+    }
+
+    #[test]
+    fn the_sub_options_of_the_call_sounds_need_the_master_switch() {
+        let (mut app, mut rx) = card();
+        let mut off = stored();
+        off.call_sounds.enabled = false;
+        let _ = app.update(core(CoreEvent::AudioSettings(off)));
+        let _ = app.update(audio(AudioMessage::OthersJoining(false)));
+        let _ = app.update(audio(AudioMessage::LeavingSound(false)));
+        assert!(drain(&mut rx).is_empty(), "off while the master is off");
+    }
+
+    #[test]
     fn the_cleaning_limits_follow_their_sliders() {
         let (mut app, mut rx) = card();
         let mut df = stored();
@@ -2101,7 +2172,7 @@ mod tests {
             ),
             "{sent:?}"
         );
-        assert!(!app.audio_ui.open && app.audio_ui.mic_test.is_none());
+        assert!(!app.audio_ui.live() && app.audio_ui.mic_test.is_none());
     }
 
     #[test]
@@ -2279,9 +2350,9 @@ mod tests {
             });
         };
         esc(&mut app);
-        assert!(!app.switcher.open && app.audio_ui.open);
+        assert!(!app.switcher.open && app.audio_ui.live());
         esc(&mut app);
-        assert!(!app.audio_ui.open);
+        assert!(!app.audio_ui.live());
     }
 
     #[test]
@@ -2411,31 +2482,36 @@ mod tests {
             shortcut: Shortcut::Escape,
             captured: false,
         });
-        assert!(!app.audio_ui.open);
+        assert!(!app.audio_ui.live());
     }
 
     #[test]
-    fn settings_opens_the_card_and_closes_itself() {
+    fn settings_lists_the_audio_pages_and_closing_it_ends_them() {
         let (mut app, mut rx) = card();
+        assert!(app.settings_ui.open, "Open lands in Settings");
+        assert_eq!(
+            app.settings_ui.page,
+            crate::settings::SettingsPage::AudioDetail
+        );
         let _ = app.update(audio(AudioMessage::Close));
+        assert!(!app.settings_ui.open && !app.audio_ui.live());
         let _ = app.update(Message::Settings(crate::settings::SettingsMessage::Open));
-        assert!(app.settings_ui.open);
+        assert!(app.settings_ui.open && !app.audio_ui.live());
         drain(&mut rx);
-        let _ = app.update(Message::Settings(
-            crate::settings::SettingsMessage::OpenVoiceAudio,
-        ));
-        assert!(!app.settings_ui.open && app.audio_ui.open);
+        let _ = app.update(Message::Settings(crate::settings::SettingsMessage::Page(
+            crate::settings::SettingsPage::VoiceAudio,
+        )));
+        assert!(app.audio_ui.live());
         assert_eq!(drain(&mut rx).len(), 3);
-        // Settings waits while the card is open.
-        let _ = app.update(Message::Settings(crate::settings::SettingsMessage::Open));
-        assert!(!app.settings_ui.open);
+        // There is no separate card to open any more.
+        assert!(app.settings_ui.open);
     }
 
     #[test]
-    fn logging_out_closes_the_card() {
+    fn logging_out_ends_the_audio_controls() {
         let (mut app, _rx) = card();
         let _ = app.update(core(CoreEvent::LoggedOut));
-        assert!(!app.audio_ui.open);
+        assert!(!app.audio_ui.live());
     }
 
     /// The Talking section (push-to-talk plan, Task 4).
@@ -2609,9 +2685,9 @@ mod tests {
                 shortcut: Shortcut::Escape,
                 captured: false,
             });
-            assert!(app.audio_ui.open && app.audio_ui.capturing);
+            assert!(app.audio_ui.live() && app.audio_ui.capturing);
             let _ = app.update(key(Code::Escape, Modifiers::empty()));
-            assert!(app.audio_ui.open && !app.audio_ui.capturing);
+            assert!(app.audio_ui.live() && !app.audio_ui.capturing);
             wait(&mut app);
             let _ = app.update(Message::WindowFocus(false));
             assert!(!app.audio_ui.capturing);
@@ -2700,42 +2776,59 @@ mod tests {
         }
 
         #[test]
-        fn the_mouse_menu_offers_the_middle_and_side_buttons_and_keeps_the_saved_one() {
-            let (menu, chosen) = MouseChoice::menu(Some("back"));
-            assert_eq!(menu.len(), 4);
-            assert_eq!(chosen, MouseChoice::Button(MouseButton::BACK));
-            assert_eq!(chosen.to_string(), "Back side button (mouse 4)");
-            let labels: std::collections::HashSet<String> =
-                menu.iter().map(ToString::to_string).collect();
-            assert_eq!(labels.len(), menu.len(), "every label differs");
-            assert_eq!(MouseChoice::menu(None).1, MouseChoice::None);
-            let (menu, chosen) = MouseChoice::menu(Some("left"));
-            assert_eq!(chosen, MouseChoice::Unknown);
-            assert_eq!(menu.last(), Some(&MouseChoice::Unknown));
-            // A numbered button set with Set key... is shown, where the
-            // system has them.
-            if let Some(twelve) = MouseButton::other(12) {
-                let (menu, chosen) = MouseChoice::menu(Some("button12"));
-                assert_eq!(chosen, MouseChoice::Button(twelve));
-                assert_eq!(menu.last(), Some(&chosen));
-                assert_eq!(chosen.to_string(), "Button 12");
+        fn mouse_buttons_read_in_words_and_in_the_key_row() {
+            if let Some(_twelve) = MouseButton::other(12) {
                 assert_eq!(mouse_words("button12"), "mouse button 12");
+                assert_eq!(binding_words(None, Some("button12")), "Mouse button 12");
             }
             assert_eq!(mouse_words("middle"), "the middle mouse button");
             assert_eq!(mouse_words("forward"), "the forward side button (mouse 5)");
             assert_eq!(mouse_words("nonsense"), "the mouse button");
+            assert_eq!(binding_words(None, None), "None");
+            assert_eq!(binding_words(Some("ctrl+shift+KeyT"), None), "Ctrl+Shift+T");
+            assert_eq!(
+                binding_words(None, Some("back")),
+                "Back side button (mouse 4)"
+            );
+            assert_eq!(binding_words(None, Some("left")), "Mouse button");
+            assert_eq!(
+                binding_words(Some("F13"), Some("middle")),
+                "F13 or Middle button (wheel click)",
+                "an older file with both shows both"
+            );
+        }
 
+        #[test]
+        fn capturing_one_kind_replaces_the_other() {
+            use iced::mouse::Button as B;
             let (mut app, mut rx) = card();
-            let forward = MouseChoice::Button(MouseButton::FORWARD);
-            let _ = app.update(audio(AudioMessage::Mouse(forward)));
+            let _ = app.update(audio(AudioMessage::CaptureKey));
+            let _ = app.update(audio(AudioMessage::CapturedMouse(B::Back)));
             let s = sent_one(&mut rx);
-            assert_eq!(s.push_to_talk.mouse_button.as_deref(), Some("forward"));
-            assert_eq!(s.push_to_talk.key, stored().push_to_talk.key);
+            assert_eq!(s.push_to_talk.mouse_button.as_deref(), Some("back"));
+            assert_eq!(s.push_to_talk.key, None, "the key is cleared");
+            assert_eq!(
+                s.push_to_talk.gamepad_button,
+                stored().push_to_talk.gamepad_button
+            );
             let _ = app.update(core(CoreEvent::AudioSettings(s)));
-            let _ = app.update(audio(AudioMessage::Mouse(MouseChoice::None)));
-            assert_eq!(sent_one(&mut rx).push_to_talk.mouse_button, None);
-            let _ = app.update(audio(AudioMessage::Mouse(MouseChoice::Unknown)));
-            assert!(drain(&mut rx).is_empty(), "not offered: nothing changes");
+            let _ = app.update(audio(AudioMessage::CaptureKey));
+            let _ = app.update(key(Code::KeyY, Modifiers::CTRL));
+            let s = sent_one(&mut rx);
+            assert!(s.push_to_talk.key.is_some());
+            assert_eq!(s.push_to_talk.mouse_button, None, "the mouse is cleared");
+        }
+
+        #[test]
+        fn clear_clears_both_kinds() {
+            let (mut app, mut rx) = card();
+            let mut both = stored();
+            both.push_to_talk.mouse_button = Some("back".into());
+            let _ = app.update(core(CoreEvent::AudioSettings(both)));
+            let _ = app.update(audio(AudioMessage::ClearKey));
+            let s = sent_one(&mut rx);
+            assert_eq!(s.push_to_talk.key, None);
+            assert_eq!(s.push_to_talk.mouse_button, None);
         }
 
         #[test]
@@ -2757,11 +2850,7 @@ mod tests {
             let _ = app.update(audio(AudioMessage::CapturedMouse(B::Middle)));
             let s = sent_one(&mut rx);
             assert_eq!(s.push_to_talk.mouse_button.as_deref(), Some("middle"));
-            assert_eq!(
-                s.push_to_talk.key,
-                stored().push_to_talk.key,
-                "the key stays"
-            );
+            assert_eq!(s.push_to_talk.key, None, "the key is replaced");
             assert!(!app.audio_ui.capturing);
             // No system numbers another button 3 (winit names it, or it is
             // a click or the wheel).
@@ -2947,7 +3036,7 @@ mod tests {
             let _ = app.update(audio(AudioMessage::Close));
             drain(&mut rx);
             let _ = app.update(audio(AudioMessage::OpenAt(AudioPage::Talking)));
-            assert!(app.audio_ui.open);
+            assert!(app.audio_ui.live());
             assert_eq!(app.audio_ui.page, AudioPage::Talking);
             // The same three requests as Open.
             assert!(matches!(
@@ -3030,6 +3119,7 @@ mod tests {
                 Slider::AutoGainMax,
                 Slider::Threshold,
                 Slider::ReleaseDelay,
+                Slider::CallSoundsVolume,
             ] {
                 assert!(
                     slider.page().sends().contains(&"Slide"),
@@ -3071,6 +3161,9 @@ mod tests {
                 AudioMessage::MicTest,
                 AudioMessage::Loopback(true),
                 AudioMessage::Ringtone(true),
+                AudioMessage::CallSounds(true),
+                AudioMessage::OthersJoining(true),
+                AudioMessage::LeavingSound(true),
                 AudioMessage::CleanOthers(true),
                 AudioMessage::Skip(SkipChoice::ALL[0]),
                 AudioMessage::CleanOthersGpu(true),
@@ -3084,7 +3177,6 @@ mod tests {
                 AudioMessage::Captured(key),
                 AudioMessage::CapturedMouse(iced::mouse::Button::Back),
                 AudioMessage::ClearKey,
-                AudioMessage::Mouse(MouseChoice::None),
                 AudioMessage::Button(ButtonChoice::None),
             ]
         }

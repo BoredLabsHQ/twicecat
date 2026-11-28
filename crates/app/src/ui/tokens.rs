@@ -23,7 +23,7 @@ pub const LARGE: f32 = 12.0;
 pub const ROUND: f32 = 999.0;
 
 /// Type size of captions, timestamps and hints.
-pub const CAPTION: f32 = 12.0;
+pub const CAPTION: f32 = 13.0;
 /// Type size of running text.
 pub const BODY: f32 = 14.0;
 /// Type size of emphasised running text.
@@ -34,6 +34,10 @@ pub const TITLE: f32 = 18.0;
 pub const HEADLINE: f32 = 24.0;
 /// Type size of the biggest display text.
 pub const DISPLAY: f32 = 32.0;
+
+/// The widest the timeline's rows grow, in logical pixels; a wider room pane
+/// leaves the rest empty on the right (the composer still spans the pane).
+pub const TIMELINE_MAX_WIDTH: f32 = 880.0;
 
 /// How much room the lists and bars take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,7 +103,7 @@ mod tests {
         assert_eq!([SMALL, MEDIUM, LARGE], [4.0, 8.0, 12.0]);
         assert_eq!(
             [CAPTION, BODY, BODY_LARGE, TITLE, HEADLINE, DISPLAY],
-            [12.0, 14.0, 16.0, 18.0, 24.0, 32.0]
+            [13.0, 14.0, 16.0, 18.0, 24.0, 32.0]
         );
         const { assert!(ROUND > LARGE * 10.0) };
     }
