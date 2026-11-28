@@ -100,3 +100,6 @@ Task 12 note (assertions changed, none deleted without a replacement):
   - NEW `tests/one_advanced_switch.rs` (3 tests).
   - tests/calls.rs and tests/ptt.rs untouched; src/ptt.rs test passes unchanged (`Open` then `Close` still starts and stops the service).
 
+Task 12: complete (cbc0e14..fec055f, gate ok, security PASS, review PASS, evidence PROVEN)
+  evidence: docs/plans/ui-review-fixes.evidence/task-12.md
+  notes: audit/review Lows fixed by fixup: switch-off during key capture now stops capture; AudioMessage::Page requires the switch (via App::audio_pages_listed so the one-reader guard holds); stale "card" comments reworded (audio_card_error / audio_card_saw names kept). OPEN: an incoming-ring card blocks Settings, so the dock's audio buttons and the account menu's Voice & audio do nothing while a ring is up (old card opened under it; human to confirm); one calls.rs test sets audio_ui.inline directly; tests/calls.rs needs a homeserver (ignored); the account-menu/dock/talk-line openers and Esc order covered by state tests only, not driven from outside; with the switch on Diagnostics sits at the bottom edge of the scrolling list; Voice & audio page also has its own scrollbar; gallery images settings-audio-* mostly not viewed (3 viewed). Tests not red-first for the main change (compile-red). Real window = human.
