@@ -115,3 +115,4 @@ Task 14: fix round: the 1920 px estimate test's per-row slack (20 px, one line h
 Task 14: complete (b274a9f..635b5b0, gate ok, security PASS, review PASS, evidence PROVEN)
   evidence: docs/plans/ui-review-fixes.evidence/task-14.md
   notes: the review's resize Info was fixed by fixup (scrolled compares min(width, cap)). Relaxed 1920 px estimate check (20 px per row = one line height, plus strict 25% over the window) accepted; CHAR_W not retuned. Weakest evidence: reactions and "Seen by" inside the column are shown by the layout test only (the gallery fixture's visible rows have neither); typing line not checked separately; wide image shows empty space right of the 880 px column with the scrollbar at the pane edge (human to confirm). Real window = human.
+Task 15: started
