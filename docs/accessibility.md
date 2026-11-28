@@ -49,10 +49,14 @@ Rules the code follows (all in tests):
      ringing);
   2. the verification card (it only cancels or closes, never confirms);
   3. the switcher;
+  3a. a sidebar card: the account card (top bar), the **+** card of the room
+     list, the Sort card or an options card. They sit right after the
+     switcher, are settled before the list below, and Esc closes the card
+     only;
   4. the upload confirmation;
   5. the viewer;
   6. Settings (with its Voice & audio pages: there is no separate audio
-     card);
+     card, no members dialog and no room-settings dialog any more);
   7. a room dialog or the user card, then a question in the Info tab of the
      room panel (leaving, or turning encryption on): Esc cancels the
      question and never confirms it;
@@ -129,6 +133,38 @@ Rules the code follows (all in tests):
   button other than left and right pressed then becomes the mouse binding
   instead; left and right still work the card.
 
+## The four layout areas
+
+Each area of the window has one job, so a person knows where to look
+(`crates/app/src/screens/main_view.rs`, `crates/app/src/layout.rs`). The main
+column is `[top bar, banner, panes]`; there is no status bar.
+
+- **Top bar: the whole app.** The app name and **Search rooms (Ctrl+K)**, the
+  screen-sharing bar in the middle while a share goes out, and on the right the
+  sync words (with a dot), **Settings** and the account button. The account
+  card holds Settings, Voice & audio, Sessions and Log out. Below 900 px the
+  buttons keep their icon and a tooltip.
+- **Left: spaces and rooms.** The spaces rail (200 px with names, or the
+  72 px icon rail, with a Collapse / Expand control that is a Tab stop and is
+  saved) and the room list. The list header is one row: a filter drop-down,
+  the search field, **Sort** and **+** (New room, Direct message, Join a room).
+- **Centre: the conversation.** The room header (name, **Members** and
+  **Info** toggles with words, the labelled **Notifications: ...** menu, the
+  call button), the timeline, the composer. The timeline's rows sit in a
+  column at most 880 px wide, left-aligned; the composer stays full width. A
+  group's first row shows the sender's avatar and name in the body-large size;
+  a reply's quote always has a line of words ("Image", "File", "(no text)").
+  A room that is known to be unencrypted shows "Not encrypted" in words (room
+  header, list row, call dock); an encrypted room shows no mark.
+- **Right: the current room.** One room panel with the tabs **Members**,
+  **Info** (name, topic, encryption in words, notifications, editable fields,
+  Turn encryption on, Leave) and **Thread** (only while a thread is open). The
+  call participants panel is its own slot beside it; the one opened last wins
+  when the window is too narrow for both.
+
+Text sizes: the smallest text is 13 px and icons are 16 px at 100 %. Zoom and
+the text-size setting (see Zoom) scale all of it.
+
 ## Settings and Sessions
 
 Settings is a card with a list of pages at its left (Profile, Appearance,
@@ -162,43 +198,6 @@ after a close.
   the widget tree: the display name on Profile, the keyword field on
   Notifications at the advanced level, and none named on the other pages (the
   advanced Video page has fields for custom numbers). This iced gives only text
-  fields the keyboard focus; buttons, checkboxes, radio buttons and the list
-  of pages never take it, so they are reached with the pointer. This is a
-  limit of the pinned iced, not a choice; it is on the human checkpoint list.
-  A page change keeps the text typed in the fields of the other pages.
-- The Sessions page of Settings has one button, **Manage sessions...**, which
-  closes Settings and opens the Sessions card. That card closes with its
-  **Close** button or with Esc. Esc closes one thing per press, topmost
-  first: the logout warning, the password prompt, the sign-out question, then
-  the card. It only ever cancels or closes, never confirms a sign-out or a
-  log-out, and while the card or one of its prompts is open it never reaches
-  the room behind it (reply or edit, thread panel, call panel). While the
-  password is on its way to the server the prompt cannot be cancelled, and
-  Esc does nothing. A session named like a tag ("Verified", "This device") or
-  like a device ID is shown in quotes. The rename field and the password prompt
-  are text fields; the prompt takes the focus when it opens.
-- The destructive buttons of Sessions (Sign out, Sign out of all other
-  sessions, Sign out anyway) are red, say what they do in words, sit at least
-  12 px from every other control, and each asks first: the button that asks is
-  not where the one that confirms appears. No key presses a button, so Enter
-  cannot confirm one; Enter in the password field sends it only when the field
-  is not empty.
-- Whether a session is verified is shown in words (**This device**,
-  **Verified**, **Not verified**, **No encryption keys**) and in colour.
-  Session names and IDs come from the server: they are cleaned, capped and
-  wrapped inside the row, and the end of an ID is never cut off.
-
-## Settings and Sessions
-
-Settings is a card with a list of pages at its left (Profile, Appearance,
-Notifications, Voice & audio, Keyboard, Sessions, About) and one page at its
-right. Ctrl+, always opens it on Profile, and so does opening it again after
-a close.
-
-- Esc closes Settings, as before (one layer per press).
-- Tab and Shift+Tab walk the text fields of the page on show, in the order of
-  the widget tree: the display name on Profile, the keyword field on
-  Notifications, and no field on the other pages. This iced gives only text
   fields the keyboard focus; buttons, checkboxes, radio buttons and the list
   of pages never take it, so they are reached with the pointer. This is a
   limit of the pinned iced, not a choice; it is on the human checkpoint list.
@@ -447,8 +446,8 @@ the same note under the shortcut list.
 
 **Zoom** scales the whole window from 80 % to 200 % in steps of 10 %: Ctrl+=
 makes it larger, Ctrl+- smaller and Ctrl+0 resets to 100 % (Cmd on macOS).
-Settings, Appearance has the same as **Smaller**, **Larger** and **Reset**
-buttons. The keys are ignored while the Voice & audio page waits for a
+The same is in Settings, Appearance, **Text size** (the account menu or the top
+bar's **Settings** opens it), as **Smaller**, **Larger** and **Reset** buttons. The keys are ignored while the Voice & audio page waits for a
 push-to-talk key. The choice is kept on this device (`text_scale_percent` in
 the local settings, read back clamped to 80-200). Ctrl+Shift+= and the numpad
 plus are not bound.

@@ -415,6 +415,7 @@ fn the_fixture_reaches_every_screen_it_names() {
         "room-list-sort",
         "room-list-card",
         "main-account-menu",
+        "main-add-menu",
         "space-sections",
         "space-sections-collapsed",
         "space-sections-tags",

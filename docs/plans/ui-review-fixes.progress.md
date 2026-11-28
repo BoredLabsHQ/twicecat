@@ -128,3 +128,27 @@ Task 16: complete (439ecde..36c91d1, gate ok, security PASS, review PASS, eviden
   evidence: docs/plans/ui-review-fixes.evidence/task-16.md
   notes: the plan's "icon glyph to BODY" was NOT applied as written: BODY is 14 and icons were 16 before, so it would have shrunk icons; ICON_SIZE = max(BODY, 16) = 16 (HUMAN TO CONFIRM). The compact icon buttons and tags drew their glyph at CAPTION (12) before and now draw at 16: they grow (a 16 px glyph next to 13 px label may look unbalanced - human). Sessions card inner gap L -> M (no slack left: the destructive-button gap is exactly the 12 px floor). The room-row fit test at 100/200% (half-size window model) passed before the change = guard only. Before/after gallery PNGs not made (disk was full: 7.3 GB free; the human ran cargo clean afterwards). The commit message was reworded at autosquash to say icons stay at 16. Stale lines above in this ledger ("ICON_SIZE = tokens::BODY") are superseded by this note.
 Task 17: started
+Task 17: built (gate below). `docs/accessibility.md`: new "The four layout areas" section, sidebar cards added to the Esc order, Text size path in Zoom, stale duplicate "Settings and Sessions" section removed. Gallery: full run of `write_the_gallery`, 1084 PNGs + `index.html` (170 MB) in `target/ui-gallery` (`TWICECAT_GALLERY_DIR=target/ui-gallery cargo test -p twicecat-app --test ui_gallery write_the_gallery -- --ignored`; the whole `--ignored` set is that one test). Scenarios present: Task 1 `main-account-menu` (8), Task 2 `main-room` (1280) and `main-narrow-room` (720), Task 4 `members*`, Task 5 `room-settings*`/`room-leave-confirm`/`room-encrypt-confirm`, Task 7 `main-room` + NEW `main-add-menu` (the "+" card; added to `fixture::scenarios()` and the names list), Task 9 `main-call-unencrypted`/`main-room-states`, Task 10 `main-rail-expanded-{1280,1920}`, `main-rail-collapsed-{1280,1920}`, `main-rail-panel-open-1280`, Task 12 `settings-audio-*` (76), Task 14 `main-room-wide`. No scenario missing. Not generated: before/after PNGs of Task 16, a gallery PNG of a non-text reply quote (Task 15).
+Task 17 fixups (separate `fixup!` commits, autosquash left to the controller): `fixup! feat(app): one "Set key..." row ...` (Task 11: stale doc comment, "Mouse" exemption); `fixup! feat(app): flag unencrypted rooms and calls ...` (Task 9: upload card maps `RoomEncryption` in three states, no tag for Unknown, table test `the_card_tags_the_three_encryption_states_and_stays_silent_for_unknown`). Not done, listed OPEN in PROGRESS.md: ChipClicked removal (about 20 test sites), Info tab Unknown wording, the dock's flag while reconnecting, everything marked OPEN above.
+Force-pushes: none recorded in this ledger; the controller asks the human before each.
+
+## Draft reply for PR #44 (for the human to post; NOT posted)
+
+Thanks for the review. Every point is addressed on the branch; here is where each went.
+
+1. Settings hard to find: a labelled **Settings** button at the top right of a new top bar.
+2. Members / info / settings hard to find: one room panel on the right with **Members**, **Info** and **Thread** tabs, opened by labelled toggles in the room header; the two modals are gone.
+3. Log out next to the account switcher: Log out now lives only inside the account card, under a divider.
+4. Push-to-talk set in two places: one **Set key...** row takes a key or a mouse button and shows which one is bound.
+5. "Show advanced settings" not showing everything: the Voice & audio card is folded into Settings, and the switch lists every audio page at once.
+6. Messages blend together: avatar and a larger coloured sender name on each group, more space above a group, a visible hover.
+7. One job per area: top bar = the app, left = spaces and rooms, right = the current room, centre = the conversation (see `docs/accessibility.md`).
+8. Text and icons small: already possible (Settings, Appearance, Text size 80 to 200 %, Ctrl+= / Ctrl+- / Ctrl+0); it is now easier to find, header icons have words, and the smallest text went from 12 to 13 px. Icons stay at 16 px.
+9. Full-width messages: the timeline is capped at 880 px, left-aligned; the composer stays full width.
+10. Reply quote with no text: the quote always shows a line (first non-blank line, or "Image", "File", ... for non-text messages). The layout itself was fine; the gap was in the data. Please tell me the event type if one is still empty.
+11. Filters on three rows: one row (filter drop-down, search, Sort, "+").
+12. Lock on every room: only rooms known to be unencrypted (and calls) are flagged "Not encrypted"; encrypted and unknown show nothing. Needed an additive core field, `RoomSummary.encryption`.
+13. Spaces rail without labels: a 200 px rail with names, collapsible to the icon rail, remembered across restarts (additive core field `UiSettings.spaces_rail`).
+14. Unlabelled notification menu: it reads "Notifications: All messages" and so on.
+
+Not done / open decisions: unread badges that stay on in some rooms (pre-existing on `main`, thread receipts or marked-unread; needs a decision); reply-quote placeholders ("Image", "File") can be typed by a sender (needs an additive core field); custom themes whose hover surface is too close to the window background are now refused; the member list is fetched once per opened room for avatars; icons kept at 16 px; some Settings/ring-card/busy-modal corner cases listed in PROGRESS.md. Look and feel were checked headless only; the human checkpoint list is in PROGRESS.md.
