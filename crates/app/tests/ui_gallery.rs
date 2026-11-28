@@ -341,19 +341,19 @@ fn the_fixture_reaches_every_screen_it_names() {
         "ring-long-id",
         "ring-dm",
         "ring-group",
-        "audio-devices",
-        "audio-talking",
-        "audio-talking-capturing",
-        "audio-microphone-gpu-found",
-        "audio-microphone-gpu-none",
-        "audio-microphone-gpu-looking",
-        "audio-levels",
-        "audio-mic-test",
-        "audio-ringtone",
-        "audio-ringtone-sounds-off",
-        "audio-other-voices",
-        "audio-announce",
-        "audio-diagnostics",
+        "settings-audio-devices",
+        "settings-audio-talking",
+        "settings-audio-talking-capturing",
+        "settings-audio-microphone-gpu-found",
+        "settings-audio-microphone-gpu-none",
+        "settings-audio-microphone-gpu-looking",
+        "settings-audio-levels",
+        "settings-audio-mic-test",
+        "settings-audio-ringtone",
+        "settings-audio-ringtone-sounds-off",
+        "settings-audio-other-voices",
+        "settings-audio-announce",
+        "settings-audio-diagnostics",
         "settings",
         "settings-appearance",
         "settings-appearance-themes",
@@ -2868,16 +2868,16 @@ fn ctrl_wheel_over_the_menus_of_the_settings_and_call_screens_changes_nothing() 
     use iced::{Point, mouse::ScrollDelta};
     let renderer = renderer();
     let mut apps: Vec<(String, App)> = [
-        "audio-devices",
-        "audio-talking",
-        "audio-talking-capturing",
-        "audio-talking-voice-activity",
-        "audio-microphone-gpu-found",
-        "audio-levels",
-        "audio-mic-test",
-        "audio-ringtone",
-        "audio-ringtone-sounds-off",
-        "audio-other-voices",
+        "settings-audio-devices",
+        "settings-audio-talking",
+        "settings-audio-talking-capturing",
+        "settings-audio-talking-voice-activity",
+        "settings-audio-microphone-gpu-found",
+        "settings-audio-levels",
+        "settings-audio-mic-test",
+        "settings-audio-ringtone",
+        "settings-audio-ringtone-sounds-off",
+        "settings-audio-other-voices",
         "settings",
         "settings-appearance",
         "settings-appearance-themes",
@@ -3506,12 +3506,12 @@ fn leave_sends_once_and_is_off_while_a_leave_or_join_waits() {
     }
 }
 
-// ---- Task 12: the Voice & audio card as pages --------------------------------
+// ---- Task 12: the audio pages inside Settings --------------------------------
 
 mod audio {
     use super::*;
     use twicecat_app::audio_settings::{AudioMessage, AudioPage, Slider};
-    use twicecat_app::screens::audio_settings::NAV_WIDTH;
+    use twicecat_app::screens::settings::NAV_WIDTH;
     use twicecat_core::api::{AudioSettings, CoreEvent, InputMode};
 
     /// The first node with a child of exactly `width` (the page list).
@@ -3549,7 +3549,10 @@ mod audio {
 
     fn page_app(name: &str) -> App {
         let mut app = scenario_app(name);
-        app.set_ui_settings(variants(false)[0].settings());
+        let mut settings = variants(false)[0].settings();
+        // The audio pages are listed by the advanced switch.
+        settings.advanced_settings = true;
+        app.set_ui_settings(settings);
         app.window_width = WIDE.width;
         app
     }
@@ -3572,27 +3575,27 @@ mod audio {
     }
 
     const PAGE_SCENARIOS: [&str; 17] = [
-        "audio-devices",
-        "audio-talking",
-        "audio-talking-capturing",
-        "audio-talking-voice-activity",
-        "audio-microphone-gpu-found",
-        "audio-microphone-gpu-none",
-        "audio-microphone-gpu-looking",
-        "audio-microphone-gpu-fallback",
-        "audio-levels",
-        "audio-levels-loud",
-        "audio-mic-test",
-        "audio-ringtone",
-        "audio-ringtone-sounds-off",
-        "audio-other-voices",
-        "audio-announce",
-        "audio-diagnostics",
-        "audio-diagnostics-dropouts",
+        "settings-audio-devices",
+        "settings-audio-talking",
+        "settings-audio-talking-capturing",
+        "settings-audio-talking-voice-activity",
+        "settings-audio-microphone-gpu-found",
+        "settings-audio-microphone-gpu-none",
+        "settings-audio-microphone-gpu-looking",
+        "settings-audio-microphone-gpu-fallback",
+        "settings-audio-levels",
+        "settings-audio-levels-loud",
+        "settings-audio-mic-test",
+        "settings-audio-ringtone",
+        "settings-audio-ringtone-sounds-off",
+        "settings-audio-other-voices",
+        "settings-audio-announce",
+        "settings-audio-diagnostics",
+        "settings-audio-diagnostics-dropouts",
     ];
 
     #[test]
-    fn the_card_is_760_by_640_with_the_page_list_at_its_left() {
+    fn the_settings_card_is_760_by_620_with_the_page_list_at_its_left_on_an_audio_page() {
         let renderer = renderer();
         for name in PAGE_SCENARIOS {
             for density in DENSITIES {
@@ -3603,7 +3606,7 @@ mod audio {
                 let card = card_of(&laid.node, body);
                 let what = format!("{name} {}", density.1);
                 assert_eq!(card.bounds().width, 760.0, "{what}");
-                assert_eq!(card.bounds().height, 640.0, "{what}");
+                assert_eq!(card.bounds().height, 620.0, "{what}");
                 // The list is at the left, the page at the right, in one row.
                 let (nav, page) = (body.children()[0].bounds(), body.children()[2].bounds());
                 assert!(nav.x < page.x, "{what}");
@@ -3616,7 +3619,7 @@ mod audio {
     fn a_small_window_shrinks_the_card_to_fit() {
         let renderer = renderer();
         let size = Size::new(1000.0, 420.0);
-        let mut app = page_app("audio-talking");
+        let mut app = page_app("settings-audio-talking");
         app.window_width = size.width;
         let laid = Laid::new(&app, &renderer, size);
         let body = find_body(&laid.node).expect("the body");
@@ -3628,10 +3631,10 @@ mod audio {
     #[test]
     fn nothing_runs_out_of_the_card_sideways_in_any_page_at_both_widths() {
         let renderer = renderer();
-        for name in PAGE_SCENARIOS
-            .into_iter()
-            .chain(["audio-devices-long-names", "audio-talking-long-key"])
-        {
+        for name in PAGE_SCENARIOS.into_iter().chain([
+            "settings-audio-devices-long-names",
+            "settings-audio-talking-long-key",
+        ]) {
             for size in SIZES {
                 for density in DENSITIES {
                     let mut app = page_app(name);
@@ -3691,14 +3694,15 @@ mod audio {
             let app = page_app(name);
             let laid = Laid::new(&app, &renderer, WIDE);
             let body = find_body(&laid.node).expect("the body");
-            let page = &body.children()[2].children()[0];
-            // The page column: [heading, send, note, key column, ...]
+            // [status, notice, page column]: the page column is
+            // [heading, send, note, key column, ...]
+            let page = &body.children()[2].children()[0].children()[2];
             let key = &page.children()[3];
             let row = key.children()[0].children()[1].children()[0].clone();
             (key.bounds(), row.children().len(), row)
         };
-        let (idle, idle_kids, idle_row) = measure("audio-talking");
-        let (waiting, waiting_kids, waiting_row) = measure("audio-talking-capturing");
+        let (idle, idle_kids, idle_row) = measure("settings-audio-talking");
+        let (waiting, waiting_kids, waiting_row) = measure("settings-audio-talking-capturing");
         // [box, Set key / Cancel, Clear]: the same three widgets.
         assert_eq!(idle_kids, 3);
         assert_eq!(waiting_kids, 3);
@@ -3809,22 +3813,22 @@ mod audio {
         // One app per page, plus the states that show the other controls.
         let mut apps: Vec<(AudioPage, String, App)> = Vec::new();
         for (page, name) in [
-            (AudioPage::Devices, "audio-devices"),
-            (AudioPage::Talking, "audio-talking"),
-            (AudioPage::Talking, "audio-talking-capturing"),
-            (AudioPage::Talking, "audio-talking-voice-activity"),
-            (AudioPage::Microphone, "audio-microphone-gpu-found"),
-            (AudioPage::Levels, "audio-levels"),
-            (AudioPage::MicTest, "audio-mic-test"),
-            (AudioPage::Ringtone, "audio-ringtone"),
-            (AudioPage::Ringtone, "audio-ringtone-sounds-off"),
-            (AudioPage::OtherVoices, "audio-other-voices"),
-            (AudioPage::Announce, "audio-announce"),
-            (AudioPage::Diagnostics, "audio-diagnostics"),
+            (AudioPage::Devices, "settings-audio-devices"),
+            (AudioPage::Talking, "settings-audio-talking"),
+            (AudioPage::Talking, "settings-audio-talking-capturing"),
+            (AudioPage::Talking, "settings-audio-talking-voice-activity"),
+            (AudioPage::Microphone, "settings-audio-microphone-gpu-found"),
+            (AudioPage::Levels, "settings-audio-levels"),
+            (AudioPage::MicTest, "settings-audio-mic-test"),
+            (AudioPage::Ringtone, "settings-audio-ringtone"),
+            (AudioPage::Ringtone, "settings-audio-ringtone-sounds-off"),
+            (AudioPage::OtherVoices, "settings-audio-other-voices"),
+            (AudioPage::Announce, "settings-audio-announce"),
+            (AudioPage::Diagnostics, "settings-audio-diagnostics"),
         ] {
             apps.push((page, name.to_owned(), page_app(name)));
         }
-        let mut gate = page_app("audio-microphone-gpu-found");
+        let mut gate = page_app("settings-audio-microphone-gpu-found");
         set_settings(&mut gate, |s| {
             s.input_mode = InputMode::VoiceActivity {
                 automatic: false,
@@ -3834,10 +3838,10 @@ mod audio {
             s.processing.auto_gain = false;
         });
         apps.push((AudioPage::Microphone, "gate".to_owned(), gate));
-        let mut announce = page_app("audio-announce");
+        let mut announce = page_app("settings-audio-announce");
         set_settings(&mut announce, |s| s.announce_cleaning.enabled = true);
         apps.push((AudioPage::Announce, "announce on".to_owned(), announce));
-        let mut quiet_mic = page_app("audio-mic-test");
+        let mut quiet_mic = page_app("settings-audio-mic-test");
         let _ = quiet_mic.update(Message::Audio(AudioMessage::MicTest));
         apps.push((AudioPage::MicTest, "test off".to_owned(), quiet_mic));
         for (page, name, app) in &apps {
@@ -3865,9 +3869,11 @@ mod audio {
             "Captured",
             "CapturedMouse",
             "SlideDue",
-            // Only the talk line opens a page directly.
+            // Only the talk line and the dock open a page directly, and the
+            // host closes the controls: Settings has its own Close.
             "OpenAt",
             "Open",
+            "Close",
         ];
         let mut expected: BTreeSet<&str> = AudioMessage::CARD_WIDE.into_iter().collect();
         for page in AudioPage::ALL {
@@ -3893,7 +3899,7 @@ mod audio {
                     | AudioMessage::Step(Slider::CallSoundsVolume, _)
             )
         };
-        let on = clicked(&page_app("audio-ringtone"), &renderer);
+        let on = clicked(&page_app("settings-audio-ringtone"), &renderer);
         for (what, found) in [
             ("master", on.contains(&AudioMessage::CallSounds(false))),
             (
@@ -3911,7 +3917,7 @@ mod audio {
                 .count()
                 >= 1
         );
-        let off = clicked(&page_app("audio-ringtone-sounds-off"), &renderer);
+        let off = clicked(&page_app("settings-audio-ringtone-sounds-off"), &renderer);
         assert!(off.contains(&AudioMessage::CallSounds(true)), "{off:?}");
         for message in &off {
             assert!(
@@ -3957,24 +3963,54 @@ mod audio {
     }
 
     #[test]
-    fn the_status_lines_stay_when_the_page_changes_and_a_notice_has_its_slot() {
+    fn the_status_lines_are_at_the_top_of_every_audio_page_and_a_notice_has_its_slot() {
         let renderer = renderer();
         let mut heights = Vec::new();
-        for name in ["audio-devices", "audio-levels", "audio-diagnostics"] {
+        for name in [
+            "settings-audio-devices",
+            "settings-audio-levels",
+            "settings-audio-diagnostics",
+        ] {
             let app = page_app(name);
             let laid = Laid::new(&app, &renderer, WIDE);
             let body = find_body(&laid.node).expect("the body");
-            let card = card_of(&laid.node, body);
-            // [card padding] content > column [top, body]; the top is
-            // [header, status, notice slot].
-            let top = &card.children()[0].children()[0].children()[0];
-            assert_eq!(top.children().len(), 3, "{name}: header, status, notice");
-            heights.push(top.bounds().height);
+            // The page's scrollable holds [status, notice slot, page].
+            let content = &body.children()[2].children()[0];
+            assert_eq!(content.children().len(), 3, "{name}: status, notice, page");
+            heights.push(content.children()[0].bounds().height);
         }
         assert!(
             heights.windows(2).all(|w| (w[0] - w[1]).abs() < 0.5),
             "{heights:?}"
         );
+    }
+
+    #[test]
+    fn the_list_lists_the_audio_pages_under_voice_and_audio_only_with_the_switch_on() {
+        let renderer = renderer();
+        let labels = |name: &str| -> Vec<String> {
+            let app = page_app(name);
+            senders(&app, &renderer, WIDE)
+                .into_iter()
+                .map(|(_, t)| t)
+                .collect()
+        };
+        let on = labels("settings-audio-devices");
+        for page in AudioPage::ALL {
+            assert!(
+                on.iter().any(|t| *t == format!("Audio(Page({page:?}))")),
+                "{page:?} is not in the list: {on:?}"
+            );
+        }
+        let mut simple = page_app("settings-audio-devices");
+        let mut settings = simple.ui_settings;
+        settings.advanced_settings = false;
+        simple.set_ui_settings(settings);
+        let off: Vec<String> = senders(&simple, &renderer, WIDE)
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect();
+        assert!(!off.iter().any(|t| t.starts_with("Audio(Page(")), "{off:?}");
     }
 }
 
@@ -4910,11 +4946,6 @@ mod settings_pages {
                 ][..],
             ),
             (
-                "settings-voice-audio",
-                "settings-voice-audio-advanced",
-                &["More audio options"][..],
-            ),
-            (
                 "settings-video",
                 "settings-video-advanced",
                 // The advanced part is below the fold of the card.
@@ -4934,6 +4965,20 @@ mod settings_pages {
                 "{advanced}: {long} is not above {short}"
             );
         }
+        // The audio pages are in the list only at the advanced level, and the
+        // old button to a separate card is gone.
+        let (few, many) = (
+            card_texts("settings-voice-audio"),
+            card_texts("settings-voice-audio-advanced"),
+        );
+        for wanted in ["Devices", "Mic test", "Ringtone"] {
+            assert!(!has(&few, wanted), "simple Voice & audio lists {wanted:?}");
+            assert!(
+                has(&many, wanted),
+                "advanced Voice & audio lacks {wanted:?}"
+            );
+        }
+        assert!(!has(&many, "More audio options"));
         // The simple pages keep what a person needs.
         let appearance = card_texts("settings-appearance");
         for wanted in ["Theme", "Reload themes", "Open themes folder", "Text size"] {
@@ -4981,11 +5026,21 @@ mod settings_pages {
             let mut laid = Laid::new(&app, &renderer, WIDE);
             let body = find_body(&laid.node).expect("the body");
             let card = card_above(&laid.node, body).bounds();
+            // The list scrolls: the entries below the fold are the list's
+            // own, and count.
+            let list = body.children()[0].children()[0].children()[0].bounds();
+            let list_origin = origin_of(
+                &laid.node,
+                &body.children()[0].children()[0].children()[0],
+                iced::Point::ORIGIN,
+            )
+            .expect("list origin");
+            let list = Rectangle::new(list_origin, list.size());
             // The room behind the card has words of its own (a Video
             // button): only what the card draws counts.
             let shown: Vec<_> = texts(&mut laid, &renderer)
                 .into_iter()
-                .filter(|(_, b)| card.contains(b.center()))
+                .filter(|(_, b)| card.contains(b.center()) || list.contains(b.center()))
                 .collect();
             for other in SettingsPage::ALL {
                 let count = shown.iter().filter(|(t, _)| t == other.label()).count();
@@ -5178,17 +5233,14 @@ mod settings_pages {
     }
 
     /// Sessions has the one button that opens its screen, apart from the
-    /// Close of the card; Voice & audio has the one that opens the card with
-    /// every audio option only at the advanced level.
+    /// Close of the card; Voice & audio has none, at either level (the audio
+    /// pages are in the list, there is no card to open).
     #[test]
     fn the_voice_and_sessions_pages_have_their_one_button() {
         let renderer = renderer();
         for (name, wanted) in [
             ("settings-voice-audio", None),
-            (
-                "settings-voice-audio-advanced",
-                Some("Settings(OpenVoiceAudio)"),
-            ),
+            ("settings-voice-audio-advanced", None),
             ("settings-sessions", Some("Settings(OpenSessions)")),
         ] {
             let app = page_app(name);
@@ -6221,7 +6273,7 @@ mod dialogs {
     #[test]
     fn escape_closes_the_layer_that_is_drawn_on_top_and_only_that_one() {
         // The layers, bottom to top: the room dialogs and panels, Settings,
-        // Voice & audio, the viewer, the upload confirmation, the switcher.
+        // the viewer, the upload confirmation, the switcher.
         let mut app = scenario_app("viewer");
         let _ = app.update(Message::Rooms(RoomsMessage::OpenSettings));
         let _ = app.update(Message::Rooms(RoomsMessage::LeaveAsk));
@@ -6233,7 +6285,6 @@ mod dialogs {
             [
                 app.rooms_ui.settings.is_some(),
                 app.settings_ui.open,
-                app.audio_ui.open,
                 app.media.viewer.is_some(),
                 app.uploads.dialog.is_some(),
                 app.switcher.open,
@@ -6241,7 +6292,7 @@ mod dialogs {
         };
         assert_eq!(
             open(&app),
-            [true, false, false, true, true, true],
+            [true, false, true, true, true],
             "the setup opened the layers"
         );
         let mut order = Vec::new();
@@ -6277,7 +6328,7 @@ mod dialogs {
         }
         assert_eq!(
             order,
-            [5, 4, 3, 0, 0],
+            [4, 3, 2, 0, 0],
             "switcher, upload, viewer, question, panel"
         );
         assert!(open(&app).iter().all(|open| !open));

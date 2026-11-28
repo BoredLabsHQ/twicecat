@@ -718,7 +718,7 @@ impl std::fmt::Debug for App {
             .field("verification", &self.verification)
             .field("sessions", &self.sessions)
             .field("calls", &self.calls)
-            .field("audio_ui", &self.audio_ui.open)
+            .field("audio_ui", &self.audio_ui.inline)
             .field("ptt", &self.ptt)
             .finish_non_exhaustive()
     }
@@ -1009,13 +1009,14 @@ impl App {
     }
 
     /// Runs push-to-talk while it is needed (plan Q1): in push-to-talk or
-    /// toggle mode, during a call, the mic test, or with the Voice & audio
-    /// card open. Called after every message, from `update`, so the service
+    /// toggle mode, during a call, the mic test, or with an audio page of
+    /// Settings on show. Called after every message, from `update`, so the service
     /// is started and dropped on the main thread.
     fn sync_ptt(&mut self) {
         let in_call = self.calls.call.is_some();
         let mic_test = self.audio_ui.mic_test.is_some();
-        let needed = self.screen == Screen::Main && (in_call || mic_test || self.audio_ui.open);
+        let needed =
+            self.screen == Screen::Main && (in_call || mic_test || self.audio_pages_shown());
         let wanted = if needed {
             self.calls
                 .settings
@@ -3307,16 +3308,13 @@ impl App {
                             screens::sidebar_menu::layer(
                                 screens::upload_dialog::layer(
                                     screens::media_viewer::layer(
-                                        screens::audio_settings::layer(
-                                            screens::settings::layer(
-                                                screens::room_dialogs::layer(
-                                                    screens::stage::layers(
-                                                        // The drag's ghost is over the
-                                                        // list and under every card.
-                                                        screens::room_list_pane::ghost_layer(
-                                                            main_view::view(self),
-                                                            self,
-                                                        ),
+                                        screens::settings::layer(
+                                            screens::room_dialogs::layer(
+                                                screens::stage::layers(
+                                                    // The drag's ghost is over the
+                                                    // list and under every card.
+                                                    screens::room_list_pane::ghost_layer(
+                                                        main_view::view(self),
                                                         self,
                                                     ),
                                                     self,
@@ -9582,10 +9580,10 @@ mod tests {
         assert_eq!(laid_out_size(&app), window, "setting up recovery");
     }
 
-    /// The Voice & audio card is a modal over the main view: the window
+    /// The audio pages of Settings are a modal over the main view: the window
     /// keeps its size with every section shown.
     #[test]
-    fn the_voice_and_audio_card_keeps_the_window_filled() {
+    fn the_audio_pages_of_settings_keep_the_window_filled() {
         use twicecat_core::api::{AudioSettings, NoiseSuppression};
         let (mut app, _rx) = main_app();
         let mut settings = AudioSettings::default();
@@ -13659,16 +13657,16 @@ mod tests {
         }
 
         #[test]
-        fn voice_controls_open_settings_when_simple_and_the_card_when_advanced() {
-            use crate::audio_settings::AudioMessage as A;
+        fn voice_controls_open_settings_basics_when_simple_and_the_asked_sub_page_when_advanced() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
             use crate::settings::SettingsPage;
             let mut rig = rig();
             drain(&mut rig.rx);
-            // Simple: the dock's controls open the Voice & audio page.
+            // Simple: the dock's controls open the Voice & audio basics, for
+            // `Open` and for `OpenAt` alike.
             let _ = rig.app.update(Message::Audio(A::Open));
             assert!(rig.app.settings_ui.open);
             assert_eq!(rig.app.settings_ui.page, SettingsPage::VoiceAudio);
-            assert!(!rig.app.audio_ui.open, "no card");
             assert!(rig.app.audio_ui.live(), "the page's controls work");
             let sent = drain(&mut rig.rx);
             assert!(
@@ -13685,12 +13683,117 @@ mod tests {
             // Leaving the page ends it: the controls stop answering.
             st(&mut rig, S::Page(SettingsPage::About));
             assert!(!rig.app.audio_ui.live());
-            // Advanced: the card, as before.
+            let _ = rig
+                .app
+                .update(Message::Audio(A::OpenAt(AudioPage::Talking)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::VoiceAudio);
             st(&mut rig, S::Close);
+            // Advanced: Settings on the asked sub-page.
             st(&mut rig, S::Advanced(true));
             let _ = rig.app.update(Message::Audio(A::Open));
-            assert!(rig.app.audio_ui.open);
-            assert!(!rig.app.settings_ui.open);
+            assert!(rig.app.settings_ui.open);
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+            assert_eq!(rig.app.audio_ui.page, AudioPage::Devices);
+            assert!(rig.app.audio_ui.live());
+            assert!(rig.app.any_overlay_open(), "Settings covers the room");
+            let _ = rig
+                .app
+                .update(Message::Audio(A::OpenAt(AudioPage::Talking)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+            assert_eq!(rig.app.audio_ui.page, AudioPage::Talking);
+            // From another Settings page too.
+            st(&mut rig, S::Page(SettingsPage::About));
+            let _ = rig.app.update(Message::Audio(A::OpenAt(AudioPage::Levels)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+            assert_eq!(rig.app.audio_ui.page, AudioPage::Levels);
+            // Esc and Close leave Settings and the controls.
+            st(&mut rig, S::Close);
+            assert!(!rig.app.settings_ui.open && !rig.app.audio_ui.live());
+            assert!(!rig.app.any_overlay_open());
+        }
+
+        #[test]
+        fn switching_between_audio_sub_pages_keeps_the_mic_test_and_leaving_stops_it() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
+            use crate::settings::SettingsPage;
+            let mut rig = rig();
+            st(&mut rig, S::Advanced(true));
+            let _ = rig.app.update(Message::Audio(A::Open));
+            drain(&mut rig.rx);
+            let _ = rig.app.update(Message::Audio(A::MicTest));
+            assert!(rig.app.audio_ui.mic_test.is_some());
+            drain(&mut rig.rx);
+            for page in AudioPage::ALL {
+                let _ = rig.app.update(Message::Audio(A::Page(page)));
+                assert_eq!(rig.app.audio_ui.page, page);
+                assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+                assert!(rig.app.audio_ui.mic_test.is_some(), "{page:?}");
+            }
+            // The basics are the same group: the test goes on there too.
+            st(&mut rig, S::Page(SettingsPage::VoiceAudio));
+            assert!(rig.app.audio_ui.mic_test.is_some());
+            assert!(
+                drain(&mut rig.rx).is_empty(),
+                "nothing restarted or stopped"
+            );
+            st(&mut rig, S::Page(SettingsPage::Keyboard));
+            assert!(rig.app.audio_ui.mic_test.is_none());
+            assert!(
+                drain(&mut rig.rx)
+                    .iter()
+                    .any(|c| matches!(c, Command::StopMicTest))
+            );
+        }
+
+        #[test]
+        fn a_key_capture_stops_when_the_sub_page_changes_and_when_settings_close() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
+            let mut rig = rig();
+            st(&mut rig, S::Advanced(true));
+            let _ = rig
+                .app
+                .update(Message::Audio(A::OpenAt(AudioPage::Talking)));
+            let _ = rig.app.update(Message::Audio(A::CaptureKey));
+            assert!(rig.app.audio_ui.capturing);
+            let _ = rig.app.update(Message::Audio(A::Page(AudioPage::Levels)));
+            assert!(!rig.app.audio_ui.capturing);
+            let _ = rig.app.update(Message::Audio(A::Page(AudioPage::Talking)));
+            let _ = rig.app.update(Message::Audio(A::CaptureKey));
+            st(&mut rig, S::Close);
+            assert!(!rig.app.audio_ui.capturing);
+            // The switch going off drops the audio page: the capture ends too.
+            st(&mut rig, S::Advanced(true));
+            let _ = rig
+                .app
+                .update(Message::Audio(A::OpenAt(AudioPage::Talking)));
+            let _ = rig.app.update(Message::Audio(A::CaptureKey));
+            assert!(rig.app.audio_ui.capturing);
+            st(&mut rig, S::Advanced(false));
+            assert!(!rig.app.audio_ui.capturing);
+        }
+
+        #[test]
+        fn an_audio_sub_page_is_not_chosen_with_the_advanced_switch_off() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
+            use crate::settings::SettingsPage;
+            let mut rig = rig();
+            let _ = rig.app.update(Message::Audio(A::Open));
+            assert!(!rig.app.ui_settings.advanced_settings);
+            let _ = rig.app.update(Message::Audio(A::Page(AudioPage::Levels)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::VoiceAudio);
+        }
+
+        #[test]
+        fn switching_the_advanced_switch_off_on_a_sub_page_falls_back_to_the_basics() {
+            use crate::audio_settings::{AudioMessage as A, AudioPage};
+            use crate::settings::SettingsPage;
+            let mut rig = rig();
+            st(&mut rig, S::Advanced(true));
+            let _ = rig.app.update(Message::Audio(A::OpenAt(AudioPage::Levels)));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::AudioDetail);
+            st(&mut rig, S::Advanced(false));
+            assert_eq!(rig.app.settings_ui.page, SettingsPage::VoiceAudio);
+            assert!(rig.app.audio_ui.live(), "still on a Voice & audio page");
         }
 
         #[test]
@@ -15172,7 +15275,7 @@ mod tests {
                 },
             ),
             (
-                "audio card",
+                "audio pages of settings",
                 app4,
                 |app| {
                     app.ui_settings.advanced_settings = true;

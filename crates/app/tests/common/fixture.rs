@@ -2275,7 +2275,7 @@ fn devices() -> AudioDevices {
     }
 }
 
-/// The Voice & audio card on `page`, in a call (the call model has the
+/// The audio page `page` of Settings (the advanced switch on), in a call (the call model has the
 /// numbers) or not, with the probe's answer `gpu`.
 fn voice_page_with(
     page: AudioPage,
@@ -4571,31 +4571,35 @@ pub fn scenarios() -> Vec<Scenario> {
             !a.calls.rings.is_empty()
         }),
         s(
-            "audio-devices",
+            "settings-audio-devices",
             false,
             || voice_page(AudioPage::Devices),
-            |a| a.audio_ui.open && a.audio_ui.page == AudioPage::Devices,
+            |a| {
+                a.settings_ui.open
+                    && a.settings_ui.page == SettingsPage::AudioDetail
+                    && a.audio_ui.page == AudioPage::Devices
+            },
         ),
         s(
-            "audio-talking",
+            "settings-audio-talking",
             false,
             || voice_page(AudioPage::Talking),
             |a| a.audio_ui.page == AudioPage::Talking && !a.audio_ui.capturing,
         ),
         s(
-            "audio-talking-capturing",
+            "settings-audio-talking-capturing",
             false,
             voice_talking_capturing,
             |a| a.audio_ui.page == AudioPage::Talking && a.audio_ui.capturing,
         ),
         s(
-            "audio-talking-voice-activity",
+            "settings-audio-talking-voice-activity",
             false,
             voice_talking_voice_activity,
             |a| a.audio_ui.page == AudioPage::Talking,
         ),
         s(
-            "audio-microphone-gpu-found",
+            "settings-audio-microphone-gpu-found",
             false,
             || voice_microphone(gpu_found()),
             |a| {
@@ -4606,18 +4610,23 @@ pub fn scenarios() -> Vec<Scenario> {
                         .is_some_and(|g| !g.available.is_empty())
             },
         ),
-        s("audio-microphone-gpu-none", false, voice_gpu_none, |a| {
-            a.audio_ui.page == AudioPage::Microphone
-                && a.calls.gpu.as_ref().is_some_and(|g| g.available.is_empty())
-        }),
         s(
-            "audio-microphone-gpu-looking",
+            "settings-audio-microphone-gpu-none",
+            false,
+            voice_gpu_none,
+            |a| {
+                a.audio_ui.page == AudioPage::Microphone
+                    && a.calls.gpu.as_ref().is_some_and(|g| g.available.is_empty())
+            },
+        ),
+        s(
+            "settings-audio-microphone-gpu-looking",
             false,
             || voice_microphone(None),
             |a| a.audio_ui.page == AudioPage::Microphone && a.calls.gpu.is_none(),
         ),
         s(
-            "audio-microphone-gpu-fallback",
+            "settings-audio-microphone-gpu-fallback",
             false,
             voice_gpu_fallback,
             |a| {
@@ -4629,25 +4638,31 @@ pub fn scenarios() -> Vec<Scenario> {
             },
         ),
         s(
-            "audio-levels",
+            "settings-audio-levels",
             false,
             || voice_page(AudioPage::Levels),
             |a| a.audio_ui.page == AudioPage::Levels,
         ),
-        s("audio-levels-loud", false, voice_levels_loud, |a| {
-            a.audio_ui.page == AudioPage::Levels && a.calls.level.is_some_and(|l| l.rms_db > -3.0)
-        }),
-        s("audio-mic-test", false, voice_mic_test, |a| {
+        s(
+            "settings-audio-levels-loud",
+            false,
+            voice_levels_loud,
+            |a| {
+                a.audio_ui.page == AudioPage::Levels
+                    && a.calls.level.is_some_and(|l| l.rms_db > -3.0)
+            },
+        ),
+        s("settings-audio-mic-test", false, voice_mic_test, |a| {
             a.audio_ui.page == AudioPage::MicTest && a.audio_ui.mic_test.is_some()
         }),
         s(
-            "audio-ringtone",
+            "settings-audio-ringtone",
             false,
             || voice_page(AudioPage::Ringtone),
             |a| a.audio_ui.page == AudioPage::Ringtone,
         ),
         s(
-            "audio-ringtone-sounds-off",
+            "settings-audio-ringtone-sounds-off",
             false,
             voice_ringtone_sounds_off,
             |a| {
@@ -4658,7 +4673,7 @@ pub fn scenarios() -> Vec<Scenario> {
                         .is_some_and(|s| !s.call_sounds.enabled)
             },
         ),
-        s("audio-other-voices", false, voice_others, |a| {
+        s("settings-audio-other-voices", false, voice_others, |a| {
             a.audio_ui.page == AudioPage::OtherVoices
                 && a.calls
                     .settings
@@ -4666,16 +4681,19 @@ pub fn scenarios() -> Vec<Scenario> {
                     .is_some_and(|s| s.remote_cleaning.enabled)
         }),
         s(
-            "audio-announce",
+            "settings-audio-announce",
             false,
             || voice_page(AudioPage::Announce),
             |a| a.audio_ui.page == AudioPage::Announce,
         ),
-        s("audio-diagnostics", false, voice_diagnostics, |a| {
-            a.audio_ui.page == AudioPage::Diagnostics && a.audio_ui.diagnostics
-        }),
         s(
-            "audio-diagnostics-dropouts",
+            "settings-audio-diagnostics",
+            false,
+            voice_diagnostics,
+            |a| a.audio_ui.page == AudioPage::Diagnostics && a.audio_ui.diagnostics,
+        ),
+        s(
+            "settings-audio-diagnostics-dropouts",
             false,
             voice_diagnostics_dropouts,
             |a| {
@@ -4686,13 +4704,13 @@ pub fn scenarios() -> Vec<Scenario> {
             },
         ),
         s(
-            "audio-devices-long-names",
+            "settings-audio-devices-long-names",
             false,
             || voice_long_names(AudioPage::Devices),
             |a| a.audio_ui.page == AudioPage::Devices,
         ),
         s(
-            "audio-talking-long-key",
+            "settings-audio-talking-long-key",
             false,
             || voice_long_names(AudioPage::Talking),
             |a| a.audio_ui.page == AudioPage::Talking,

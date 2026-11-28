@@ -1238,17 +1238,29 @@ pub fn page_nav<'a, M: Clone + 'a>(
     current: usize,
     on_select: impl Fn(usize) -> M,
 ) -> Element<'a, M> {
+    let entries: Vec<(&'a str, bool)> = pages.iter().map(|page| (*page, false)).collect();
+    page_nav_levels(&entries, current, on_select)
+}
+
+/// [`page_nav`] with sub-entries: an entry flagged `true` is indented under
+/// the entry above it.
+pub fn page_nav_levels<'a, M: Clone + 'a>(
+    pages: &[(&'a str, bool)],
+    current: usize,
+    on_select: impl Fn(usize) -> M,
+) -> Element<'a, M> {
     let mut list = Column::new().spacing(tokens::XS);
-    for (index, page) in pages.iter().enumerate() {
+    for (index, (page, nested)) in pages.iter().enumerate() {
         let style = if index == current {
             secondary_style
         } else {
             ghost_style
         };
+        let indent = if *nested { tokens::L } else { 0.0 };
         list = list.push(
             button(text(*page))
                 .width(Fill)
-                .padding([tokens::S, tokens::M])
+                .padding(iced::Padding::from([tokens::S, tokens::M]).left(tokens::M + indent))
                 .on_press(on_select(index))
                 .style(style),
         );

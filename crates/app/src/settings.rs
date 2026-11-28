@@ -42,8 +42,6 @@ pub const MAX_KEYWORDS: usize = 50;
 /// for late echoes of an earlier setting before the UI believes them.
 pub const MAX_STALE_EVENTS: u8 = 3;
 
-/// The Voice & audio section of Settings.
-pub const VOICE_AUDIO_LINE: &str = "Every audio option: the processing chain, the noise gate, gain, the voice bitrate, the ringtone and call sounds, cleaning other voices, announcements and diagnostics.";
 /// The line on the Sessions page of Settings.
 pub const SESSIONS_LINE: &str = "See where you are signed in, which sessions are verified, and sign out of the ones you do not use.";
 /// The typeface line on the About page (SIL OFL 1.1 asks for the notice).
@@ -500,9 +498,15 @@ pub enum SettingsPage {
     Appearance,
     /// Default modes, keywords and the three local toggles.
     Notifications,
-    /// The microphone, the speakers, how to talk and noise reduction; with
-    /// the advanced switch on, a button to the card with every audio option.
+    /// The microphone, the speakers, how to talk and noise reduction. With
+    /// the advanced switch on, the nine audio pages are listed under it (see
+    /// [`Self::AudioDetail`]).
     VoiceAudio,
+    /// One of the audio pages (Devices, Talking, ...) that the advanced
+    /// switch lists under Voice & audio: the page is `App::audio_ui.page`.
+    /// It is never in [`Self::ALL`]: the list at the left of the card builds
+    /// the audio entries from `AudioPage::ALL`.
+    AudioDetail,
     /// The camera and the picture quality; with the advanced switch on, every
     /// option for the camera and for screen sharing.
     Video,
@@ -533,7 +537,7 @@ impl SettingsPage {
             Self::Profile => "Profile",
             Self::Appearance => "Appearance",
             Self::Notifications => "Notifications",
-            Self::VoiceAudio => "Voice & audio",
+            Self::VoiceAudio | Self::AudioDetail => "Voice & audio",
             Self::Video => "Video",
             Self::Keyboard => "Keyboard",
             Self::Sessions => "Sessions",
@@ -541,12 +545,24 @@ impl SettingsPage {
         }
     }
 
-    /// Where the page is in [`Self::ALL`].
+    /// Where the page is in [`Self::ALL`]; an audio page counts as Voice &
+    /// audio.
     pub fn index(self) -> usize {
+        let top = if self == Self::AudioDetail {
+            Self::VoiceAudio
+        } else {
+            self
+        };
         Self::ALL
             .iter()
-            .position(|p| *p == self)
+            .position(|p| *p == top)
             .expect("every page is in ALL")
+    }
+
+    /// Whether the page is Voice & audio or one of its audio pages: the
+    /// audio controls are live there.
+    pub const fn is_audio(self) -> bool {
+        matches!(self, Self::VoiceAudio | Self::AudioDetail)
     }
 
     /// The messages the page's controls send (by [`SettingsMessage::name`]).
@@ -574,9 +590,11 @@ impl SettingsPage {
                 "ShowMessageContent",
                 "TrayBadge",
             ],
-            Self::VoiceAudio => &["OpenVoiceAudio"],
-            // The controls of this page send `Message::VideoSettings`.
-            Self::Video | Self::Keyboard | Self::About => &[],
+            // The controls of these pages send `Message::Audio` and
+            // `Message::VideoSettings`.
+            Self::VoiceAudio | Self::AudioDetail | Self::Video | Self::Keyboard | Self::About => {
+                &[]
+            }
             Self::Sessions => &["OpenSessions"],
         }
     }
@@ -593,8 +611,6 @@ pub enum SettingsMessage {
     Page(SettingsPage),
     /// **Manage sessions**.
     OpenSessions,
-    /// **Voice & audio** (plan Q5): closes Settings and opens that card.
-    OpenVoiceAudio,
     /// The **Show advanced settings** switch.
     Advanced(bool),
     /// The display name field changed.
@@ -668,7 +684,6 @@ impl SettingsMessage {
             Self::Close => "Close",
             Self::Page(_) => "Page",
             Self::OpenSessions => "OpenSessions",
-            Self::OpenVoiceAudio => "OpenVoiceAudio",
             Self::Advanced(_) => "Advanced",
             Self::NameInput(_) => "NameInput",
             Self::SaveName => "SaveName",
@@ -702,12 +717,11 @@ impl SettingsMessage {
 
     /// The names of every message (kept by hand beside [`Self::name`]; a test
     /// checks that each belongs to a page, the card or [`Self::NOT_FROM_A_CONTROL`]).
-    pub const ALL_NAMES: [&'static str; 33] = [
+    pub const ALL_NAMES: [&'static str; 32] = [
         "Open",
         "Close",
         "Page",
         "OpenSessions",
-        "OpenVoiceAudio",
         "Advanced",
         "NameInput",
         "SaveName",
@@ -756,12 +770,16 @@ impl SettingsMessage {
 }
 
 impl App {
+    /// Whether the audio sub-pages are listed: the one switch is on.
+    pub(crate) fn audio_pages_listed(&self) -> bool {
+        self.ui_settings.advanced_settings
+    }
+
     /// Whether another modal screen or dialog is open, so Settings stays shut.
     fn other_modal_open(&self) -> bool {
         self.sessions.open
             || self.verification.is_some()
             || self.calls.card().is_some()
-            || self.audio_ui.open
             || self.uploads.dialog.is_some()
             || self.media.viewer.is_some()
             || self.rooms_ui.overlay_open()
@@ -822,23 +840,27 @@ impl App {
             }
             M::Page(page) => {
                 if self.settings_ui.open {
-                    self.settings_ui.page = page;
+                    // A key pressed on another page would become the
+                    // binding unseen.
+                    self.stop_capture();
+                    // The audio pages are chosen with `AudioMessage::Page`.
+                    self.settings_ui.page = match page {
+                        SettingsPage::AudioDetail if !self.ui_settings.advanced_settings => {
+                            SettingsPage::VoiceAudio
+                        }
+                        other => other,
+                    };
                 }
                 self.after_settings_page()
             }
-            M::Advanced(on) => self.change_local(|s| &mut s.advanced_settings, on),
-            M::OpenVoiceAudio => {
-                if !self.settings_ui.open {
-                    return Task::none();
+            M::Advanced(on) => {
+                // The audio pages are listed by the switch: with it off the
+                // page on show falls back to the basics.
+                if !on && self.settings_ui.page == SettingsPage::AudioDetail {
+                    self.stop_capture();
+                    self.settings_ui.page = SettingsPage::VoiceAudio;
                 }
-                self.settings_ui.open = false;
-                self.settings_ui.error = None;
-                let left = self.after_settings_page();
-                // The card has every option: it is for the advanced level.
-                Task::batch([
-                    left,
-                    self.on_audio(crate::audio_settings::AudioMessage::Open),
-                ])
+                self.change_local(|s| &mut s.advanced_settings, on)
             }
             M::OpenSessions => {
                 if !self.settings_ui.open {
@@ -1012,7 +1034,7 @@ impl App {
     }
 
     /// Settings on `page`, opened if need be (a button of the call dock that
-    /// would open the audio card, while Settings are simple).
+    /// that the dock's audio buttons ask for).
     pub(crate) fn show_settings_page(&mut self, page: SettingsPage) -> Task<Message> {
         if self.screen != Screen::Main {
             return Task::none();
@@ -1036,7 +1058,7 @@ impl App {
         let ui = &self.settings_ui;
         let (open, page) = (ui.open, ui.page);
         Task::batch([
-            self.audio_inline(open && page == SettingsPage::VoiceAudio),
+            self.audio_inline(open && page.is_audio()),
             self.video_inline(open && page == SettingsPage::Video),
         ])
     }

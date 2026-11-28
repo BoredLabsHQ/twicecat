@@ -51,19 +51,19 @@ Rules the code follows (all in tests):
   3. the switcher;
   4. the upload confirmation;
   5. the viewer;
-  6. the Voice & audio card;
-  7. Settings;
-  8. a room dialog or the user card, then a question in the Info tab of the
+  6. Settings (with its Voice & audio pages: there is no separate audio
+     card);
+  7. a room dialog or the user card, then a question in the Info tab of the
      room panel (leaving, or turning encryption on): Esc cancels the
      question and never confirms it;
-  9. the share picker (it only cancels, never starts a share), then the
+  8. the share picker (it only cancels, never starts a share), then the
      full-screen view of a video;
-  10. a security screen (recovery setup, a question about changing the key or
+  9. a security screen (recovery setup, a question about changing the key or
      resetting the identity);
-  11. the logout warning, then the Sessions card's password prompt, its
+  10. the logout warning, then the Sessions card's password prompt, its
       sign-out question, a rename in progress, then the card itself;
-  12. the composer's suggestions, then its reply or edit mode;
-  13. the room panel (tabs Members, Info and, while a thread is open, Thread;
+  11. the composer's suggestions, then its reply or edit mode;
+  12. the room panel (tabs Members, Info and, while a thread is open, Thread;
       Esc closes the panel and the thread; the member list is its Members
       tab and the room settings are its Info tab, neither is a dialog any
       more), then the participants panel of a
@@ -121,10 +121,11 @@ Rules the code follows (all in tests):
   a call, also over a dialog (the call goes on behind it); without a call they
   do nothing. Ctrl+Shift+V is not used for the camera: in the composer it is
   paste.
-- While the Voice & audio card waits for a push-to-talk key (**Set key…**),
-  every key goes to it and no shortcut runs: the next key with its
-  modifiers becomes the binding, a modifier alone keeps waiting, and Esc,
-  **Cancel**, closing the card or leaving the window stop waiting. A mouse
+- While the Voice & audio page of Settings waits for a push-to-talk key
+  (**Set key…**), every key goes to it and no shortcut runs: the next key
+  with its modifiers becomes the binding, a modifier alone keeps waiting, and
+  Esc, **Cancel**, going to another page, closing Settings or leaving the
+  window stop waiting. A mouse
   button other than left and right pressed then becomes the mouse binding
   instead; left and right still work the card.
 
@@ -139,14 +140,21 @@ after a close.
   off by default and remembered) adds, under a rule on the same pages, what
   a person with little technical knowledge does not need: density and the
   room list (Appearance), keywords, message content in notifications and the
-  tray badge (Notifications), a button to the Voice & audio card with every
-  audio option, and on Video every option the camera and screen sharing can
+  tray badge (Notifications), the nine audio pages listed under Voice & audio
+  (Devices, Talking, Microphone, Levels, Mic test, Ringtone, Other voices,
+  Announce, Diagnostics; indented in the list, which scrolls), and on Video every option the camera and screen sharing can
   be tuned by. A simple page never shows a control that only does something
   at the advanced level, and every setting an advanced person changed stays
   in force when the switch goes back off. The simple Voice & audio page
   holds the microphone, the speakers, the volume, how you talk (and the key),
   noise reduction in three words (Off, Standard, Strong) and a test with its
-  level; the call's audio buttons open it, or the card at the advanced level.
+  level; the call's audio buttons and the account menu's Voice & audio open
+  it, or, at the advanced level, the audio page they ask for (the talk line
+  opens Talking, the others open Devices). Going from one audio page to
+  another keeps a running mic test; leaving the Voice & audio pages (or
+  closing Settings) stops it and stops a key capture. There is no separate
+  audio card and no **More audio options** button: the one switch lists
+  every setting, and nothing else reads it.
   The simple Video page holds the camera with a preview, and a picture
   quality in words for the camera and for sharing.
 - Esc closes Settings, as before (one layer per press).
@@ -230,8 +238,10 @@ order, so Tab reaches it:
   (a separate button: clicking the notice's mark or words does nothing);
 - per person in the participants panel: **More**, which folds out **−** and
   **+** (10 % each), the volume slider, and the voice cleaning menu;
-- the Voice & audio card (from Settings or the call bar's **Audio…**): menus,
-  checkboxes, and for each slider **−** and **+** beside it; Esc closes it.
+- the audio pages of Settings (from the list at the advanced level, or from
+  the account menu or the call bar's **Audio settings**): menus,
+  checkboxes, and for each slider **−** and **+** beside it; Esc closes
+  Settings.
   Its Talking section sets voice activity, push-to-talk or toggle-to-talk,
   the key (**Set key…**, **Clear**), the mouse button and the gamepad
   button (menus, so no mouse button or pad is needed to pick one) and the
@@ -438,7 +448,7 @@ the same note under the shortcut list.
 **Zoom** scales the whole window from 80 % to 200 % in steps of 10 %: Ctrl+=
 makes it larger, Ctrl+- smaller and Ctrl+0 resets to 100 % (Cmd on macOS).
 Settings, Appearance has the same as **Smaller**, **Larger** and **Reset**
-buttons. The keys are ignored while the Voice & audio card waits for a
+buttons. The keys are ignored while the Voice & audio page waits for a
 push-to-talk key. The choice is kept on this device (`text_scale_percent` in
 the local settings, read back clamped to 80-200). Ctrl+Shift+= and the numpad
 plus are not bound.

@@ -1,16 +1,14 @@
-//! The Voice & audio card (plan Task 6, as pages in UI/UX rework Task 12): a
-//! modal above the main view with a list of pages at its left and one page at
-//! its right. Always a stack of two, so opening it keeps the widget state
-//! under it.
+//! The audio pages of Settings (plan Task 6; pages in UI/UX rework Task 12;
+//! inside Settings in UI review fixes Task 12). The advanced switch lists them
+//! under Voice & audio, and each one shows here.
 //!
-//! Two lines stay on screen on every page, outside the page's scroll: what
-//! the microphone sends (the send mode) and whether it is open, in words. A
-//! drop-down is never the only place that says it.
+//! Two lines stay at the top of every page: what the microphone sends (the
+//! send mode) and whether it is open, in words. A drop-down is never the only
+//! place that says it.
 
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    Column, Row, button, checkbox, column, container, pick_list, row, scrollable, slider, space,
-    stack, text,
+    Column, Row, button, checkbox, column, container, pick_list, row, slider, space, text,
 };
 use iced::{Element, Fill, Length};
 use twicecat_core::api::{AudioSettings, InputMode, NoiseSuppression};
@@ -29,19 +27,9 @@ use crate::state::{App, Message};
 use crate::text_safety::one_line_capped;
 use crate::ui::fonts;
 use crate::ui::icons::{Icon, icon};
-use crate::ui::kit::{self, Severity, banner, modal, muted};
+use crate::ui::kit::{self, Severity, banner, muted};
 use crate::ui::tokens;
 
-/// Width of the card.
-const CARD_WIDTH: f32 = 760.0;
-/// Height of the card, with its padding.
-const CARD_HEIGHT: f32 = 640.0;
-/// The least height of the card's content, in a small window.
-const MIN_CARD_HEIGHT: f32 = 240.0;
-/// The padding `kit::modal` puts around the card's content.
-const CARD_PADDING: f32 = 20.0;
-/// Width of the list of pages.
-pub const NAV_WIDTH: f32 = 168.0;
 /// Width of a control's label.
 const LABEL_WIDTH: f32 = 150.0;
 /// Width of a slider's value.
@@ -77,67 +65,22 @@ fn caption<'a>(label: impl text::IntoFragment<'a>) -> Element<'a, Message> {
     words(label).size(tokens::CAPTION).style(muted).into()
 }
 
-/// The base with the card on top when it is open.
-pub fn layer<'a>(base: Element<'a, Message>, app: &'a App) -> Element<'a, Message> {
-    let top = if app.audio_ui.open {
-        view(app)
-    } else {
-        space().into()
-    };
-    stack([base, top]).into()
-}
-
-/// The list of pages, the page, and above them the lines that stay.
-fn view(app: &App) -> Element<'_, Message> {
-    // The card is 640 high, or as high as the window leaves room for.
-    iced::widget::responsive(move |size| card(app, size.height)).into()
-}
-
-/// The modal, `window_height` high at most.
-fn card(app: &App, window_height: f32) -> Element<'_, Message> {
-    let header = row![
-        words("Voice & audio").size(tokens::HEADLINE).width(Fill),
-        kit::secondary_button("Close", Some(msg(AudioMessage::Close))),
-    ]
-    .spacing(tokens::M)
-    .align_y(iced::Center);
-    // What is sent and whether the microphone is open: on every page.
+/// An audio page of Settings (Devices, Talking, ...): the lines that say what
+/// the microphone sends and whether it is open, then the page. The call bar's
+/// line (a refused mic test, a device that failed) shows here too, as it is
+/// under Settings.
+pub fn detail(app: &App) -> Element<'_, Message> {
     let status: Element<'_, Message> = match mic_status(app) {
         Some(status) => banner(status.severity, status.words),
         None => banner(Severity::Info, unloaded_mic_words(app)),
     };
-    // The call bar's line (a refused mic test, a device that failed) is under
-    // this card: it shows here too, on every page. The slot is always there.
     let notice: Element<'_, Message> = match &app.calls.notice {
-        Some(notice) => container(banner(
-            Severity::Danger,
-            one_line_capped(notice, MAX_NOTICE_CHARS),
-        ))
-        .padding(iced::Padding::ZERO.top(tokens::S))
-        .into(),
+        Some(notice) => banner(Severity::Danger, one_line_capped(notice, MAX_NOTICE_CHARS)),
         None => space().into(),
     };
-    let labels = AudioPage::ALL.map(AudioPage::label);
-    let nav = kit::page_nav(&labels, app.audio_ui.page.index(), |index| {
-        msg(AudioMessage::Page(
-            AudioPage::ALL.get(index).copied().unwrap_or_default(),
-        ))
-    });
-    // The scrollbar takes room of its own (it does not float over the page),
-    // so a button or a label at the page's right edge is never under it.
-    let page = scrollable(page_view(app)).spacing(tokens::S).width(Fill);
-    let body = row![
-        container(nav).width(Length::Fixed(NAV_WIDTH)),
-        kit::vertical_divider(),
-        page,
-    ]
-    .spacing(tokens::L)
-    .height(Fill);
-    let content =
-        column![column![header, status, notice].spacing(tokens::S), body].spacing(tokens::L);
-    let height = (window_height - 2.0 * CARD_PADDING - 2.0 * tokens::L)
-        .clamp(MIN_CARD_HEIGHT, CARD_HEIGHT - 2.0 * CARD_PADDING);
-    modal(container(content).height(Length::Fixed(height)), CARD_WIDTH)
+    column![status, notice, page_view(app)]
+        .spacing(tokens::S)
+        .into()
 }
 
 fn page_view(app: &App) -> Element<'_, Message> {
@@ -247,10 +190,9 @@ fn device_rows<'a>(app: &'a App, settings: &'a AudioSettings) -> Element<'a, Mes
 /// The Voice & audio page of Settings: what a person needs to be heard and
 /// to hear, in few words. The microphone and speakers, the volume, how you
 /// talk (and the key), noise reduction in three steps, and a test with its
-/// level. Everything else is in the card (**More audio options**), which
-/// Settings offers once the advanced switch is on: `more` is what it puts
-/// under the heading for that.
-pub fn basics<'a>(app: &'a App, more: Option<Element<'a, Message>>) -> Element<'a, Message> {
+/// level. Everything else is on the audio pages Settings lists under it once
+/// the advanced switch is on.
+pub fn basics(app: &App) -> Element<'_, Message> {
     let Some(settings) = &app.calls.settings else {
         return column![
             heading("Voice & audio"),
@@ -314,12 +256,8 @@ pub fn basics<'a>(app: &'a App, more: Option<Element<'a, Message>>) -> Element<'
     if in_call {
         test = test.push(note("The test is not available during a call."));
     }
-    let mut head = column![heading("Voice & audio")].spacing(tokens::S);
-    if let Some(more) = more {
-        head = head.push(more);
-    }
     column![
-        head,
+        heading("Voice & audio"),
         status,
         device_rows(app, settings),
         a_slider(

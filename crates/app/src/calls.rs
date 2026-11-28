@@ -3101,8 +3101,9 @@ mod tests {
         let (mut app, mut rx) = main_app();
         incoming(&mut app, "b", "bob", true);
         arm(&mut app);
-        app.ui_settings.advanced_settings = true;
-        let _ = app.update(Message::Audio(A::Open));
+        // The ring card is on screen over everything, so Settings cannot open
+        // under it: the audio controls are made live directly.
+        app.audio_ui.inline = true;
         drain(&mut rx);
         // Down before the dialog opens: its release may go unseen under it.
         shortcut(&mut app, Shortcut::DeclineRing);

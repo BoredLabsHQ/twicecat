@@ -12,7 +12,7 @@
 //! reduction, a test), Video (camera, picture quality), Keyboard, Sessions and
 //! About. The advanced level adds below a rule, on the same pages: density
 //! and the room list, keywords, message content and the tray badge, a button
-//! to the card with every audio option, and every tuning of the camera and of
+//! the audio pages under Voice & audio, and every tuning of the camera and of
 //! screen sharing. Settings opens on Profile, also with Ctrl+,.
 //!
 //! Tab: this iced only gives text fields the focus (buttons never take it),
@@ -27,11 +27,12 @@ use iced::widget::{
 use iced::{Element, Fill, Length};
 use twicecat_core::api::{ThemeChoice, UpdateCheckChoice, UpdateMechanism};
 
+use crate::audio_settings::{AudioMessage, AudioPage};
 use crate::screens::{audio_settings, video_settings};
 use crate::settings::{
     DEFAULT_TEXT_SCALE, DRAG_AND_DROP_NOTE, DefaultChoice, DensityOption, INTER_ATTRIBUTION,
     INTER_NOTICES, KEYWORD_INPUT_ID, MAX_TEXT_SCALE, MIN_TEXT_SCALE, NAME_INPUT_ID, RoomListOption,
-    SESSIONS_LINE, SettingsMessage, SettingsPage, ThemeOption, VOICE_AUDIO_LINE, Zoom,
+    SESSIONS_LINE, SettingsMessage, SettingsPage, ThemeOption, Zoom,
 };
 use crate::state::{App, Message};
 use crate::ui::fonts;
@@ -74,6 +75,47 @@ fn note<'a>(label: impl text::IntoFragment<'a>) -> Element<'a, Message> {
     words(label).size(tokens::BODY).style(muted).into()
 }
 
+/// An entry of the list of pages: a page of Settings, or (with the advanced
+/// switch on, under Voice & audio) one of the audio pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavEntry {
+    /// A page of Settings.
+    Page(SettingsPage),
+    /// An audio page, indented under Voice & audio.
+    Audio(AudioPage),
+}
+
+impl NavEntry {
+    /// The name in the list.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Page(page) => page.label(),
+            Self::Audio(page) => page.label(),
+        }
+    }
+
+    /// Whether the entry is the one selected for the page on show.
+    fn is_current(self, page: SettingsPage, audio: AudioPage) -> bool {
+        match self {
+            Self::Page(entry) => entry == page,
+            Self::Audio(entry) => page == SettingsPage::AudioDetail && entry == audio,
+        }
+    }
+}
+
+/// The list of pages at the left of the card. With **Show advanced
+/// settings** on, the audio pages are listed under Voice & audio.
+pub fn nav_entries(advanced: bool) -> Vec<NavEntry> {
+    let mut entries = Vec::new();
+    for page in SettingsPage::ALL {
+        entries.push(NavEntry::Page(page));
+        if advanced && page == SettingsPage::VoiceAudio {
+            entries.extend(AudioPage::ALL.map(NavEntry::Audio));
+        }
+    }
+    entries
+}
+
 /// The base with the Settings screen on top when it is open: always a stack
 /// of two.
 pub fn layer<'a>(base: Element<'a, Message>, app: &'a App) -> Element<'a, Message> {
@@ -108,17 +150,26 @@ fn card(app: &App, window_height: f32) -> Element<'_, Message> {
     if let Some(error) = app.settings_ui.error {
         notice = notice.push(banner(Severity::Danger, error.text()));
     }
-    let labels = SettingsPage::ALL.map(SettingsPage::label);
-    let nav = kit::page_nav(&labels, app.settings_ui.page.index(), |index| {
-        msg(SettingsMessage::Page(
-            SettingsPage::ALL.get(index).copied().unwrap_or_default(),
-        ))
+    let entries = nav_entries(app.ui_settings.advanced_settings);
+    let labels: Vec<(&str, bool)> = entries
+        .iter()
+        .map(|entry| (entry.label(), matches!(entry, NavEntry::Audio(_))))
+        .collect();
+    let current = entries
+        .iter()
+        .position(|entry| entry.is_current(app.settings_ui.page, app.audio_ui.page))
+        .unwrap_or_default();
+    let nav = kit::page_nav_levels(&labels, current, |index| match entries.get(index) {
+        Some(NavEntry::Page(page)) => msg(SettingsMessage::Page(*page)),
+        Some(NavEntry::Audio(page)) => Message::Audio(AudioMessage::Page(*page)),
+        None => msg(SettingsMessage::Page(SettingsPage::default())),
     });
     // The scrollbar takes room of its own (it does not float over the page),
     // so a button or a label at the page's right edge is never under it.
     let page = scrollable(page_view(app)).spacing(tokens::S).width(Fill);
     let body = row![
-        container(nav).width(Length::Fixed(NAV_WIDTH)),
+        // The audio entries make the list taller than the card: it scrolls.
+        container(scrollable(nav).spacing(tokens::S)).width(Length::Fixed(NAV_WIDTH)),
         kit::vertical_divider(),
         page,
     ]
@@ -135,7 +186,8 @@ fn page_view(app: &App) -> Element<'_, Message> {
         SettingsPage::Profile => profile_page(app),
         SettingsPage::Appearance => appearance_page(app),
         SettingsPage::Notifications => notifications_page(app),
-        SettingsPage::VoiceAudio => voice_audio_page(app),
+        SettingsPage::VoiceAudio => audio_settings::basics(app),
+        SettingsPage::AudioDetail => audio_settings::detail(app),
         SettingsPage::Video => video_settings::page(app),
         SettingsPage::Keyboard => keyboard_page(),
         SettingsPage::Sessions => sessions_page(),
@@ -453,24 +505,6 @@ fn sidebar_reset(app: &App) -> Vec<Element<'_, Message>> {
         SidebarState::NotLoaded | SidebarState::Loaded | SidebarState::Full => {}
     }
     parts
-}
-
-fn voice_audio_page(app: &App) -> Element<'_, Message> {
-    // The button to every audio option is at the top, where it is found
-    // without scrolling past the basics.
-    let more = app.ui_settings.advanced_settings.then(|| {
-        row![
-            container(note(VOICE_AUDIO_LINE)).width(Fill),
-            secondary_button(
-                "More audio options\u{2026}",
-                Some(msg(SettingsMessage::OpenVoiceAudio)),
-            ),
-        ]
-        .spacing(tokens::S)
-        .align_y(iced::Center)
-        .into()
-    });
-    audio_settings::basics(app, more)
 }
 
 fn keyboard_page<'a>() -> Element<'a, Message> {
