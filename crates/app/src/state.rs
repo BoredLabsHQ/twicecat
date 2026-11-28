@@ -2405,6 +2405,20 @@ impl App {
         )
     }
 
+    /// Whether the spaces rail is shown wide: the saved choice, unless the
+    /// window or the open panels leave the room pane too little (see
+    /// [`crate::layout::rail_expanded_shown`]). Never changes the choice.
+    pub fn rail_expanded(&self) -> bool {
+        let layout = self.pane_layout();
+        crate::layout::rail_expanded_shown(
+            self.window_width,
+            self.ui_settings.spaces_rail,
+            layout.list,
+            layout.room_panel,
+            layout.call,
+        )
+    }
+
     /// Remembers which side panel was opened last, given which were open
     /// before the message. Closing one leaves the other as it was.
     fn note_panels(&mut self, panel_before: bool, call_before: bool) {
@@ -13430,6 +13444,9 @@ mod tests {
         #[test]
         fn the_panes_fill_the_window_with_and_without_a_thread() {
             let (mut app, _rx) = spaces_app();
+            // The wide rail gives way when a panel opens (its own tests);
+            // this one is about the panel and the room pane.
+            app.ui_settings.spaces_rail = twicecat_core::api::SpacesRailChoice::Collapsed;
             let (row, slots) = pane_widths(&app);
             assert_eq!(row, 1000.0, "the row fills the window: {slots:?}");
             let room_alone = slots[2];
@@ -13451,6 +13468,7 @@ mod tests {
         fn the_participants_panel_takes_its_width_from_the_room_pane() {
             use twicecat_core::api::{CallState, CleaningStatus, ListDiff, Participant};
             let (mut app, _rx) = spaces_app();
+            app.ui_settings.spaces_rail = twicecat_core::api::SpacesRailChoice::Collapsed;
             let room = app.selected.clone().expect("a room is open");
             let (_, alone) = pane_widths(&app);
             let _ = app.update(core(CoreEvent::CallState(CallState::Connected {
@@ -15683,6 +15701,154 @@ mod tests {
                 captured: true,
             });
             assert!(app.threads.panel.is_none());
+        }
+    }
+
+    // ---- UI review fixes Task 10: the wide, collapsible spaces rail ----
+
+    mod spaces_rail {
+        use std::sync::Arc;
+
+        use twicecat_core::api::{RoomListChoice, SpaceView, SpacesRailChoice};
+
+        use super::*;
+        use crate::screens::main_view::room_pane_width;
+        use crate::screens::spaces_sidebar::{RAIL_COLLAPSED_WIDTH, RAIL_EXPANDED_WIDTH};
+        use crate::settings::RecordingSettings;
+        use crate::spaces::SpacesMessage;
+        use crate::threads::ThreadsMessage;
+
+        struct Rig {
+            app: App,
+            rx: mpsc::Receiver<Command>,
+            saved: Arc<std::sync::Mutex<Vec<UiSettings>>>,
+        }
+
+        fn rig() -> Rig {
+            let (mut app, rx) = main_app();
+            let store = RecordingSettings::default();
+            let saved = store.saved.clone();
+            app.set_settings_store(Box::new(store));
+            let top = |id: &str| SpaceView {
+                id: RoomId::from(id),
+                name: id.to_owned(),
+                avatar: None,
+                level: 0,
+                children: 0,
+                rooms: Vec::new(),
+            };
+            let _ = app.update(core(CoreEvent::Spaces(vec![top("!s1:x"), top("!s2:x")])));
+            let _ = app.update(Message::WindowResized(1280.0));
+            Rig { app, rx, saved }
+        }
+
+        fn writes(rig: &Rig) -> Vec<UiSettings> {
+            rig.saved.lock().expect("test mutex").clone()
+        }
+
+        fn toggle(rig: &mut Rig) {
+            let _ = rig.app.update(Message::Spaces(SpacesMessage::ToggleRail));
+        }
+
+        #[test]
+        fn the_rail_starts_expanded() {
+            let rig = rig();
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            assert!(rig.app.rail_expanded());
+        }
+
+        #[test]
+        fn the_toggle_saves_collapsed_then_expanded_and_changes_nothing_else() {
+            let mut rig = rig();
+            let before = rig.app.ui_settings;
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Collapsed);
+            assert_eq!(
+                rig.app.ui_settings,
+                UiSettings {
+                    spaces_rail: SpacesRailChoice::Collapsed,
+                    ..before
+                }
+            );
+            assert!(!rig.app.rail_expanded());
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings, before);
+            assert!(rig.app.rail_expanded());
+            let saved = writes(&rig);
+            assert_eq!(saved.len(), 2, "one save per toggle: {saved:?}");
+            assert_eq!(saved[0].spaces_rail, SpacesRailChoice::Collapsed);
+            assert_eq!(saved[1].spaces_rail, SpacesRailChoice::Expanded);
+            assert!(drain(&mut rig.rx).is_empty(), "the core is not asked");
+        }
+
+        #[test]
+        fn the_toggle_does_nothing_while_a_layer_covers_the_rail() {
+            let mut rig = rig();
+            let _ = rig.app.update(Message::Settings(SettingsMessage::Open));
+            assert!(rig.app.any_overlay_open());
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            assert!(writes(&rig).is_empty(), "nothing was saved");
+            let _ = rig.app.update(Message::Settings(SettingsMessage::Close));
+            assert!(!rig.app.rail_covered());
+            // Another kind of layer: the switcher.
+            rig.app.switcher.open = true;
+            assert!(rig.app.rail_covered());
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            assert!(writes(&rig).is_empty(), "nothing was saved");
+            rig.app.switcher.open = false;
+            toggle(&mut rig);
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Collapsed);
+        }
+
+        #[test]
+        fn an_app_started_collapsed_lays_out_the_72_px_rail() {
+            let mut rig = rig();
+            rig.app.set_ui_settings(UiSettings {
+                spaces_rail: SpacesRailChoice::Collapsed,
+                ..UiSettings::default()
+            });
+            assert!(!rig.app.rail_expanded());
+            // 1280 - 73 (rail and rule) - 301 (list and rule) - 16 (padding).
+            assert_eq!(room_pane_width(&rig.app), 890.0);
+        }
+
+        #[test]
+        fn the_room_pane_gives_up_the_width_of_the_rail_shown() {
+            let mut rig = rig();
+            assert_eq!(RAIL_EXPANDED_WIDTH - RAIL_COLLAPSED_WIDTH, 128.0);
+            // 1280 - 201 - 301 - 16.
+            assert_eq!(room_pane_width(&rig.app), 762.0);
+            toggle(&mut rig);
+            assert_eq!(room_pane_width(&rig.app), 890.0);
+        }
+
+        #[test]
+        fn the_width_rule_collapses_the_rail_without_saving_anything() {
+            let mut rig = rig();
+            let _ = drain(&mut rig.rx);
+            let _ = rig.app.update(Message::Threads(ThreadsMessage::Open(
+                twicecat_core::api::EventId::from("$r:x"),
+            )));
+            assert!(rig.app.room_panel_shown());
+            assert!(!rig.app.rail_expanded(), "1280 px with the room panel");
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            // The room pane keeps what the collapsed rail leaves it.
+            assert_eq!(rig.app.ui_settings.room_list, RoomListChoice::Expanded);
+            let _ = rig.app.update(Message::Threads(ThreadsMessage::Close));
+            assert!(rig.app.rail_expanded(), "back when the panel closes");
+            assert!(writes(&rig).is_empty(), "nothing was saved");
+        }
+
+        #[test]
+        fn a_narrow_window_shows_the_collapsed_rail_and_keeps_the_choice() {
+            let mut rig = rig();
+            let _ = rig.app.update(Message::WindowResized(1099.0));
+            assert!(!rig.app.rail_expanded());
+            assert_eq!(rig.app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
+            let _ = rig.app.update(Message::WindowResized(1280.0));
+            assert!(rig.app.rail_expanded());
         }
     }
 

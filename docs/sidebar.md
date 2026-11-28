@@ -8,6 +8,20 @@ keyboard use see [accessibility.md](accessibility.md), section "The sidebar".
 
 **The spaces rail**
 
+- Show it **wide or narrow**. The wide rail (200 px, the default) has the
+  icon and the name of each space side by side, like Element's space panel;
+  names are cleaned to one line and cut with "…" when they do not fit, and
+  the tooltip keeps the whole name. The narrow rail (72 px) is icons only,
+  with the names in tooltips. A button at the bottom of the rail switches
+  between them (**Collapse** with a chevron in the wide rail, a chevron with
+  the tooltip **Expand spaces** in the narrow one). The choice is saved on this
+  device (in `settings.json`, with the other display settings, not per
+  account), so it is the same after a restart and after logging out. The rail
+  is shown narrow whatever you chose when the window is narrower than 1100 px
+  or when the room pane would keep less than 480 px beside it (for instance a
+  side panel open in a 1280 px window); that never changes the saved choice,
+  and the wide rail comes back when there is room again. A drag reorders in
+  the same way at both widths.
 - Put your spaces in the order you like.
 - Group spaces into **folders**. A closed folder shows a 2 x 2 preview of its
   spaces and the total of their unread counts; an open folder lists them. A

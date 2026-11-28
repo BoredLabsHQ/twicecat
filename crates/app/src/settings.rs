@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use iced::Task;
 use twicecat_core::api::{
     Command, DensityChoice, MediaBytes, MessageText, NotificationSettingsView, OwnProfileView,
-    RoomListChoice, RoomNotificationModeView, ThemeChoice, ThemeName, UiSettings,
+    RoomListChoice, RoomNotificationModeView, SpacesRailChoice, ThemeChoice, ThemeName, UiSettings,
 };
 use twicecat_core::paths::DataPaths;
 
@@ -1314,6 +1314,17 @@ impl App {
         self.settings_store
             .save(self.ui_settings)
             .map(|ok| Message::Settings(SettingsMessage::Saved(ok)))
+    }
+
+    /// Flips the saved choice of the wide or the narrow spaces rail and saves
+    /// it, as the room list's choice is (a failed save shows the usual save
+    /// error). Nothing else changes, and the core is not asked.
+    pub(crate) fn toggle_spaces_rail(&mut self) -> Task<Message> {
+        self.ui_settings.spaces_rail = match self.ui_settings.spaces_rail {
+            SpacesRailChoice::Expanded => SpacesRailChoice::Collapsed,
+            SpacesRailChoice::Collapsed => SpacesRailChoice::Expanded,
+        };
+        self.save_local()
     }
 
     /// The keywords to draw: the account's, each as one capped line, with the

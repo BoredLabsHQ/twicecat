@@ -193,7 +193,7 @@ pub fn room_pane_width(app: &App) -> f32 {
     let layout = app.pane_layout();
     let mut width = app.window_width;
     if layout.sidebar && !app.spaces.is_empty() {
-        width -= spaces_sidebar::SIDEBAR_WIDTH + 1.0;
+        width -= spaces_sidebar::rail_width(app.rail_expanded()) + 1.0;
     }
     width -= room_list_pane::pane_width(layout.list) + 1.0;
     if !layout.panel_fills {

@@ -28,7 +28,8 @@ use iced::{Element, Event, Pixels, Rectangle, Renderer, Size, window};
 use twicecat_app::ui::fonts;
 use twicecat_app::{App, Message};
 use twicecat_core::api::{
-    DensityChoice, RoomListChoice, ThemeChoice, ThemeName, UiSettings, UpdateCheckChoice,
+    DensityChoice, RoomListChoice, SpacesRailChoice, ThemeChoice, ThemeName, UiSettings,
+    UpdateCheckChoice,
 };
 
 const WIDE: Size = Size::new(1280.0, 800.0);
@@ -95,6 +96,10 @@ impl Variant {
             theme_name: stored_theme(self.theme.1),
             density: self.density.0,
             room_list: self.list,
+            // The gallery and the layout tests were drawn with the 72 px
+            // rail before the wide one came (UI review fixes, Task 10): they
+            // keep it, and `main-rail-*` and `mod wide_rail` draw the wide one.
+            spaces_rail: SpacesRailChoice::Collapsed,
             // Answered: no update question bar over the screens.
             update_check: UpdateCheckChoice::Off,
             ..UiSettings::default()
@@ -704,6 +709,66 @@ fn write_the_gallery() {
         let mut files = Vec::new();
         for variant in variants(false) {
             apply(&mut app, variant);
+            let renderer = renderer();
+            let mut laid = Laid::new(&app, &renderer, size);
+            laid.settle(&renderer, size);
+            let pixels = laid.pixels(&app, renderer, size);
+            let file = format!("{name}-{}.png", variant.tag());
+            image::RgbaImage::from_raw(width as u32, size.height as u32, pixels)
+                .expect("the screenshot has width x height x 4 bytes")
+                .save(dir.join(&file))
+                .expect("write the PNG");
+            files.push((variant.tag(), file));
+        }
+        shots.push((name, files));
+    }
+    // The wide spaces rail (UI review fixes, Task 10), the collapsed one for
+    // comparison, and the wide choice collapsed by the width rule.
+    let rail_cases: [(&str, f32, SpacesRailChoice, Steps); 5] = [
+        (
+            "main-rail-expanded-1280",
+            1280.0,
+            SpacesRailChoice::Expanded,
+            &[],
+        ),
+        (
+            "main-rail-expanded-1920",
+            1920.0,
+            SpacesRailChoice::Expanded,
+            &[],
+        ),
+        (
+            "main-rail-collapsed-1280",
+            1280.0,
+            SpacesRailChoice::Collapsed,
+            &[],
+        ),
+        (
+            "main-rail-collapsed-1920",
+            1920.0,
+            SpacesRailChoice::Collapsed,
+            &[],
+        ),
+        (
+            "main-rail-panel-open-1280",
+            1280.0,
+            SpacesRailChoice::Expanded,
+            &[fixture::thread_open],
+        ),
+    ];
+    for (name, width, choice, steps) in rail_cases.into_iter().filter(|_| only.is_empty()) {
+        let size = Size::new(width, 800.0);
+        let mut app = fixture::main_room();
+        app.window_width = width;
+        for step in steps {
+            step(&mut app);
+        }
+        let mut files = Vec::new();
+        for variant in variants(false) {
+            apply(&mut app, variant);
+            let mut settings = app.ui_settings;
+            settings.spaces_rail = choice;
+            app.set_ui_settings(settings);
             let renderer = renderer();
             let mut laid = Laid::new(&app, &renderer, size);
             laid.settle(&renderer, size);
@@ -2503,7 +2568,11 @@ fn a_right_click_on_the_free_space_of_the_sectioned_list_asks_for_its_card_only_
     // A tall window, so the list ends above the bottom: free space under its
     // last line.
     let size = Size::new(1280.0, 1500.0);
-    let app = build("space-sections-collapsed");
+    let mut app = build("space-sections-collapsed");
+    // The points below are the list's with the 72 px rail beside it.
+    let mut settings = app.ui_settings;
+    settings.spaces_rail = SpacesRailChoice::Collapsed;
+    app.set_ui_settings(settings);
     let mut laid = Laid::new(&app, &renderer, size);
     laid.settle(&renderer, size);
     let lowest = texts(&mut laid, &renderer)
@@ -8520,7 +8589,7 @@ mod rail_reorder_drag {
 
     use iced::{Point, Task};
     use twicecat_app::rail_reorder::ReorderEvent;
-    use twicecat_app::screens::spaces_sidebar::SIDEBAR_WIDTH;
+    use twicecat_app::screens::spaces_sidebar::RAIL_EXPANDED_WIDTH;
     use twicecat_app::sidebar_store::{ResetOutcome, SidebarLoad, SidebarStore};
     use twicecat_app::spaces::SpacesMessage;
     use twicecat_app::ui::icons::Icon;
@@ -8703,7 +8772,7 @@ mod rail_reorder_drag {
                 &mut op,
             );
             op.0.into_iter()
-                .filter(|(text, at)| text == word && at.x < SIDEBAR_WIDTH)
+                .filter(|(text, at)| text == word && at.x < RAIL_EXPANDED_WIDTH)
                 .nth(n)
                 .unwrap_or_else(|| panic!("no {word} #{n} on the rail"))
                 .1
@@ -8849,6 +8918,60 @@ mod rail_reorder_drag {
             "the release with the drop is no click"
         );
         assert!(rig.app.rail_reorder.is_none());
+    }
+
+    /// The drop cases, with the rail at the width `choice` gives (1280 px
+    /// window): what a drop does, and what it saves.
+    fn drop_cases(choice: SpacesRailChoice) -> Vec<(Vec<String>, usize, Seen)> {
+        let build = || {
+            let mut app = fixture::rail_reorder_app();
+            app.window_width = 1280.0;
+            let mut settings = app.ui_settings;
+            settings.spaces_rail = choice;
+            app.set_ui_settings(settings);
+            assert_eq!(
+                app.rail_expanded(),
+                choice == SpacesRailChoice::Expanded,
+                "{choice:?}"
+            );
+            Rig::new(app)
+        };
+        let mut out = Vec::new();
+        // (from, to) as (word, nth), top to bottom.
+        type Spot = (&'static str, usize);
+        let cases: [(Spot, Spot); 5] = [
+            (("Q", 0), ("R", 0)),
+            (("B", 0), ("Q", 0)),
+            (("R", 0), ("Q", 0)),
+            (("G", 1), ("T", 1)),
+            (("K", 1), ("Q", 0)),
+        ];
+        for ((from_word, from_nth), (to_word, to_nth)) in cases {
+            let mut rig = build();
+            let from = rig.slot_nth(from_word, from_nth);
+            let to = rig.slot_nth(to_word, to_nth);
+            let up = drag(&mut rig, from, to);
+            out.push((rig.order(), rig.saves(), up));
+        }
+        out
+    }
+
+    #[test]
+    fn the_drop_cases_give_the_same_answers_with_the_rail_at_either_width() {
+        let narrow = drop_cases(SpacesRailChoice::Collapsed);
+        let wide = drop_cases(SpacesRailChoice::Expanded);
+        assert_eq!(narrow, wide);
+        // And they are the answers the 72 px tests above give.
+        assert_eq!(narrow[0].0, ["bb", "[fa,fb]", "qa", "[ga,gb,gc]"]);
+        assert_eq!(narrow[1].0, ["bb", "qa", "[fa,fb]", "[ga,gb,gc]"]);
+        assert_eq!(narrow[2].0, ["[fa,fb]", "qa", "bb", "[ga,gb,gc]"]);
+        assert_eq!(narrow[3].0, ["qa", "bb", "[fa,fb]", "[gb,gc,ga]"]);
+        assert_eq!(narrow[4].0, ["qa", "bb", "[fa,fb]", "[gb,ga,gc]"]);
+        assert!(
+            narrow
+                .iter()
+                .all(|(_, saves, up)| *saves == 1 && up.dropped == 1)
+        );
     }
 
     #[test]
@@ -9123,7 +9246,7 @@ mod rail_reorder_drag {
                 &mut op,
             );
             op.0.iter()
-                .filter(|(text, at)| text == word && at.x < SIDEBAR_WIDTH)
+                .filter(|(text, at)| text == word && at.x < RAIL_EXPANDED_WIDTH)
                 .count()
         }
     }
@@ -9333,5 +9456,387 @@ mod rail_reorder_drag {
         let moved = rig.move_to(Point::new(chevron.x + 12.0, chevron.y + 30.0));
         assert_eq!(moved, Seen::default());
         assert!(rig.app.rail_reorder.is_none());
+    }
+}
+
+/// The wide, collapsible spaces rail (UI review fixes, Task 10).
+mod wide_rail {
+    use iced::advanced::widget::{Id, Operation, operation::Focusable};
+    use iced::keyboard;
+    use twicecat_app::screens::spaces_sidebar::{
+        COLLAPSE_STOP_ID, RAIL_COLLAPSED_WIDTH, RAIL_EXPANDED_WIDTH, rail_label,
+    };
+    use twicecat_app::spaces::SpacesMessage;
+    use twicecat_core::api::{CoreEvent, RoomId, SpaceView};
+
+    use super::*;
+
+    fn app_with(choice: SpacesRailChoice, width: f32) -> App {
+        let mut app = fixture::main_room();
+        app.window_width = width;
+        let mut settings = app.ui_settings;
+        settings.spaces_rail = choice;
+        app.set_ui_settings(settings);
+        app
+    }
+
+    const CHOICES: [(SpacesRailChoice, f32); 2] = [
+        (SpacesRailChoice::Collapsed, RAIL_COLLAPSED_WIDTH),
+        (SpacesRailChoice::Expanded, RAIL_EXPANDED_WIDTH),
+    ];
+
+    #[test]
+    fn the_rail_slot_is_as_wide_as_the_rail_shown_and_the_room_pane_keeps_its_place() {
+        let renderer = renderer();
+        for (choice, rail) in CHOICES {
+            for window in [1280.0, 1920.0] {
+                let app = app_with(choice, window);
+                let size = Size::new(window, 800.0);
+                let laid = Laid::new(&app, &renderer, size);
+                let row = panes_row(&laid);
+                let w: Vec<f32> = row.children().iter().map(|n| n.bounds().width).collect();
+                assert_eq!(w.len(), 5, "{choice:?} at {window}: five slots");
+                assert_eq!(w[0], rail + 1.0, "{choice:?} at {window}: {w:?}");
+                assert_eq!(w[1], 301.0, "{choice:?} at {window}: {w:?}");
+                assert_eq!(w[2], window - w[0] - w[1], "{choice:?} at {window}: {w:?}");
+                // The room pane is the third slot of the same row either way.
+                assert_eq!(row.children()[2].bounds().x, w[0] + w[1]);
+            }
+        }
+    }
+
+    /// The 48 px slots of the rail at `rail` wide.
+    fn slots_of(laid: &Laid<'_>, rail: f32) -> usize {
+        fn walk(node: &Node, rail: f32, count: &mut usize) {
+            let b = node.bounds();
+            if b.height == 48.0 && (b.width == rail || b.width == rail - 4.0) {
+                *count += 1;
+                return;
+            }
+            for child in node.children() {
+                walk(child, rail, count);
+            }
+        }
+        let mut count = 0;
+        walk(&panes_row(laid).children()[0], rail, &mut count);
+        count
+    }
+
+    #[test]
+    fn every_slot_is_48_px_high_at_both_widths() {
+        let renderer = renderer();
+        let counts: Vec<usize> = CHOICES
+            .iter()
+            .map(|(choice, rail)| {
+                let app = app_with(*choice, 1280.0);
+                let laid = Laid::new(&app, &renderer, WIDE);
+                slots_of(&laid, *rail)
+            })
+            .collect();
+        // Home, and the fixture's two spaces.
+        assert_eq!(counts, [3, 3]);
+    }
+
+    #[test]
+    fn the_wide_rail_names_each_space_and_the_narrow_one_leaves_the_names_to_tooltips() {
+        let renderer = renderer();
+        let rail_texts = |choice| {
+            let app = app_with(choice, 1280.0);
+            let mut laid = Laid::new(&app, &renderer, WIDE);
+            laid.settle(&renderer, WIDE);
+            texts(&mut laid, &renderer)
+                .into_iter()
+                .filter(|(_, r)| r.x < RAIL_EXPANDED_WIDTH && r.y > 60.0)
+                .collect::<Vec<_>>()
+        };
+        let wide = rail_texts(SpacesRailChoice::Expanded);
+        for name in ["Home", "Work"] {
+            let found: Vec<_> = wide.iter().filter(|(t, _)| t == name).collect();
+            assert!(!found.is_empty(), "{name} is named in the wide rail");
+            for (_, r) in found {
+                assert!(r.x >= 60.0 && r.x + r.width <= RAIL_EXPANDED_WIDTH, "{r:?}");
+            }
+        }
+        assert!(wide.iter().any(|(t, _)| t == "Collapse"), "{wide:?}");
+        let narrow = rail_texts(SpacesRailChoice::Collapsed);
+        for name in ["Work", "Collapse"] {
+            assert!(narrow.iter().all(|(t, _)| t != name), "{name}: {narrow:?}");
+        }
+    }
+
+    #[test]
+    fn hostile_and_long_names_are_cleaned_capped_and_stay_inside_the_wide_rail() {
+        let renderer = renderer();
+        let mut app = app_with(SpacesRailChoice::Expanded, 1280.0);
+        let spaces: Vec<SpaceView> = [
+            format!("evil\u{202E}name\nsecond {}", "x".repeat(500)),
+            "\u{1F600}".repeat(500),
+            "\u{5E2}\u{5D1}\u{5E8}\u{5D9}\u{5EA}".repeat(60),
+            "W".repeat(500),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, name)| SpaceView {
+            id: RoomId::from(format!("!hostile{i}:example.org")),
+            name,
+            avatar: None,
+            level: 0,
+            children: 0,
+            rooms: Vec::new(),
+        })
+        .collect();
+        let _ = app.update(Message::Core(Box::new(CoreEvent::Spaces(spaces))));
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let shown = texts(&mut laid, &renderer);
+        let rail: Vec<_> = shown
+            .iter()
+            .filter(|(_, r)| r.x < RAIL_EXPANDED_WIDTH && r.y > 60.0 && r.y < 700.0)
+            .collect();
+        let mut checked = 0;
+        for (text, r) in &rail {
+            assert!(
+                !text
+                    .chars()
+                    .any(|c| c == '\n' || ('\u{202A}'..='\u{202E}').contains(&c)),
+                "{text:?}"
+            );
+            assert!(text.chars().count() <= 20, "{text:?} is not capped");
+            // Inside the rail, whatever the glyphs.
+            assert!(
+                r.x + r.width <= RAIL_EXPANDED_WIDTH + 0.5,
+                "{text:?}: {r:?}"
+            );
+            if text.ends_with('\u{2026}') {
+                checked += 1;
+            }
+        }
+        assert!(checked >= 3, "the long names end in an ellipsis: {rail:?}");
+        assert!(!rail_label("a\nb").contains('\n'));
+    }
+
+    struct Stops(Vec<(String, Rectangle, bool)>);
+
+    impl Operation for Stops {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+            operate(self);
+        }
+
+        fn focusable(&mut self, id: Option<&Id>, bounds: Rectangle, state: &mut dyn Focusable) {
+            self.0.push((format!("{id:?}"), bounds, state.is_focused()));
+        }
+    }
+
+    fn stops(laid: &mut Laid<'_>, renderer: &Renderer) -> Vec<(String, Rectangle, bool)> {
+        let mut op = Stops(Vec::new());
+        laid.element.as_widget_mut().operate(
+            &mut laid.tree,
+            Layout::new(&laid.node),
+            renderer,
+            &mut op,
+        );
+        op.0
+    }
+
+    #[test]
+    fn the_collapse_control_is_a_tab_stop_after_the_last_rail_item() {
+        let renderer = renderer();
+        let want = format!("{:?}", Some(Id::new(COLLAPSE_STOP_ID)));
+        for (choice, rail) in CHOICES {
+            let app = app_with(choice, 1280.0);
+            let mut laid = Laid::new(&app, &renderer, WIDE);
+            laid.settle(&renderer, WIDE);
+            let found = stops(&mut laid, &renderer);
+            // The rail's items take no focus in iced 0.14; the control is the
+            // rail's one stop, ahead of the room list's fields in tree order.
+            let at = found
+                .iter()
+                .position(|(id, _, _)| *id == want)
+                .unwrap_or_else(|| panic!("{choice:?}: no stop in {found:?}"));
+            assert_eq!(
+                at, 0,
+                "{choice:?}: the rail comes before the list: {found:?}"
+            );
+            assert!(found.len() > 1, "the list's field follows: {found:?}");
+            let control = found[at].1;
+            assert!(
+                control.x + control.width <= rail + 0.5,
+                "{choice:?}: {control:?}"
+            );
+            // Below the last item of the rail.
+            let mut lowest = 0.0_f32;
+            for (_, r) in texts(&mut laid, &renderer)
+                .iter()
+                .filter(|(t, r)| r.x < rail && !t.is_empty() && r.y < control.y)
+            {
+                lowest = lowest.max(r.y + r.height);
+            }
+            assert!(control.y >= lowest, "{choice:?}: {control:?} over {lowest}");
+        }
+    }
+
+    #[test]
+    fn enter_on_the_focused_control_flips_the_choice_and_a_click_does_too() {
+        let renderer = renderer();
+        for (choice, _) in CHOICES {
+            let app = app_with(choice, 1280.0);
+            let mut laid = Laid::new(&app, &renderer, WIDE);
+            laid.settle(&renderer, WIDE);
+            let control = stops(&mut laid, &renderer)[0].1;
+            // A click.
+            let sent = click(&mut laid, &renderer, WIDE, control.center());
+            assert_eq!(
+                sent.iter()
+                    .filter(|m| matches!(m, Message::Spaces(SpacesMessage::ToggleRail)))
+                    .count(),
+                1,
+                "{choice:?}: {sent:?}"
+            );
+            // Tab to it, then Enter and Space; with no focus the keys send nothing.
+            let key = |key: keyboard::Key| {
+                Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: key.clone(),
+                    modified_key: key,
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                    text: None,
+                    repeat: false,
+                })
+            };
+            let enter = key(keyboard::Key::Named(keyboard::key::Named::Enter));
+            let send = |laid: &mut Laid<'_>, event: &Event| {
+                let mut messages: Vec<Message> = Vec::new();
+                let mut shell = Shell::new(&mut messages);
+                laid.element.as_widget_mut().update(
+                    &mut laid.tree,
+                    event,
+                    Layout::new(&laid.node),
+                    mouse::Cursor::Unavailable,
+                    &renderer,
+                    &mut clipboard::Null,
+                    &mut shell,
+                    &Rectangle::with_size(WIDE),
+                );
+                messages
+            };
+            assert!(send(&mut laid, &enter).is_empty(), "{choice:?}: unfocused");
+            // What the runtime does for Tab: count the stops, then focus the
+            // next one (`focus_next` chains a second pass).
+            let mut op: Box<dyn Operation> =
+                Box::new(iced::advanced::widget::operation::focusable::focus_next::<()>());
+            loop {
+                laid.element.as_widget_mut().operate(
+                    &mut laid.tree,
+                    Layout::new(&laid.node),
+                    &renderer,
+                    op.as_mut(),
+                );
+                match op.finish() {
+                    iced::advanced::widget::operation::Outcome::Chain(next) => op = next,
+                    _ => break,
+                }
+            }
+            assert!(
+                stops(&mut laid, &renderer)[0].2,
+                "{choice:?}: Tab focuses it"
+            );
+            for named in [keyboard::key::Named::Enter, keyboard::key::Named::Space] {
+                let sent = send(&mut laid, &key(keyboard::Key::Named(named)));
+                assert!(
+                    matches!(
+                        sent.as_slice(),
+                        [Message::Spaces(SpacesMessage::ToggleRail)]
+                    ),
+                    "{choice:?} {named:?}: {sent:?}"
+                );
+            }
+            let sent = send(
+                &mut laid,
+                &key(keyboard::Key::Named(keyboard::key::Named::Escape)),
+            );
+            assert!(sent.is_empty(), "Esc is left to the app: {sent:?}");
+        }
+    }
+
+    #[test]
+    fn a_held_key_does_not_repeat_the_toggle() {
+        let renderer = renderer();
+        let app = app_with(SpacesRailChoice::Expanded, 1280.0);
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let mut op: Box<dyn Operation> =
+            Box::new(iced::advanced::widget::operation::focusable::focus_next::<()>());
+        loop {
+            laid.element.as_widget_mut().operate(
+                &mut laid.tree,
+                Layout::new(&laid.node),
+                &renderer,
+                op.as_mut(),
+            );
+            match op.finish() {
+                iced::advanced::widget::operation::Outcome::Chain(next) => op = next,
+                _ => break,
+            }
+        }
+        assert!(stops(&mut laid, &renderer)[0].2, "Tab focuses it");
+        for (repeat, want) in [(true, 0), (false, 1)] {
+            let key = keyboard::Key::Named(keyboard::key::Named::Enter);
+            let event = Event::Keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text: None,
+                repeat,
+            });
+            let mut messages: Vec<Message> = Vec::new();
+            let mut shell = Shell::new(&mut messages);
+            laid.element.as_widget_mut().update(
+                &mut laid.tree,
+                &event,
+                Layout::new(&laid.node),
+                mouse::Cursor::Unavailable,
+                &renderer,
+                &mut clipboard::Null,
+                &mut shell,
+                &Rectangle::with_size(WIDE),
+            );
+            assert_eq!(messages.len(), want, "repeat {repeat}: {messages:?}");
+        }
+    }
+
+    #[test]
+    fn no_tab_stop_is_drawn_for_the_control_while_a_dialog_covers_the_rail() {
+        let renderer = renderer();
+        let mut app = app_with(SpacesRailChoice::Expanded, 1280.0);
+        let _ = app.update(Message::Settings(
+            twicecat_app::settings::SettingsMessage::Open,
+        ));
+        let mut laid = Laid::new(&app, &renderer, WIDE);
+        laid.settle(&renderer, WIDE);
+        let want = format!("{:?}", Some(Id::new(COLLAPSE_STOP_ID)));
+        assert!(
+            stops(&mut laid, &renderer)
+                .iter()
+                .all(|stop| stop.0 != want),
+            "the control keeps no focus under a dialog"
+        );
+    }
+
+    #[test]
+    fn a_width_that_collapses_the_rail_shows_the_icon_rail_and_the_expand_tooltip_control() {
+        let renderer = renderer();
+        let mut app = app_with(SpacesRailChoice::Expanded, 1280.0);
+        fixture::thread_open(&mut app);
+        assert!(!app.rail_expanded());
+        let laid = Laid::new(&app, &renderer, WIDE);
+        assert_eq!(panes_row(&laid).children()[0].bounds().width, 73.0);
+        assert_eq!(app.ui_settings.spaces_rail, SpacesRailChoice::Expanded);
     }
 }

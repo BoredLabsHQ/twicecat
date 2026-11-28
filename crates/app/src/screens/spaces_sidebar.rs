@@ -31,8 +31,10 @@
 
 use std::time::Duration;
 
+use iced::widget::text::Wrapping;
 use iced::widget::{
-    Column, Stack, column, container, image, mouse_area, row, scrollable, space, text, tooltip,
+    Column, Stack, button, column, container, image, mouse_area, row, scrollable, space, text,
+    tooltip,
 };
 use iced::{Background, Color, Element, Padding, border, mouse};
 use sweeten::widget::column::Style as DragStyle;
@@ -46,13 +48,50 @@ use crate::spaces::{RailFolder, RailItem, RailKey, SpacesMessage};
 use crate::state::{App, Message};
 use crate::text_safety::{MAX_NAME_CHARS, name_or_placeholder};
 use crate::theme;
-use crate::ui::icons::Icon;
+use crate::ui::focus_stop::focus_stop;
+use crate::ui::icons::{self, Icon};
 use crate::ui::kit;
 use crate::ui::press_spy::press_spy;
 use crate::ui::tokens;
 
-/// Width of the sidebar, in pixels.
-pub const SIDEBAR_WIDTH: f32 = 72.0;
+/// Width of the collapsed rail (icons only), in pixels.
+pub const RAIL_COLLAPSED_WIDTH: f32 = 72.0;
+
+/// Width of the expanded rail (the icon and the name side by side).
+pub const RAIL_EXPANDED_WIDTH: f32 = 200.0;
+
+/// Width of the zone that holds the icon in the expanded rail; the name
+/// takes the rest.
+const ICON_ZONE: f32 = 60.0;
+
+/// Space left at the right end of an expanded row.
+const LABEL_PAD: f32 = 8.0;
+
+/// Width of an expanded row's name, in pixels.
+const LABEL_WIDTH: f32 = RAIL_EXPANDED_WIDTH - ICON_ZONE - LABEL_PAD;
+
+/// The width of the rail shown: wide when `expanded`.
+pub fn rail_width(expanded: bool) -> f32 {
+    if expanded {
+        RAIL_EXPANDED_WIDTH
+    } else {
+        RAIL_COLLAPSED_WIDTH
+    }
+}
+
+/// How many characters of a name the expanded row has room for. The text has
+/// no ellipsis of its own, so the name is cut by count (an average glyph of
+/// the body size is about 0.6 of its height wide); the row clips what a run
+/// of wide glyphs would still spill.
+fn label_budget() -> usize {
+    (LABEL_WIDTH / (tokens::BODY * 0.6)) as usize
+}
+
+/// The name as the expanded rail draws it: one line, cleaned by
+/// [`name_or_placeholder`], cut with an ellipsis to the room there is.
+pub fn rail_label(name: &str) -> String {
+    name_or_placeholder(name, label_budget())
+}
 
 /// Height of an item's slot.
 const SLOT_HEIGHT: f32 = 48.0;
@@ -200,6 +239,8 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if app.spaces.is_empty() {
         return space().width(0).into();
     }
+    let wide = app.rail_expanded();
+    let full = rail_width(wide);
     let selected = app.query.space.as_ref();
     let hover = app.rail_hover.as_ref();
     let home = home_counts(app);
@@ -219,16 +260,23 @@ pub fn view(app: &App) -> Element<'_, Message> {
             ),
             counts: home,
             name: "Home".to_owned(),
-            width: SIDEBAR_WIDTH,
+            width: full,
+            wide,
         }),
-        separator(),
-        rail_column(app),
+        separator(wide),
+        rail_column(app, wide),
     ]
     .spacing(4)
     .padding([6, 0]);
+    // The control sits under the scrolling items, so it is always in view
+    // and is the last Tab stop of the rail.
+    let rail = column![
+        scrollable(items).height(iced::Fill),
+        collapse_control(wide, app.rail_covered())
+    ];
     row![
-        container(scrollable(items))
-            .width(SIDEBAR_WIDTH)
+        container(rail)
+            .width(full)
             .height(iced::Fill)
             .style(kit::sidebar_style),
         kit::vertical_divider(),
@@ -237,9 +285,67 @@ pub fn view(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-/// The line under **Home**: 32 x 2 px, centred, in the text colour. It is
-/// outside the column that reorders, so it is no part of any drag.
-fn separator<'a>() -> Element<'a, Message> {
+/// The id of the collapse control's Tab stop.
+pub const COLLAPSE_STOP_ID: &str = "spaces-rail-collapse";
+
+/// The words of the collapse control in the expanded rail.
+pub const COLLAPSE_WORDS: &str = "Collapse";
+
+/// The tooltip of the control in the collapsed rail.
+pub const EXPAND_WORDS: &str = "Expand spaces";
+
+/// The control at the bottom of the rail: a chevron and **Collapse** in the
+/// wide rail, the chevron alone (tooltip **Expand spaces**) in the narrow
+/// one. One message flips the saved choice. A Tab stop, so the keyboard
+/// reaches it after the last item (not while a layer covers the rail).
+fn collapse_control<'a>(wide: bool, covered: bool) -> Element<'a, Message> {
+    let press = Message::Spaces(SpacesMessage::ToggleRail);
+    let control: Element<'a, Message> = if wide {
+        button(
+            row![
+                icons::icon(Icon::ChevronLeft),
+                text(COLLAPSE_WORDS).wrapping(Wrapping::None)
+            ]
+            .spacing(tokens::S)
+            .align_y(iced::Center),
+        )
+        .padding([tokens::S, tokens::M])
+        .width(iced::Fill)
+        .on_press(press.clone())
+        .style(kit::ghost_style)
+        .into()
+    } else {
+        kit::tip(
+            button(icons::icon(Icon::ChevronRight))
+                .padding(tokens::S)
+                .width(iced::Fill)
+                .on_press(press.clone())
+                .style(kit::icon_style),
+            EXPAND_WORDS,
+        )
+    };
+    // Under a layer the control is a plain button: a focus it held is
+    // dropped with its stop, so no key reaches it from behind a dialog.
+    let control = if covered {
+        control
+    } else {
+        focus_stop(control, COLLAPSE_STOP_ID, press)
+    };
+    container(control)
+        .width(iced::Fill)
+        .padding(tokens::S)
+        .into()
+}
+
+/// The line under **Home**: 32 x 2 px, centred over the icons, in the text
+/// colour. It is outside the column that reorders, so it is no part of any
+/// drag.
+fn separator<'a>(wide: bool) -> Element<'a, Message> {
+    let zone = if wide {
+        ICON_ZONE
+    } else {
+        RAIL_COLLAPSED_WIDTH
+    };
     container(
         container(space().width(SEPARATOR.0).height(SEPARATOR.1)).style(|t: &iced::Theme| {
             container::Style {
@@ -249,8 +355,8 @@ fn separator<'a>() -> Element<'a, Message> {
             }
         }),
     )
-    .width(SIDEBAR_WIDTH)
-    .center_x(SIDEBAR_WIDTH)
+    .width(zone)
+    .center_x(zone)
     .into()
 }
 
@@ -300,15 +406,16 @@ fn customizable(app: &App) -> bool {
 /// widget: iced then drops sweeten's state, which ends the drag it holds
 /// (sweeten has no cancel; plan S3). A `container` would not do, it forwards
 /// its content's tag.
-fn rail_column(app: &App) -> Element<'_, Message> {
+fn rail_column(app: &App, wide: bool) -> Element<'_, Message> {
+    let full = rail_width(wide);
     let mut items = sweeten::widget::Column::new()
         .spacing(4)
         .deadband_zone(DEADBAND)
         .style(drag_style);
     for item in app.spaces.rail_items(app.sidebar.layout()) {
         items = match item {
-            RailItem::Space(space) => items.push(space_item(app, space, SIDEBAR_WIDTH, false)),
-            RailItem::Folder(folder) => items.push(folder_view(app, &folder)),
+            RailItem::Space(space) => items.push(space_item(app, space, full, false, wide)),
+            RailItem::Folder(folder) => items.push(folder_view(app, &folder, wide)),
         };
     }
     if customizable(app) {
@@ -419,6 +526,8 @@ struct Slot<'a> {
     counts: UnreadCountsView,
     name: String,
     width: f32,
+    /// The rail is the wide one: the name is drawn beside the icon.
+    wide: bool,
     chevron: Option<Chevron>,
 }
 
@@ -430,19 +539,20 @@ fn space_item<'a>(
     parent: &'a SpaceView,
     width: f32,
     nested: bool,
+    wide: bool,
 ) -> Element<'a, Message> {
     let subs = app.spaces.sub_spaces(&parent.id);
     if subs.is_empty() {
-        return space_slot(app, parent, width, None);
+        return space_slot(app, parent, width, None, wide);
     }
     let open = app.rail_expanded.contains(&parent.id);
-    let head = space_slot(app, parent, width, Some(open));
+    let head = space_slot(app, parent, width, Some(open), wide);
     if !open {
         return head;
     }
     let slots = subs
         .into_iter()
-        .map(|sub| sub_slot(app, sub, width - SUB_INDENT));
+        .map(|sub| sub_slot(app, sub, width - SUB_INDENT, wide));
     let band = container(row![
         space().width(SUB_INDENT),
         Column::with_children(slots).spacing(2)
@@ -487,6 +597,7 @@ fn space_slot<'a>(
     space: &'a SpaceView,
     width: f32,
     tree: Option<bool>,
+    wide: bool,
 ) -> Element<'a, Message> {
     let key = RailKey::Space(space.id.clone());
     let counts = app.spaces.unread_for(&space.id);
@@ -506,6 +617,7 @@ fn space_slot<'a>(
         counts,
         name: space_name(space),
         width,
+        wide,
         chevron: tree.map(|open| Chevron {
             space: space.id.clone(),
             open,
@@ -515,7 +627,7 @@ fn space_slot<'a>(
 }
 
 /// A sub-space under its space: selected by a click.
-fn sub_slot<'a>(app: &'a App, sub: &'a SpaceView, width: f32) -> Element<'a, Message> {
+fn sub_slot<'a>(app: &'a App, sub: &'a SpaceView, width: f32, wide: bool) -> Element<'a, Message> {
     let key = RailKey::Space(sub.id.clone());
     let counts = app.spaces.unread_for(&sub.id);
     let state = ItemState::of(
@@ -534,6 +646,7 @@ fn sub_slot<'a>(app: &'a App, sub: &'a SpaceView, width: f32) -> Element<'a, Mes
         counts,
         name: space_name(sub),
         width,
+        wide,
         chevron: None,
     })
 }
@@ -563,7 +676,8 @@ fn tree_band_style(t: &iced::Theme, nested: bool) -> container::Style {
 }
 
 /// A folder: its icon, and when it is open its spaces in a tinted band.
-fn folder_view<'a>(app: &'a App, folder: &RailFolder<'a>) -> Element<'a, Message> {
+fn folder_view<'a>(app: &'a App, folder: &RailFolder<'a>, wide: bool) -> Element<'a, Message> {
+    let full = rail_width(wide);
     let key = RailKey::Folder(folder.id);
     let counts = app.spaces.folder_counts(folder);
     // A closed folder holding the selected space stands for it.
@@ -587,7 +701,8 @@ fn folder_view<'a>(app: &'a App, folder: &RailFolder<'a>) -> Element<'a, Message
         state,
         counts,
         name: folder_name(folder),
-        width: SIDEBAR_WIDTH,
+        width: full,
+        wide,
     });
     if !folder.open {
         return head;
@@ -600,7 +715,7 @@ fn folder_view<'a>(app: &'a App, folder: &RailFolder<'a>) -> Element<'a, Message
         .deadband_zone(DEADBAND)
         .style(drag_style);
     for space in &folder.spaces {
-        inside = inside.push(space_item(app, space, SIDEBAR_WIDTH - NESTED_INDENT, true));
+        inside = inside.push(space_item(app, space, full - NESTED_INDENT, true, wide));
     }
     if customizable(app) {
         inside = inside.on_drag(move |event| {
@@ -618,7 +733,7 @@ fn folder_view<'a>(app: &'a App, folder: &RailFolder<'a>) -> Element<'a, Message
         column![
             head,
             container(row![space().width(NESTED_INDENT), inside])
-                .width(SIDEBAR_WIDTH)
+                .width(full)
                 .padding([4, 0])
                 .style(band_style),
         ]
@@ -650,9 +765,18 @@ fn slot(slot: Slot<'_>) -> Element<'_, Message> {
         state,
         counts,
         name,
-        width,
+        width: row_width,
+        wide,
         chevron,
     } = slot;
+    // The icon's zone: the whole slot in the narrow rail, the left part in
+    // the wide one (an indented slot has a narrower zone, so its icon keeps
+    // the indent and the names line up).
+    let width = if wide {
+        ICON_ZONE - (RAIL_EXPANDED_WIDTH - row_width)
+    } else {
+        row_width
+    };
     let (icon_side, height) = (kind.icon(), kind.height());
     let radius = match kind {
         Kind::Item => icon_radius(state),
@@ -692,7 +816,21 @@ fn slot(slot: Slot<'_>) -> Element<'_, Message> {
     if let Some(chevron) = chevron.filter(|c| c.open || c.hover) {
         layers = layers.push(chevron_view(chevron, width, height));
     }
-    let mut area = mouse_area(layers)
+    let content: Element<'_, Message> = if wide {
+        let label = container(
+            text(rail_label(&name))
+                .size(tokens::BODY)
+                .wrapping(Wrapping::None),
+        )
+        .width(LABEL_WIDTH)
+        .height(height)
+        .center_y(height)
+        .clip(true);
+        row![layers, label].width(row_width).into()
+    } else {
+        layers.into()
+    };
+    let mut area = mouse_area(content)
         .interaction(cue.cursor)
         .on_enter(Message::Spaces(SpacesMessage::Enter(key.clone())))
         .on_exit(Message::Spaces(SpacesMessage::Exit(key.clone())));
@@ -954,6 +1092,38 @@ mod tests {
         space.name = format!("a\nb{}", "z".repeat(1000));
         let name = space_name(&space);
         assert!(!name.contains('\n') && name.chars().count() <= MAX_NAME_CHARS);
+    }
+
+    #[test]
+    fn the_rail_has_two_widths_and_the_choice_picks_one() {
+        assert_eq!(RAIL_COLLAPSED_WIDTH, 72.0);
+        assert_eq!(RAIL_EXPANDED_WIDTH, 200.0);
+        assert_eq!(rail_width(false), RAIL_COLLAPSED_WIDTH);
+        assert_eq!(rail_width(true), RAIL_EXPANDED_WIDTH);
+    }
+
+    #[test]
+    fn the_wide_label_is_cleaned_capped_and_never_empty() {
+        let budget = label_budget();
+        assert!(budget >= 8, "room for a few letters");
+        // Bidi controls, a line break and a long tail.
+        let hostile = format!("a\u{202E}b\nc\u{2066}{}", "z".repeat(500));
+        let label = rail_label(&hostile);
+        assert!(!label.contains('\n'), "{label:?}");
+        assert!(
+            !label
+                .chars()
+                .any(|c| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+            "{label:?}"
+        );
+        assert!(label.chars().count() <= budget, "{label:?}");
+        assert!(label.ends_with(crate::text_safety::ELLIPSIS), "{label:?}");
+        // A short name is kept whole; a blank one reads as the placeholder.
+        assert_eq!(rail_label("Home"), "Home");
+        assert_eq!(rail_label("  "), crate::text_safety::NAME_PLACEHOLDER);
+        // A name of 500 emoji is capped too.
+        let emoji = "\u{1F600}".repeat(500);
+        assert!(rail_label(&emoji).chars().count() <= budget);
     }
 
     #[test]

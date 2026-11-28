@@ -387,6 +387,9 @@ pub enum SpacesMessage {
     PointerPressed,
     /// The left button, or the finger, came up anywhere in the window.
     PointerReleased,
+    /// The collapse / expand control at the bottom of the rail: flips the
+    /// saved choice of the wide or the narrow rail, and saves it.
+    ToggleRail,
     /// The system cancelled the touch (`FingerLost`): what was tracked is
     /// forgotten and nothing is dropped.
     PointerCancelled,
@@ -503,11 +506,24 @@ impl App {
         self.set_query(query)
     }
 
+    /// Whether a dialog, card, screen or full-screen view is drawn over the
+    /// rail, so its collapse control must take no key.
+    pub fn rail_covered(&self) -> bool {
+        self.any_overlay_open()
+            || self.sidebar_menu_open()
+            || self.calls.video.fullscreen.is_some()
+            || self.calls.video.picker.is_some()
+    }
+
     /// The pointer on the rail: hover, and a click as a press and a release
     /// on one item with no leaving in between.
     pub(crate) fn on_rail(&mut self, message: SpacesMessage) -> Task<Message> {
         match message {
             SpacesMessage::Select(space) => self.pick_space(space),
+            // A layer over the rail may still hold the control's keyboard
+            // focus: its Enter must not flip and save the choice unseen.
+            SpacesMessage::ToggleRail if self.rail_covered() => Task::none(),
+            SpacesMessage::ToggleRail => self.toggle_spaces_rail(),
             SpacesMessage::ToggleTree(id) => {
                 self.set_tree(&id, None);
                 Task::none()

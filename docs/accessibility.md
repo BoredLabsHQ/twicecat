@@ -476,6 +476,11 @@ The layout follows the window width (`crates/app/src/layout.rs`):
   direct message.
 - The saved room list choice is never changed by the width, and the composer
   keeps its focus through narrowing and widening.
+- The spaces rail is wide (200 px, icon and name) or narrow (72 px, icons
+  only). It is wide only when the user chose that (the default), the window is
+  1100 px or wider and the room pane would keep at least 480 px; otherwise it
+  is narrow. The width rule never changes the saved choice
+  (`rail_expanded_shown` in `crates/app/src/layout.rs`).
 - Known: a resize that changes which list is shown does not keep the room at
   the top, and the spaces sidebar is hidden under 800 px with no sign when a
   space filter is active.
@@ -513,6 +518,11 @@ Arranging the sidebar (see [sidebar.md](sidebar.md)) adds **no keyboard
 chord**: `SHORTCUTS` and the keyboard map above are unchanged, and every
 existing shortcut keeps its meaning.
 
+- **The wide spaces rail names every space** (icon and name side by side, in
+  the body size), so nothing there is known by its icon or a tooltip alone.
+  The unread and mention badges stay on the item. The button at the bottom
+  collapses it to the 72 px icon rail and back; it is a Tab stop (see Known
+  limits of iced 0.14) and the choice is saved.
 - **The options menus are the alternative to dragging.** Every move a drag can
   make is also an entry of an options menu: Move up and Move down, Move to
   folder, Remove from folder, Ungroup, Move to section, Back to its default
@@ -643,7 +653,12 @@ existing shortcut keeps its meaning.
 ## Known limits of iced 0.14
 
 - Buttons, checkboxes, radio buttons, menus and sliders do not take the
-  keyboard focus, so **Tab visits text fields only**; everything else needs
+  keyboard focus, so **Tab visits text fields only**, with one exception: the
+  spaces rail's **Collapse** / **Expand spaces** control is a Tab stop of its
+  own (`ui::focus_stop`: a focus ring, Enter or Space presses it, Esc is left
+  to the app). It comes right after the rail's items, before the room list's
+  fields. The rail's items are not Tab stops (pointer, Ctrl+K and the
+  room-stepping keys reach rooms); everything else needs
   the pointer. The keys that matter most are chords (ring accept and decline,
   mute, deafen, the switcher) for that reason, and no key presses a button, so
   Enter cannot confirm a destructive action.
