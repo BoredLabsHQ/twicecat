@@ -31,9 +31,9 @@
     <binary>twicecat</binary>
   </provides>
 
-  <url type="homepage">https://github.com/ga-lep/twicecat</url>
-  <url type="bugtracker">https://github.com/ga-lep/twicecat/issues</url>
-  <url type="vcs-browser">https://github.com/ga-lep/twicecat</url>
+  <url type="homepage">https://github.com/BoredLabsHQ/twicecat</url>
+  <url type="bugtracker">https://github.com/BoredLabsHQ/twicecat/issues</url>
+  <url type="vcs-browser">https://github.com/BoredLabsHQ/twicecat</url>
 
   <categories>
     <category>Network</category>

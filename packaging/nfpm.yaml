@@ -12,9 +12,9 @@ platform: linux
 release: "1"
 section: net
 priority: optional
-maintainer: The Twicecat developers <https://github.com/ga-lep/twicecat/issues>
+maintainer: The Twicecat developers <https://github.com/BoredLabsHQ/twicecat/issues>
 vendor: Twicecat
-homepage: https://github.com/ga-lep/twicecat
+homepage: https://github.com/BoredLabsHQ/twicecat
 license: GPL-3.0-or-later
 description: |-
   Encrypted chat and voice calls on Matrix

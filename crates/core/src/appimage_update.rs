@@ -177,7 +177,7 @@ mod tests {
     fn the_manifest_is_the_latest_published_release() {
         assert_eq!(
             MANIFEST,
-            "https://github.com/ga-lep/twicecat/releases/latest/download/latest.json"
+            "https://github.com/BoredLabsHQ/twicecat/releases/latest/download/latest.json"
         );
     }
 

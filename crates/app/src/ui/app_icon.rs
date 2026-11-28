@@ -1,6 +1,6 @@
 //! The app's icon for the window: the 256-pixel PNG that
-//! `scripts/make-icons.sh` renders from `packaging/icons/`. (The tray draws
-//! the same shape in code, `tray.rs`.)
+//! `scripts/make-icons.sh` renders from `packaging/icons/`. (The tray uses the
+//! 64-pixel one, `tray.rs`.)
 
 /// The 256-pixel icon.
 pub const WINDOW_ICON_PNG: &[u8] = include_bytes!(
