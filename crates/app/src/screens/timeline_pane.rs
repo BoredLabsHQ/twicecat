@@ -37,7 +37,8 @@ use crate::media::{
 use crate::rich_text::{Ctx, Revealed, blocks_view};
 use crate::state::Message;
 use crate::text_safety::{
-    MAX_BODY_CHARS, MAX_NAME_CHARS, multi_line_capped, name_or_placeholder, one_line_capped,
+    MAX_BODY_CHARS, MAX_NAME_CHARS, has_visible_char, multi_line_capped, name_or_placeholder,
+    one_line_capped,
 };
 use crate::theme;
 use crate::timeline::{
@@ -999,12 +1000,18 @@ pub fn reply_quote_text(reply: &ReplyPreview) -> (String, String) {
     match reply.state {
         ReplyState::Ready => {
             let name = sender_label(reply.sender_name.as_deref(), false, &reply.sender);
-            let line = one_line_capped(&reply.body, MAX_QUOTE_CHARS);
-            let line = if line.trim().is_empty() {
-                "(no text)".to_owned()
-            } else {
-                line
-            };
+            // The core sends one line, but an older or other client's body
+            // may still start with blank lines: skip them, so no line break
+            // mark stands for the text.
+            // Choose the line by what is visible after cleaning: a line of
+            // only invisible characters (U+200B, U+FEFF, bidi controls,
+            // fillers) is skipped like a blank one.
+            let line = reply
+                .body
+                .lines()
+                .map(|line| one_line_capped(line, MAX_QUOTE_CHARS))
+                .find(|line| has_visible_char(line))
+                .unwrap_or_else(|| "(no text)".to_owned());
             (name, line)
         }
         ReplyState::Loading => (
@@ -1900,6 +1907,49 @@ mod tests {
         );
         let gone = preview(ReplyState::Unavailable, None, "");
         assert_eq!(reply_quote_text(&gone).1, "Original message unavailable");
+    }
+
+    #[test]
+    fn no_text_is_only_the_last_fallback_of_a_reply_quote() {
+        // A description from the core is shown as is.
+        for word in ["Image", "File", "Poll", "Deleted message"] {
+            let described = preview(ReplyState::Ready, Some("Bob"), word);
+            assert_eq!(reply_quote_text(&described).1, word);
+        }
+        // Blank and whitespace-only bodies have nothing to show.
+        for body in ["", "   ", "\n\t", " \r\n \n"] {
+            let blank = preview(ReplyState::Ready, Some("Bob"), body);
+            assert_eq!(reply_quote_text(&blank).1, "(no text)", "{body:?}");
+        }
+        // A body that starts with blank lines quotes its first real line.
+        let lead = preview(ReplyState::Ready, Some("Bob"), "\n \nsecond\nthird");
+        assert_eq!(reply_quote_text(&lead).1, "second");
+        // Lines of only invisible characters are skipped or fall to the word.
+        let zw = preview(ReplyState::Ready, Some("Bob"), "\u{200B}\nhello");
+        assert_eq!(reply_quote_text(&zw).1, "hello");
+        for body in ["\u{202E}", "\u{3164}", "\u{200B}", "\u{FEFF}\n\u{202E}"] {
+            let invisible = preview(ReplyState::Ready, Some("Bob"), body);
+            assert_eq!(reply_quote_text(&invisible).1, "(no text)", "{body:?}");
+        }
+        // A real line is never replaced, even a short one.
+        let one = preview(ReplyState::Ready, Some("Bob"), ".");
+        assert_eq!(reply_quote_text(&one).1, ".");
+    }
+
+    /// The quote line is drawn in the muted colour on the quote surface; it
+    /// must be readable there in every family (plan Task 15, root cause).
+    #[test]
+    fn the_quote_line_is_readable_on_the_quote_surface_in_every_family() {
+        for theme in theme::test_themes() {
+            let line = muted(&theme).color.expect("a muted colour");
+            let Some(iced::Background::Color(surface)) =
+                kit::quote_surface_style(&theme).background
+            else {
+                panic!("{theme}: the quote surface has no colour");
+            };
+            let ratio = theme::contrast(line, surface);
+            assert!(ratio >= 4.5, "{theme}: {ratio:.2}");
+        }
     }
 
     #[test]

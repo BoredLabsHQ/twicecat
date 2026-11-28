@@ -639,3 +639,69 @@ fn estimates_at_1920_px_stay_within_a_quarter_of_the_capped_rows() {
         "estimated {estimated} in all, laid out {total}"
     );
 }
+
+/// The quote surface (the grandparent of a column of two stacked text
+/// nodes) and that column's second node, in window coordinates.
+fn find_quote(
+    node: &Node,
+    origin: iced::Point,
+    grandparent: Option<iced::Rectangle>,
+    parent: Option<iced::Rectangle>,
+) -> Option<(iced::Rectangle, iced::Rectangle)> {
+    let at = iced::Point::new(origin.x + node.bounds().x, origin.y + node.bounds().y);
+    let rect = iced::Rectangle::new(at, node.bounds().size());
+    let kids = node.children();
+    if let [first, second] = kids
+        && first.children().is_empty()
+        && second.children().is_empty()
+        && second.bounds().y >= first.bounds().y + first.bounds().height - 0.5
+        && let Some(surface) = grandparent
+        && parent.is_some()
+    {
+        let second = iced::Rectangle::new(
+            iced::Point::new(at.x + second.bounds().x, at.y + second.bounds().y),
+            second.bounds().size(),
+        );
+        return Some((surface, second));
+    }
+    kids.iter()
+        .find_map(|child| find_quote(child, at, parent, Some(rect)))
+}
+
+/// A reply with a Ready quote lays out a second text node (the quoted line)
+/// with a height, inside the quote surface, in both densities (plan Task 15,
+/// root cause check).
+#[test]
+fn a_ready_reply_quote_lays_out_its_line_inside_the_surface_in_both_densities() {
+    use twicecat_app::ui::tokens::Density;
+    use twicecat_core::api::{EventId, ReplyPreview, ReplyState};
+    let renderer = renderer();
+    for density in [Density::Comfortable, Density::Compact] {
+        let mut view = TimelineView::default();
+        view.set_density(density);
+        view.apply_diffs(vec![ListDiff::Reset {
+            values: vec![decorated("r", |d| {
+                d.reply_to = Some(ReplyPreview {
+                    event_id: EventId::from("$o"),
+                    sender: UserId::from("@b:x"),
+                    sender_name: Some("Bob".to_owned()),
+                    body: "the quoted line".to_owned(),
+                    state: ReplyState::Ready,
+                });
+            })],
+        }]);
+        view.scrolled(0.0, HEIGHT, WIDTH);
+        let node = content_node(&view, &renderer);
+        let (surface, line) = find_quote(&node, iced::Point::ORIGIN, None, None)
+            .unwrap_or_else(|| panic!("{density:?}: no quote with two text nodes"));
+        assert!(line.height > 0.0, "{density:?}: the line is {line:?}");
+        assert!(
+            surface.contains(line.position())
+                && surface.contains(iced::Point::new(
+                    line.x + line.width - 0.5,
+                    line.y + line.height - 0.5
+                )),
+            "{density:?}: line {line:?} outside the surface {surface:?}"
+        );
+    }
+}

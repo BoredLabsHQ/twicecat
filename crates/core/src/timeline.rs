@@ -374,9 +374,7 @@ fn map_reply(reply: &InReplyToDetails) -> ReplyPreview {
                 event_id,
                 sender: user(sender),
                 sender_name: profile_name(sender_profile),
-                body: content
-                    .as_message()
-                    .map_or_else(String::new, |m| reply_body(m.body())),
+                body: quote_line(content),
                 state: ReplyState::Ready,
             }
         }
@@ -391,6 +389,65 @@ fn map_reply(reply: &InReplyToDetails) -> ReplyPreview {
             },
         },
     }
+}
+
+/// What a quoted event is, when it is not a message with text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QuotedKind {
+    Sticker,
+    Poll,
+    Location,
+    UnableToDecrypt,
+    Redacted,
+    Other,
+}
+
+/// The short description of a quoted event that has no text of its own.
+fn quote_word(kind: QuotedKind) -> &'static str {
+    match kind {
+        QuotedKind::Sticker => "Sticker",
+        QuotedKind::Poll => "Poll",
+        QuotedKind::Location => "Location",
+        QuotedKind::UnableToDecrypt => "Encrypted message",
+        QuotedKind::Redacted => "Deleted message",
+        QuotedKind::Other => "Unsupported message",
+    }
+}
+
+/// The line of a quoted message: its first non-blank line, or for a file with
+/// no caption (its body is the file name) the kind of file. A text that is
+/// all blank gives an empty line, which the app words itself.
+fn message_quote(msgtype: &MessageType) -> String {
+    let word = match msgtype {
+        MessageType::Text(_) | MessageType::Notice(_) | MessageType::Emote(_) => None,
+        MessageType::Image(_) => Some("Image"),
+        MessageType::Video(_) => Some("Video"),
+        MessageType::Audio(_) => Some("Audio"),
+        MessageType::File(_) => Some("File"),
+        MessageType::Location(_) => return quote_word(QuotedKind::Location).to_owned(),
+        _ => return quote_word(QuotedKind::Other).to_owned(),
+    };
+    match word {
+        Some(word) if !media::has_caption(msgtype) => word.to_owned(),
+        _ => reply_body(msgtype.body()),
+    }
+}
+
+/// The one line a reply quotes from the original event.
+fn quote_line(content: &TimelineItemContent) -> String {
+    let TimelineItemContent::MsgLike(content) = content else {
+        return quote_word(QuotedKind::Other).to_owned();
+    };
+    let kind = match &content.kind {
+        MsgLikeKind::Message(message) => return message_quote(message.msgtype()),
+        MsgLikeKind::Sticker(_) => QuotedKind::Sticker,
+        MsgLikeKind::Poll(_) => QuotedKind::Poll,
+        MsgLikeKind::LiveLocation(_) => QuotedKind::Location,
+        MsgLikeKind::Redacted => QuotedKind::Redacted,
+        MsgLikeKind::UnableToDecrypt(_) => QuotedKind::UnableToDecrypt,
+        MsgLikeKind::Other(_) => QuotedKind::Other,
+    };
+    quote_word(kind).to_owned()
 }
 
 /// What the thread summary needs of the latest reply.
@@ -429,10 +486,31 @@ pub(crate) fn map_thread_summary(summary: &ThreadSummary) -> ThreadSummaryView {
     thread_view(summary.num_replies, latest)
 }
 
-/// The first line of `body`, cut to 200 characters (never inside one).
+/// Whether `c` can be seen: not White_Space and not a zero-width, bidi
+/// control or filler character (the app draws such a line as nothing).
+fn is_visible(c: char) -> bool {
+    !(c.is_whitespace()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{034F}'
+                | '\u{115F}'..='\u{1160}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{206F}'
+                | '\u{3164}'
+                | '\u{FEFF}'
+                | '\u{FFA0}'
+        ))
+}
+
+/// The first non-blank line of `body`, cut to 200 characters (never inside
+/// one).
 pub(crate) fn reply_body(body: &str) -> String {
     body.lines()
-        .next()
+        .find(|line| line.chars().any(is_visible))
         .unwrap_or("")
         .chars()
         .take(REPLY_BODY_CHARS)
@@ -1035,7 +1113,11 @@ mod tests {
     fn reply_body_first_line_capped_by_chars() {
         assert_eq!(reply_body(""), "");
         assert_eq!(reply_body("one\ntwo"), "one");
-        assert_eq!(reply_body("\nsecond"), "");
+        assert_eq!(reply_body("\nsecond"), "second");
+        assert_eq!(reply_body("\n  \n\t\nthird\nfourth"), "third");
+        assert_eq!(reply_body("\n \n"), "");
+        assert_eq!(reply_body("\u{200B}\n\u{202E}\u{3164}\nhello"), "hello");
+        assert_eq!(reply_body("\u{FEFF}"), "");
         let long = "é".repeat(250);
         let out = reply_body(&long);
         assert_eq!(out.chars().count(), 200);
@@ -1044,6 +1126,58 @@ mod tests {
         assert_eq!(reply_body(&exact), exact);
         let emoji = "😀".repeat(201);
         assert_eq!(reply_body(&emoji).chars().count(), 200);
+    }
+
+    fn msgtype(value: serde_json::Value) -> MessageType {
+        serde_json::from_value(value).expect("a valid message type")
+    }
+
+    #[test]
+    fn a_quoted_text_message_gives_its_first_non_blank_line() {
+        for kind in ["m.text", "m.notice", "m.emote"] {
+            let m = msgtype(serde_json::json!({"msgtype": kind, "body": "\n\nhello\nworld"}));
+            assert_eq!(message_quote(&m), "hello", "{kind}");
+        }
+        let blank = msgtype(serde_json::json!({"msgtype": "m.text", "body": " \n "}));
+        assert_eq!(message_quote(&blank), "", "left to the app's last fallback");
+    }
+
+    #[test]
+    fn a_quoted_media_message_gives_its_caption_or_its_kind() {
+        let media = |kind: &str, body: &str, filename: Option<&str>| {
+            let mut v = serde_json::json!({"msgtype": kind, "body": body, "url": "mxc://x/y"});
+            if let Some(f) = filename {
+                v["filename"] = f.into();
+            }
+            msgtype(v)
+        };
+        for (kind, word) in [
+            ("m.image", "Image"),
+            ("m.video", "Video"),
+            ("m.audio", "Audio"),
+            ("m.file", "File"),
+        ] {
+            assert_eq!(message_quote(&media(kind, "a.bin", None)), word, "{kind}");
+            assert_eq!(
+                message_quote(&media(kind, "look at\nthis", Some("a.bin"))),
+                "look at",
+                "{kind} with a caption"
+            );
+        }
+        let location = msgtype(
+            serde_json::json!({"msgtype": "m.location", "body": "x", "geo_uri": "geo:1,2"}),
+        );
+        assert_eq!(message_quote(&location), "Location");
+    }
+
+    #[test]
+    fn a_quoted_event_that_is_not_a_message_is_described() {
+        assert_eq!(quote_word(QuotedKind::Sticker), "Sticker");
+        assert_eq!(quote_word(QuotedKind::Poll), "Poll");
+        assert_eq!(quote_word(QuotedKind::Location), "Location");
+        assert_eq!(quote_word(QuotedKind::UnableToDecrypt), "Encrypted message");
+        assert_eq!(quote_word(QuotedKind::Redacted), "Deleted message");
+        assert_eq!(quote_word(QuotedKind::Other), "Unsupported message");
     }
 
     #[test]
