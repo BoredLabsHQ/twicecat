@@ -29,7 +29,7 @@ No pinned dependency changes. No new crates or iced features.
 - **D7 (push-to-talk binding):** one binding; a new capture replaces the other kind. **D7b:** the gamepad button stays a separate picker.
 - **D8 (one way to reveal):** the Voice & audio card folds into Settings as sub-pages shown by the switch; the card is retired.
 - **D9 (avatars):** the sender's avatar on group header rows (Task 13).
-- **D10 (sizes):** `CAPTION` 12 → 13 and icon glyphs to `BODY`; Task 16 is mandatory. **D10b:** timeline cap 880 px, left-aligned; the composer stays full width.
+- **D10 (sizes):** `CAPTION` 12 → 13; icon glyphs stay at 16 px (`ICON_SIZE = max(BODY, 16)`, because `BODY` is 14 and would shrink them; the human decided this in the final review); Task 16 is mandatory. **D10b:** timeline cap 880 px, left-aligned; the composer stays full width.
 - **D11 (commits):** AGENTS.md rule 5 as written. See "Commits on this branch" below.
 - **D12 (remembering the rail choice, was Q12):** yes, the app remembers across restarts whether the spaces rail is expanded or collapsed. The choice is stored as an additive core field, `UiSettings.spaces_rail: SpacesRailChoice { Expanded, Collapsed }` (default `Expanded`), saved in `settings.json` with the other UI settings by a separate `feat(core)` task, Task 10a, placed before Task 10. The additive core change is approved. It goes in `UiSettings` (`crates/core/src/api/rooms.rs:546`, read field by field by `settings_from_map`, `crates/core/src/paths.rs:25`, written by `write_settings`, `:481`), next to `room_list`, the room list's own expanded/rail choice. It does not go in the per-account view file (`view_file` / `write_view_space`, `paths.rs:762,806`): that file holds only the selected space, under `"version": 1`, and `write_view_space` rewrites the whole object, so a second key there would need a reworked writer. Like `room_list`, the choice is per device, not per account.
 
@@ -354,12 +354,13 @@ Language: rust
 Files: `crates/app/src/ui/tokens.rs` (`CAPTION`), `crates/app/src/ui/icons.rs` (icon size), `crates/app/src/timeline.rs` (estimates), `crates/app/src/room_list.rs` (row heights if needed)
 Depends on: Task 13, Task 14
 Acceptance criteria:
-- `CAPTION` goes from 12 to 13 and the icon glyph size from its current value to `BODY`. Nothing else in the type scale changes. The text-scale setting still multiplies everything (unchanged).
+- `CAPTION` goes from 12 to 13 and the icon glyph size is `ICON_SIZE = max(BODY, 16)`, which is 16 px: icons stay at 16 px, not `BODY` (14), as the human decided in the final review. Nothing else in the type scale changes. The text-scale setting still multiplies everything (unchanged).
 - The room-list row heights still fit the preview line at both densities (layout test at 100 % and 200 %), and the 10,000-room test passes.
 - `estimate_height` stays within ±25 % (timeline layout tests).
 - One `feat(app): …` commit with `Step: uirf.16`; later fixes to it are folded in with `--fixup` (see "Commits on this branch").
 
 Evidence: gallery PNGs before and after, side by side in `index.html` (human checkpoint).
+Note: the upload card keeps tagging encrypted rooms "Encrypted" on purpose (it confirms where files go); every other place stays silent for encrypted and unknown.
 
 ### Task 17: Wrap-up: docs, gallery and checkpoint
 Language: rust

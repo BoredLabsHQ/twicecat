@@ -102,8 +102,9 @@ Rules the code follows (all in tests):
   say the same. In the rail the search field is a **Search** button that
   expands the list, and the call dock is a column of icon buttons (the call's
   room, mute, deafen, leave), each with its words in a tooltip, and visible
-  marks that need no pointing: the call phase glyph, the encryption lock (or a
-  warning when the call is not encrypted), who declined, and the microphone's
+  marks that need no pointing: the call phase glyph, the open lock with the
+  words "Not encrypted" when the call is not encrypted (an encrypted or
+  unknown call shows no lock), who declined, and the microphone's
   state (see Calls).
 - Narrow windows: from 800 to 1100 px the list is shown as the rail while a
   room panel or the participants panel is open; under 800 px the spaces sidebar is
@@ -501,9 +502,12 @@ State is never colour alone:
 - Phase: the call dock says it in words ("Connecting", "Voice connected,
   encrypted", "Reconnecting", "Not encrypted") next to a glyph and a dot
   colour. In the rail the same words are in a tooltip, and the phase glyph and
-  the lock are always visible.
-- Encryption: the lock glyph (encrypted) or the open lock with the words
-  "Not encrypted" when media is not encrypted.
+  the open lock of an unencrypted call are always visible.
+- Encryption: no lock for an encrypted or unknown call; the open lock with
+  the words "Not encrypted" when the call's media is not encrypted. The
+  upload card is the one place that also tags an encrypted room "Encrypted",
+  on purpose: it confirms where the files are going. An unknown room gets no
+  tag there either.
 - Declined: who declined is written in words in the dock and in the rail (a
   mark plus the words in its tooltip).
 - Microphone: an open microphone is the microphone glyph; muted or deafened is
