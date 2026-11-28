@@ -530,6 +530,8 @@ pub fn rich_env<'a>(app: &'a App, theme: &'a iced::Theme) -> RichEnv<'a> {
         actions: &app.actions,
         rooms: &app.rooms,
         members: app.known_members(),
+        member_avatars: app.known_member_avatars(),
+        avatars: &app.avatars,
         media: &app.media,
         room: app.selected.as_ref(),
         density: app.density(),

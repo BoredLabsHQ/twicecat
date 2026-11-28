@@ -174,8 +174,10 @@ new name wins and the report says so. Only the `color` group is read.
   is refused ("status colours look too alike").
 - **V5, visible states.** `accent-wash` must differ from the three backgrounds
   it sits on, and `surface-overlay` from `surface`, `surface-raised` and
-  `accent-wash`, enough to show. Otherwise the theme is refused ("selected rows
-  would not show").
+  `accent-wash`, enough to show; otherwise the theme is refused ("selected rows
+  would not show"). `surface-overlay` also reaches a contrast ratio of 1.15:1
+  against `void`, the window, so the hovered message row shows; otherwise the
+  theme is refused ("hover surface too close to the window background").
 
 Limits: at most 1,024 entries of the folder are looked at; at most 32 `.json`
 files with allowed names are read, in file-name order ("N more files not

@@ -8,15 +8,17 @@
 //! never block. Names, topics, aliases, member names and the IDs a user types
 //! belong to people: nothing here logs them and every `Debug` shows counts.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::LazyLock;
 
 use iced::Task;
 use iced::widget::operation;
+use twicecat_core::api::AvatarId;
 use twicecat_core::api::{
-    Block, Command, CoreError, CreateRoomRequest, Inline, MediaBytes, MembershipView,
-    MentionTarget, MessageText, PowerLevelView, Role, RoomDetailsView, RoomEncryption, RoomId, RoomMemberView,
-    RoomSummary, RoomVisibility, TimelineItemKind, UserId,
+    Command, CoreError, CreateRoomRequest, MediaBytes, MembershipView, MentionTarget, MessageText,
+    PowerLevelView, Role, RoomDetailsView, RoomEncryption, RoomId, RoomMemberView, RoomSummary,
+    RoomVisibility, TimelineItemKind, UserId,
 };
 
 use crate::blocking;
@@ -677,6 +679,44 @@ pub struct KnownMembers {
     pub members: Vec<RoomMemberView>,
     /// The room has more members than the list holds.
     pub truncated: bool,
+    /// The picture of each member that has one, built once with the list so
+    /// a header row or a request looks a sender up without a scan.
+    avatars: MemberAvatars,
+}
+
+/// Member user ID to picture ID.
+pub type MemberAvatars = HashMap<UserId, AvatarId>;
+
+/// The empty index, for when no members are known.
+pub fn no_member_avatars() -> &'static MemberAvatars {
+    static EMPTY: LazyLock<MemberAvatars> = LazyLock::new(HashMap::new);
+    &EMPTY
+}
+
+impl KnownMembers {
+    /// The list with its picture index.
+    pub fn new(room: RoomId, members: Vec<RoomMemberView>, truncated: bool) -> Self {
+        // The first row of a user wins, as in the member list itself.
+        let mut avatars = MemberAvatars::new();
+        for m in &members {
+            if let Some(avatar) = &m.avatar {
+                avatars
+                    .entry(m.user_id.clone())
+                    .or_insert_with(|| avatar.clone());
+            }
+        }
+        Self {
+            room,
+            members,
+            truncated,
+            avatars,
+        }
+    }
+
+    /// The picture index of the members.
+    pub fn avatars(&self) -> &MemberAvatars {
+        &self.avatars
+    }
 }
 
 impl fmt::Debug for KnownMembers {
@@ -1604,16 +1644,14 @@ impl App {
             return call;
         }
         sort_members(&mut members);
-        self.rooms_ui.known = Some(KnownMembers {
-            room,
-            members,
-            truncated,
-        });
+        self.rooms_ui.known = Some(KnownMembers::new(room, members, truncated));
         Task::batch([call, self.fetch_member_avatars()])
     }
 
-    /// Asks for the avatars of the rows on screen and of the card's user.
-    fn fetch_member_avatars(&mut self) -> Task<Message> {
+    /// Asks for the avatars of the member rows on screen, of the card's user and
+    /// of the senders of the timeline rows that are built. Each ID is asked
+    /// for once and a request holds at most `MAX_REQUEST_BATCH` of them.
+    pub(crate) fn fetch_member_avatars(&mut self) -> Task<Message> {
         let Some(known) = &self.rooms_ui.known else {
             return Task::none();
         };
@@ -1623,17 +1661,32 @@ impl App {
             .as_ref()
             .map_or(0, |panel| panel.shown);
         let card = self.rooms_ui.card.as_ref().map(|card| &card.user);
+        // The senders of the rows the timeline builds: the window is bounded
+        // by `MAX_BUILT_ROWS`, so far-away rows ask for nothing.
+        let senders: HashSet<&UserId> = self
+            .timeline
+            .items
+            .get(self.timeline.window())
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|item| match &item.kind {
+                TimelineItemKind::Message { sender, .. }
+                | TimelineItemKind::Placeholder { sender, .. } => Some(sender),
+                _ => None,
+            })
+            .collect();
         // The rows on screen are the sections of the search, not the first
         // `shown` members of the core's list.
         let page = member_page(&known.members, &self.rooms_ui.member_search, shown);
-        let on_screen: HashSet<usize> = page.shown_indices().collect();
-        let wanted: Vec<_> = known
-            .members
-            .iter()
-            .enumerate()
-            .filter(|(i, m)| on_screen.contains(i) || card == Some(&m.user_id))
-            .filter_map(|(_, m)| m.avatar.clone())
+        let mut wanted: Vec<AvatarId> = page
+            .shown_indices()
+            .filter_map(|i| known.members.get(i)?.avatar.clone())
             .collect();
+        wanted.extend(
+            card.into_iter()
+                .chain(senders)
+                .filter_map(|user| known.avatars.get(user).cloned()),
+        );
         let ids = self.avatars.take_unrequested(wanted);
         if ids.is_empty() {
             Task::none()
@@ -1727,24 +1780,35 @@ impl App {
         Task::none()
     }
 
-    /// Asks for the open room's members once, when its timeline holds a user
-    /// pill (their names label the pills).
-    pub(crate) fn members_for_pills(&mut self) -> Task<Message> {
+    /// Asks for the open room's members once, when its timeline holds a message
+    /// (their names label the pills, their pictures sit on group headers).
+    pub(crate) fn members_for_timeline(&mut self) -> Task<Message> {
         let Some(room) = self.selected.clone() else {
             return Task::none();
         };
         if self.rooms_ui.members_requested.as_ref() == Some(&room) {
             return Task::none();
         }
-        let has_pill = self.timeline.items.iter().any(|item| match &item.kind {
-            TimelineItemKind::Message { details, .. } => has_user_mention(&details.content.blocks),
-            _ => false,
-        });
-        if !has_pill {
+        // Any message wants the list: a group header draws its sender's
+        // picture from it, besides the names on pills.
+        let has_message = self
+            .timeline
+            .items
+            .iter()
+            .any(|item| matches!(item.kind, TimelineItemKind::Message { .. }));
+        if !has_message {
             return Task::none();
         }
         self.rooms_ui.members_requested = Some(room.clone());
         self.send(Command::ListRoomMembers { room_id: room })
+    }
+
+    /// The pictures of the open room's members, when they are listed.
+    pub fn known_member_avatars(&self) -> &MemberAvatars {
+        match (&self.rooms_ui.known, &self.selected) {
+            (Some(known), Some(room)) if known.room == *room => &known.avatars,
+            _ => no_member_avatars(),
+        }
     }
 
     /// The members of the open room, when they are listed.
@@ -1771,26 +1835,6 @@ impl App {
             .map(|k| k.members.as_slice());
         leave_warning(details, members, self.user_id.as_ref())
     }
-}
-
-/// Whether any of `blocks` holds a pill for a user.
-fn has_user_mention(blocks: &[Block]) -> bool {
-    fn inlines(list: &[Inline]) -> bool {
-        list.iter().any(|inline| match inline {
-            Inline::Mention {
-                target: MentionTarget::User(_),
-                ..
-            } => true,
-            Inline::Spoiler(inner) => inlines(inner),
-            _ => false,
-        })
-    }
-    blocks.iter().any(|block| match block {
-        Block::Paragraph(list) | Block::Heading { inlines: list, .. } => inlines(list),
-        Block::Quote(inner) => has_user_mention(inner),
-        Block::List { items, .. } => items.iter().any(|item| has_user_mention(item)),
-        Block::Code { .. } | Block::Rule => false,
-    })
 }
 
 /// The line under a field that wants a user ID.
@@ -2095,6 +2139,19 @@ mod tests {
             role,
             membership: state,
         }
+    }
+
+    #[test]
+    fn duplicate_user_ids_keep_the_first_avatar() {
+        let mut first = member("@a:x", Some("A"), Role::User, MembershipView::Joined);
+        first.avatar = Some(AvatarId::from("mxc://x/first"));
+        let mut second = first.clone();
+        second.avatar = Some(AvatarId::from("mxc://x/second"));
+        let known = KnownMembers::new(RoomId::from("!r:x"), vec![first, second], false);
+        assert_eq!(
+            known.avatars().get(&UserId::from("@a:x")),
+            Some(&AvatarId::from("mxc://x/first"))
+        );
     }
 
     fn joined(id: &str, role: Role) -> RoomMemberView {

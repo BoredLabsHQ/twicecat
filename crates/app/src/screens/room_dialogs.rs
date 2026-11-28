@@ -444,9 +444,9 @@ mod tests {
     }
 
     fn members(n: usize) -> KnownMembers {
-        KnownMembers {
-            room: room(),
-            members: (0..n)
+        KnownMembers::new(
+            room(),
+            (0..n)
                 .map(|i| RoomMemberView {
                     user_id: UserId::from(format!("@u{i}:x")),
                     display_name: (i % 2 == 0).then(|| format!("User {i}")),
@@ -456,8 +456,8 @@ mod tests {
                     membership: MembershipView::Joined,
                 })
                 .collect(),
-            truncated: n > 5,
-        }
+            n > 5,
+        )
     }
 
     type Step = Box<dyn Fn(&mut App)>;

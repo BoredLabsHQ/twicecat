@@ -3000,7 +3000,7 @@ impl App {
             return Task::none();
         }
         let effects = self.timeline.apply_diffs(diffs);
-        let members = self.members_for_pills();
+        let members = self.members_for_timeline();
         Task::batch([self.timeline_effects(effects), members])
     }
 
@@ -3046,6 +3046,7 @@ impl App {
             tasks.push(self.show_notice_text(JUMP_FAILED_TEXT.to_owned()));
         }
         tasks.push(self.fetch_visible_media());
+        tasks.push(self.fetch_member_avatars());
         tasks.push(self.read_receipt(Instant::now()));
         Task::batch(tasks)
     }
@@ -12452,6 +12453,63 @@ mod tests {
                 )
                 .count();
             assert_eq!(asked, 1, "{sent:?}");
+        }
+
+        #[test]
+        fn the_avatars_of_the_senders_on_screen_are_asked_for_once_and_no_others() {
+            use twicecat_core::api::AvatarId;
+            let (mut app, mut rx, _) = rig();
+            let _ = app.update(core(CoreEvent::TimelineDiff {
+                room_id: id("!a:x"),
+                diffs: vec![ListDiff::PushBack {
+                    value: user_pill_item("plain", "@nobody:x"),
+                }],
+            }));
+            let _ = drain(&mut rx);
+            let mut sender = member("@s:x", Some("Sam"), Role::User);
+            sender.avatar = Some(AvatarId::from("mxc://x/sam"));
+            let mut other = member("@o:x", Some("Olly"), Role::User);
+            other.avatar = Some(AvatarId::from("mxc://x/olly"));
+            let members = || CoreEvent::RoomMembers {
+                room_id: id("!a:x"),
+                members: vec![sender.clone(), other.clone()],
+                truncated: false,
+            };
+            let _ = app.update(core(members()));
+            let _ = app.update(core(members()));
+            let fetched: Vec<AvatarId> = drain(&mut rx)
+                .into_iter()
+                .filter_map(|c| match c {
+                    Command::FetchAvatars(ids) => Some(ids),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            assert_eq!(fetched, [AvatarId::from("mxc://x/sam")]);
+        }
+
+        #[test]
+        fn a_message_asks_for_the_members_once_so_headers_can_show_pictures() {
+            let (mut app, mut rx, _) = rig();
+            let plain = |n: &str| {
+                let mut item = user_pill_item("plain", "@nobody:x");
+                item.id = n.to_owned();
+                if let TimelineItemKind::Message { details, .. } = &mut item.kind {
+                    details.content = RichText::default();
+                }
+                item
+            };
+            for n in ["one", "two"] {
+                let _ = app.update(core(CoreEvent::TimelineDiff {
+                    room_id: id("!a:x"),
+                    diffs: vec![ListDiff::PushBack { value: plain(n) }],
+                }));
+            }
+            let asked = drain(&mut rx)
+                .iter()
+                .filter(|c| matches!(c, Command::ListRoomMembers { .. }))
+                .count();
+            assert_eq!(asked, 1);
         }
 
         #[test]

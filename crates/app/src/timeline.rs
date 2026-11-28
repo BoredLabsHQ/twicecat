@@ -20,7 +20,7 @@ use twicecat_core::api::{
 };
 
 use crate::media::{has_caption, media_box};
-use crate::ui::tokens::Density;
+use crate::ui::tokens::{self, Density};
 
 /// How far outside the viewport rows are built, in pixels.
 pub const OVERSCAN_PX: f32 = 600.0;
@@ -69,6 +69,8 @@ const HEADER_H: f32 = 22.0;
 /// Space above a row that starts with a header, besides the density's
 /// [`Density::timeline_row_pad`].
 const TOP_PAD_BASE: f32 = 4.0;
+/// The sender's picture on a header row, in pixels (D9).
+pub const AVATAR_PX: f32 = 36.0;
 
 /// Space above a message row: more above a header row, which starts a new
 /// run of one sender, than above a continuation. Compact trims both through
@@ -78,7 +80,13 @@ pub fn top_pad(continuation: bool, density: Density) -> f32 {
     if continuation {
         pad / 2.0
     } else {
-        TOP_PAD_BASE + pad
+        // A header starts a new group: at least `L` above it in Comfortable
+        // and `M` in Compact, so the groups read apart.
+        match density {
+            Density::Comfortable => tokens::L,
+            Density::Compact => tokens::M,
+        }
+        .max(TOP_PAD_BASE + pad)
     }
 }
 /// Left margin of the content column (room for the header and avatar).
@@ -225,7 +233,10 @@ fn estimate_unclamped(
     width: f32,
     density: Density,
 ) -> f32 {
-    let lead = top_pad(continuation, density) + if continuation { 0.0 } else { HEADER_H };
+    let pad = top_pad(continuation, density);
+    let lead = pad + if continuation { 0.0 } else { HEADER_H };
+    // A header row holds the sender's picture beside its text.
+    let floor = if continuation { 0.0 } else { pad + AVATAR_PX };
     let receipts = if item.read_by.is_empty() {
         0.0
     } else {
@@ -260,9 +271,9 @@ fn estimate_unclamped(
             if details.send_failure.is_some() || *sent != SendStatus::Sent {
                 h += FAILURE_H;
             }
-            h + receipts
+            (h + receipts).max(floor)
         }
-        TimelineItemKind::Placeholder { .. } => lead + LINE_H + receipts,
+        TimelineItemKind::Placeholder { .. } => (lead + LINE_H + receipts).max(floor),
         TimelineItemKind::DateDivider { .. } => DIVIDER_H,
         TimelineItemKind::ReadMarker => MARKER_H,
         TimelineItemKind::TimelineStart => START_H,
@@ -1315,6 +1326,37 @@ mod tests {
         assert!(is_continuation(&items, 1));
         let items = [msg("a", "@a:x", 10 * MIN), msg("b", "@a:x", 0)];
         assert!(!is_continuation(&items, 1));
+    }
+
+    #[test]
+    fn a_group_header_has_room_above_it_and_a_continuation_keeps_its_pad() {
+        assert!(top_pad(false, Density::Comfortable) >= tokens::L);
+        assert!(top_pad(false, Density::Compact) >= tokens::M);
+        assert_eq!(top_pad(true, Density::Comfortable), 2.0);
+        assert_eq!(top_pad(true, Density::Compact), 0.5);
+    }
+
+    #[test]
+    fn a_header_row_is_at_least_as_tall_as_the_avatar() {
+        let item = msg("a", "@a:x", 0);
+        for density in [Density::Comfortable, Density::Compact] {
+            let header = estimate_height(&item, false, 800.0, density);
+            assert!(header >= top_pad(false, density) + AVATAR_PX, "{density:?}");
+        }
+        // A one-line placeholder is short, but still holds the avatar.
+        let placeholder = TimelineItem::new(
+            "p".to_owned(),
+            TimelineItemKind::Placeholder {
+                sender: UserId::from("@a:x"),
+                sender_name: None,
+                timestamp_ms: 0,
+                is_own: false,
+                what: PlaceholderKind::Redacted,
+                utd: None,
+            },
+        );
+        let h = estimate_height(&placeholder, false, 800.0, Density::Compact);
+        assert!(h >= top_pad(false, Density::Compact) + AVATAR_PX);
     }
 
     #[test]

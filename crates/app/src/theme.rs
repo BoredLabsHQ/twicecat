@@ -519,6 +519,8 @@ pub enum Refusal {
     /// The selected or hovered row would not show against its neighbours
     /// (V5).
     SelectionHidden,
+    /// The hover surface is too close to the window background (V5).
+    OverlayTooClose,
     /// After all adjustments some colour is still below its least contrast:
     /// the last check refuses what the steps before could not fix.
     Unreadable,
@@ -531,6 +533,7 @@ impl Refusal {
             Refusal::StatusAlike => "status colours look too alike",
             Refusal::MixedBackgrounds => "backgrounds mix light and dark",
             Refusal::SelectionHidden => "selected rows would not show",
+            Refusal::OverlayTooClose => "hover surface too close to the window background",
             Refusal::Unreadable => "colours cannot be made readable",
         }
     }
@@ -552,6 +555,8 @@ const V3_STATE_MIX: f32 = 0.15;
 const V5_SELECTED: f32 = 8.0;
 /// V5: least distance of the hovered row from its neighbours.
 const V5_HOVERED: f32 = 5.0;
+/// V5: the least contrast ratio of the hover row against the window.
+const V5_HOVER_CONTRAST: f32 = 1.15;
 
 fn is_dark(color: Color) -> bool {
     luminance(color) < DARK_BELOW
@@ -700,6 +705,12 @@ fn selection_hidden(t: &Tokens) -> bool {
     !(wash_ok && hover_ok)
 }
 
+/// V5: whether the hover surface is too close to the window, `void`, it sits
+/// next to, so the hovered message row would not show.
+fn overlay_too_close(t: &Tokens) -> bool {
+    contrast(t.surface_overlay, t.void) < V5_HOVER_CONTRAST
+}
+
 /// The last check, on the colours as they will be shown: the sides (also of
 /// the code background iced derives from the palette), V4, V5, then every V3
 /// pair and the shield marks.
@@ -718,6 +729,9 @@ fn verify(t: &Tokens) -> Result<(), Refusal> {
     }
     if selection_hidden(t) {
         return Err(Refusal::SelectionHidden);
+    }
+    if overlay_too_close(t) {
+        return Err(Refusal::OverlayTooClose);
     }
     let bgs = backgrounds_of(t);
     let cards = cards_of(t);
@@ -1550,6 +1564,10 @@ mod tests {
         for other in [s.surface, s.surface_raised, s.selection] {
             assert!(delta_e76(s.message_hover, other) >= 5.0, "{what}: hover");
         }
+        assert!(
+            contrast(s.message_hover, p.background) >= 1.15,
+            "{what}: hover vs window"
+        );
         // The shields.
         for (fill, glyph) in [
             (s.shield_red, s.shield_red_glyph),
@@ -1653,6 +1671,26 @@ mod tests {
         assert!(refused(&[("accent-wash", 0x0a0812)]));
         assert!(refused(&[("surface-overlay", 0x110e1c)]));
         assert!(refused(&[("surface-overlay", 0x241a45)]));
+    }
+
+    #[test]
+    fn an_overlay_too_close_to_the_window_has_its_own_reason() {
+        // Far from the three surfaces it is checked against, but not from
+        // `void`: only the window rule can refuse it.
+        let tokens = with(&[]);
+        assert!(!selection_hidden(&tokens));
+        assert!(!overlay_too_close(&tokens));
+        let mut close = tokens;
+        close.surface_overlay = close.void;
+        assert!(overlay_too_close(&close));
+        assert_eq!(
+            Refusal::OverlayTooClose.reason(),
+            "hover surface too close to the window background"
+        );
+        assert_ne!(
+            Refusal::OverlayTooClose.reason(),
+            Refusal::SelectionHidden.reason()
+        );
     }
 
     #[test]
@@ -1803,11 +1841,24 @@ mod tests {
     }
 
     #[test]
+    fn the_hover_background_shows_against_the_window_in_every_family_and_mode() {
+        for t in test_themes() {
+            let sem = semantic(&t);
+            let bg = t.palette().background;
+            let ratio = contrast(sem.message_hover, bg);
+            assert!(ratio >= 1.15, "{t}: hover vs background {ratio}");
+            // Not so strong that text loses its floor on the hover row.
+            assert!(contrast(t.palette().text, sem.message_hover) >= 4.5, "{t}");
+            assert!(contrast(sem.muted, sem.message_hover) >= 4.5, "{t}");
+        }
+    }
+
+    #[test]
     fn every_accepted_random_theme_keeps_every_promise() {
         let mut rng = Lcg(0x5eed_1234_abcd_ef01);
         let (mut accepted, mut refused) = (0, 0);
         let mut adjusted = 0;
-        for _ in 0..2000 {
+        for _ in 0..4000 {
             let t = rng.tokens();
             match resolve(&t) {
                 Ok(r) => {

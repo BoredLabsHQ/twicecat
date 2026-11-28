@@ -94,6 +94,7 @@ fn content_node_with(
     let theme = twicecat_app::theme::built_in();
     let revealed = Revealed::new();
     let actions = twicecat_app::actions::ActionState::default();
+    let avatars = twicecat_app::avatars::Avatars::default();
     let env = RichEnv {
         theme: &theme,
         own_user: None,
@@ -101,6 +102,8 @@ fn content_node_with(
         actions: &actions,
         rooms: &[],
         members: &[],
+        member_avatars: twicecat_app::rooms::no_member_avatars(),
+        avatars: &avatars,
         media,
         room,
         density: view.density(),
