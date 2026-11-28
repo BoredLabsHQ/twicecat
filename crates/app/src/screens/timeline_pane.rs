@@ -170,12 +170,16 @@ pub fn view_pane<'a, Tz: TimeZone>(
     rows.push(space().height(below).into());
     // `from_vec`, because `Column::push` drops zero-size children, and the
     // content is always the two spacers plus the window.
-    let list = scrollable(Column::from_vec(rows).width(Fill))
-        .id(pane.scroll_id)
-        .anchor_bottom()
-        .on_scroll(pane.on_scroll)
-        .width(Fill)
-        .height(Fill);
+    let list = scrollable(
+        Column::from_vec(rows)
+            .width(Fill)
+            .max_width(tokens::TIMELINE_MAX_WIDTH),
+    )
+    .id(pane.scroll_id)
+    .anchor_bottom()
+    .on_scroll(pane.on_scroll)
+    .width(Fill)
+    .height(Fill);
     // Always a stack with the list first: iced keeps a widget's state only
     // while the widget at that place in the tree keeps its type, so returning
     // the bare list when idle would reset the scroll offset to the bottom on

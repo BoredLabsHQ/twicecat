@@ -242,7 +242,8 @@ fn estimate_unclamped(
     } else {
         RECEIPTS_H
     };
-    let cpl = chars_per_line(width, 0);
+    // The rows sit in a column capped at the timeline's maximum width.
+    let cpl = chars_per_line(clean_width(width).min(tokens::TIMELINE_MAX_WIDTH), 0);
     match &item.kind {
         TimelineItemKind::Message {
             body,
@@ -949,8 +950,12 @@ impl TimelineView {
         if viewport_h.is_finite() && viewport_h > 0.0 {
             self.viewport_h = viewport_h;
         }
-        let width_changed =
-            width.is_finite() && width > 0.0 && (width - self.width).abs() > WIDTH_EPS_PX;
+        // Rows wrap at the capped column, so only a change of that width
+        // invalidates the measurements.
+        let column = |w: f32| w.min(tokens::TIMELINE_MAX_WIDTH);
+        let width_changed = width.is_finite()
+            && width > 0.0
+            && (column(width) - column(self.width)).abs() > WIDTH_EPS_PX;
         if width_changed {
             self.width = width;
             self.measured.clear();
@@ -1828,6 +1833,27 @@ mod tests {
         assert_eq!(app.timeline.measured.len(), 1, "within 1 px");
         let _ = app.on_timeline_scrolled(0.0, 600.0, app.timeline.width + 40.0);
         assert!(app.timeline.measured.is_empty());
+    }
+
+    #[test]
+    fn a_resize_above_the_column_cap_keeps_the_measurements() {
+        let (mut app, _rx) = app();
+        let _ = app.update(reset(many(3)));
+        let _ = app.on_timeline_scrolled(0.0, 600.0, 1920.0);
+        let _ = app.update(Message::RowMeasured {
+            id: "m0".into(),
+            height: 90.0,
+        });
+        let _ = app.on_timeline_scrolled(0.0, 600.0, 1900.0);
+        assert_eq!(app.timeline.measured.len(), 1, "the column did not change");
+        let _ = app.on_timeline_scrolled(0.0, 600.0, 800.0);
+        assert!(app.timeline.measured.is_empty(), "800 is below the cap");
+        let _ = app.update(Message::RowMeasured {
+            id: "m0".into(),
+            height: 90.0,
+        });
+        let _ = app.on_timeline_scrolled(0.0, 600.0, 700.0);
+        assert!(app.timeline.measured.is_empty(), "700 is below the cap");
     }
 
     #[test]

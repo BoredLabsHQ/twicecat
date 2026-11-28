@@ -91,9 +91,28 @@ fn content_node_with(
     media: &twicecat_app::media::MediaModel,
     room: Option<&twicecat_core::api::RoomId>,
 ) -> Node {
+    content_node_sized(
+        view,
+        renderer,
+        media,
+        room,
+        WIDTH,
+        twicecat_app::actions::ActionState::default(),
+    )
+}
+
+/// The same at a pane `width` wide, with `actions` (a hovered row shows its
+/// action bar).
+fn content_node_sized(
+    view: &TimelineView,
+    renderer: &Renderer,
+    media: &twicecat_app::media::MediaModel,
+    room: Option<&twicecat_core::api::RoomId>,
+    width: f32,
+    actions: twicecat_app::actions::ActionState,
+) -> Node {
     let theme = twicecat_app::theme::built_in();
     let revealed = Revealed::new();
-    let actions = twicecat_app::actions::ActionState::default();
     let avatars = twicecat_app::avatars::Avatars::default();
     let env = RichEnv {
         theme: &theme,
@@ -113,7 +132,7 @@ fn content_node_with(
     let root = element.as_widget_mut().layout(
         &mut tree,
         renderer,
-        &Limits::new(Size::ZERO, Size::new(WIDTH, HEIGHT)),
+        &Limits::new(Size::ZERO, Size::new(width, HEIGHT)),
     );
     let list = &root.children()[0];
     assert_eq!(list.children().len(), 1, "the scrollable has one child");
@@ -489,4 +508,134 @@ fn decorated_rows_are_estimated_within_a_quarter_in_both_densities() {
             );
         }
     }
+}
+
+/// A long message with reactions, a receipt and every action allowed.
+fn busy_message(id: &str, body: &str) -> TimelineItem {
+    use twicecat_core::api::{ItemActions, ReactionGroup};
+    let details = MessageDetails {
+        actions: ItemActions {
+            can_reply: true,
+            can_edit: true,
+            can_redact: true,
+            can_react: true,
+            can_copy: true,
+        },
+        reactions: (0..4)
+            .map(|n| ReactionGroup {
+                key: format!("k{n}"),
+                count: n + 1,
+                own: false,
+                senders: Vec::new(),
+            })
+            .collect(),
+        ..MessageDetails::default()
+    };
+    let mut item = TimelineItem::new(
+        id.to_owned(),
+        TimelineItemKind::Message {
+            sender: UserId::from("@a:x"),
+            body: body.to_owned(),
+            is_own: false,
+            timestamp_ms: NOW,
+            sent: SendStatus::Sent,
+            details: Box::new(details),
+        },
+    );
+    item.read_by = vec![UserId::from("@b:x")];
+    item
+}
+
+/// Right edges of a node and everything under it, in window coordinates.
+fn right_edges(node: &Node, origin: iced::Point, out: &mut Vec<f32>) {
+    let at = iced::Point::new(origin.x + node.bounds().x, origin.y + node.bounds().y);
+    out.push(at.x + node.bounds().width);
+    for child in node.children() {
+        right_edges(child, at, out);
+    }
+}
+
+/// At 1920 px the timeline's column is capped (D10b, 880 px, left-aligned),
+/// and the action bar, reactions and "Seen by" stay inside it.
+#[test]
+fn the_timeline_column_is_capped_and_its_rows_stay_inside_it() {
+    use twicecat_app::ui::tokens::TIMELINE_MAX_WIDTH;
+    let renderer = renderer();
+    let mut view = TimelineView::default();
+    view.apply_diffs(vec![ListDiff::Reset {
+        values: (0..6)
+            .map(|i| busy_message(&format!("m{i}"), &"a long wrapping line ".repeat(60)))
+            .collect(),
+    }]);
+    view.scrolled(0.0, HEIGHT, 1920.0);
+    let actions = twicecat_app::actions::ActionState {
+        hovered: Some("m1".to_owned()),
+        ..Default::default()
+    };
+    let node = content_node_sized(
+        &view,
+        &renderer,
+        &twicecat_app::media::MediaModel::default(),
+        None,
+        1920.0,
+        actions,
+    );
+    assert!(
+        node.bounds().width <= TIMELINE_MAX_WIDTH,
+        "the column is {} wide",
+        node.bounds().width
+    );
+    let mut edges = Vec::new();
+    right_edges(&node, iced::Point::ORIGIN, &mut edges);
+    let widest = edges.into_iter().fold(0.0, f32::max);
+    assert!(
+        widest <= node.bounds().width + 0.5,
+        "something reaches {widest}, past the column's {}",
+        node.bounds().width
+    );
+    assert_eq!(node.bounds().x, 0.0, "left-aligned");
+}
+
+/// The estimate at 1920 px uses the capped width, so it stays within 25 %
+/// of what is laid out, over the window as a whole. A single row may be a
+/// line off where its text sits right on the edge of a line (the estimate
+/// counts characters, not glyph widths), so a row is allowed one line of 20 px.
+/// The 20 px slack equals one line height; do not let it creep up.
+#[test]
+fn estimates_at_1920_px_stay_within_a_quarter_of_the_capped_rows() {
+    use twicecat_app::timeline::{estimate_height, is_continuation};
+    use twicecat_app::ui::tokens::Density;
+    let renderer = renderer();
+    let mut view = timeline(300);
+    view.scrolled(0.0, HEIGHT, 1920.0);
+    let node = content_node_sized(
+        &view,
+        &renderer,
+        &twicecat_app::media::MediaModel::default(),
+        None,
+        1920.0,
+        Default::default(),
+    );
+    let (mut checked, mut estimated, mut total) = (0, 0.0, 0.0);
+    for (i, row) in view.window().zip(&node.children()[1..]) {
+        let estimate = estimate_height(
+            &view.items[i],
+            is_continuation(&view.items, i),
+            1920.0,
+            Density::Comfortable,
+        );
+        let laid_out = row.bounds().height;
+        assert!(
+            (estimate - laid_out).abs() <= (0.25 * laid_out).max(20.0),
+            "row {i}: estimated {estimate}, laid out {laid_out}"
+        );
+        checked += 1;
+        estimated += estimate;
+        total += laid_out;
+    }
+    assert!(checked >= 10, "only {checked} rows checked");
+    assert!(
+        (estimated - total).abs() <= 0.25 * total,
+        "estimated {estimated} in all, laid out {total}"
+    );
 }

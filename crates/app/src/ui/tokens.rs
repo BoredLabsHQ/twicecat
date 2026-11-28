@@ -35,6 +35,10 @@ pub const HEADLINE: f32 = 24.0;
 /// Type size of the biggest display text.
 pub const DISPLAY: f32 = 32.0;
 
+/// The widest the timeline's rows grow, in logical pixels; a wider room pane
+/// leaves the rest empty on the right (the composer still spans the pane).
+pub const TIMELINE_MAX_WIDTH: f32 = 880.0;
+
 /// How much room the lists and bars take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Density {

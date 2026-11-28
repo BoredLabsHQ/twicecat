@@ -684,8 +684,9 @@ fn write_the_gallery() {
     }
     // Narrow and medium windows (Task 8): the list as a rail, no sidebar, a
     // panel in the room pane's place.
-    let cases: [(&str, f32, Steps); 5] = [
+    let cases: [(&str, f32, Steps); 6] = [
         ("main-narrow-room", 720.0, &[]),
+        ("main-room-wide", 1920.0, &[]),
         ("main-narrow-thread", 720.0, &[fixture::thread_open]),
         (
             "main-narrow-call",
@@ -1481,6 +1482,29 @@ const PANEL_STATES: [Panels; 5] = [
         ],
     ),
 ];
+
+/// At 1920 px the timeline's rows are capped (Task 14, D10b) but the composer
+/// and the room's header still span the whole room pane.
+#[test]
+fn the_composer_spans_the_room_pane_in_a_wide_window() {
+    let renderer = renderer();
+    let size = Size::new(1920.0, 800.0);
+    let mut app = fixture::main_room();
+    app.window_width = size.width;
+    app.set_ui_settings(variants(false)[0].settings());
+    let laid = Laid::new(&app, &renderer, size);
+    let pane = &panes_row(&laid).children()[2];
+    let column = &pane.children()[0];
+    let kids = column.children();
+    assert_eq!(kids.len(), 5);
+    let (title, editor) = (kids[0].bounds().width, kids[4].bounds().width);
+    assert!(
+        editor > twicecat_app::ui::tokens::TIMELINE_MAX_WIDTH,
+        "{editor}"
+    );
+    assert_eq!(editor, column.bounds().width, "the composer fills the pane");
+    assert_eq!(title, column.bounds().width, "so does the header");
+}
 
 #[test]
 fn the_slots_follow_the_layout_at_every_width_and_the_room_pane_keeps_its_place() {
